@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.21-pipeline-lock-recovery";
+const PACING_REVISION = "2026-09-29.22-provider-deadlock-fix";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4487,17 +4487,11 @@ async function providerFetchV18(env, path, params = {}) {
   if (providerQuietWindow()) {
     throw new Error("API-Football quiet window is active until 05:00 America/New_York");
   }
-  const token = crypto.randomUUID();
+  // V1.9.2: the old DB pacing lock could remain leased after a successful
+  // provider call and deadlock the next request in the same analysis.
+  // Cron is already serialized at the pipeline level; daily usage is still
+  // protected by the atomic reservation RPC below.
   const lockKey = 'api-football-pacing';
-  let acquired = false;
-  const lockWaitDeadline = Date.now() + 15000;
-  while (!acquired && Date.now() < lockWaitDeadline) {
-    acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-      p_lock_key: lockKey, p_lock_token: token, p_ttl_seconds: 90
-    });
-    if (!acquired) await new Promise(resolve => setTimeout(resolve, 750));
-  }
-  if (!acquired) throw new Error('API-Football pacing lock busy after retry window');
   const leaseDeadline = Date.now() + 90000;
   let pacing;
   try {
@@ -4524,10 +4518,6 @@ async function providerFetchV18(env, path, params = {}) {
       await saveFeedSnapshot(env, lockKey, {...pacing, blockedUntil: retryAt, nextAt: retryAt}, 172800);
     }
     throw error;
-  } finally {
-    await rpcRefresh(env, 'two45_release_refresh_lock', {
-      p_lock_key: lockKey, p_lock_token: token
-    }).catch(() => null);
   }
 }
 
