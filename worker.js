@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 35;
-const PACING_REVISION = "2026-09-29.36-serialized-cruise";
+const PACING_REVISION = "2026-09-29.37-bounded-self-healing";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -278,50 +278,43 @@ async function sb(
   path,
   options = {}
 ) {
-  const { url, key } =
-    supa(env);
+  const { url, key } = supa(env);
+  if (!url || !key) throw new Error("Supabase configuration missing");
 
-  if (!url || !key) {
-    throw new Error(
-      "Supabase configuration missing"
-    );
-  }
+  const {
+    prefer,
+    headers: extraHeaders = {},
+    timeoutMs = 8000,
+    signal,
+    ...requestOptions
+  } = options;
 
-  const r =
-    await fetch(
-      `${url}/rest/v1/${path}`,
+  let r;
+  try {
+    r = await fetch(
+      url + "/rest/v1/" + path,
       {
-        ...options,
-
+        ...requestOptions,
+        signal: signal || AbortSignal.timeout(Math.max(2000, num(timeoutMs, 8000))),
         headers: {
           apikey: key,
-          Authorization:
-            `Bearer ${key}`,
-
-          "Content-Type":
-            "application/json",
-
-          Prefer:
-            options.prefer ||
-            "return=representation",
-
-          ...(options.headers || {})
+          Authorization: "Bearer " + key,
+          "Content-Type": "application/json",
+          Prefer: prefer || "return=representation",
+          ...extraHeaders
         }
       }
     );
-
-  const text =
-    await r.text();
-
-  if (!r.ok) {
-    throw new Error(
-      `Supabase ${r.status}: ${text}`
-    );
+  } catch (e) {
+    const msg = e?.name === "TimeoutError"
+      ? "Supabase request timed out: " + String(path).split("?")[0]
+      : (e?.message || String(e));
+    throw new Error(msg);
   }
 
-  return text
-    ? JSON.parse(text)
-    : null;
+  const text = await r.text();
+  if (!r.ok) throw new Error("Supabase " + r.status + ": " + text);
+  return text ? JSON.parse(text) : null;
 }
 
 async function snapshot(
@@ -2003,11 +1996,24 @@ async function recoverCanonicalAnalysisV2(env) {
 }
 
 async function analysisHealthV2(env, date = easternDate()) {
-  const rows = await sb(env, "rpc/two45_analysis_health", {
-    method:"POST",
-    body:JSON.stringify({p_date:date, p_model_version:MODEL_VERSION})
-  });
+  const [rows, cronRow] = await Promise.all([
+    sb(env, "rpc/two45_analysis_health", {
+      method:"POST",
+      timeoutMs:6000,
+      body:JSON.stringify({p_date:date, p_model_version:MODEL_VERSION})
+    }),
+    getFeedSnapshot(env, "cron-status").catch(() => null)
+  ]);
   const health = arr(rows)[0] || {};
+  const heartbeatAt =
+    cronRow?.payload?.heartbeatAt ||
+    cronRow?.payload?.completedAt ||
+    cronRow?.refreshed_at ||
+    null;
+  const heartbeatAgeMs = heartbeatAt
+    ? Math.max(0, Date.now() - Date.parse(heartbeatAt))
+    : null;
+  const automationActive = heartbeatAgeMs != null && heartbeatAgeMs < 180000;
   return {
     date,
     modelVersion: MODEL_VERSION,
@@ -2018,10 +2024,13 @@ async function analysisHealthV2(env, date = easternDate()) {
     failed: num(health.failed),
     refreshing: num(health.refreshing),
     oldestPending: health.oldest_pending || null,
-    lastCompletedAt: health.last_completed_at || null
+    lastCompletedAt: health.last_completed_at || null,
+    heartbeatAt,
+    heartbeatAgeMs,
+    automationActive,
+    pipelineStatus: cronRow?.payload?.status || null
   };
 }
-
 
 /* =========================================================
    API-FOOTBALL
@@ -4411,7 +4420,44 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     const owned = await claimSpecificJob(env, job);
     if (!owned) continue;
     claimed++;
-    const result = await processOne(env, owned);
+    let result;
+    try {
+      result = await timedV2(
+        processOne(env, owned),
+        30000,
+        "fixture " + owned.fixture_id + " analysis"
+      );
+    } catch (e) {
+      const msg = safeRefreshError(e);
+      await patchJob(env, owned.id, {
+        status: "PENDING",
+        started_at: null,
+        last_error: "Auto-requeued after bounded analysis timeout: " + msg
+      }).catch(() => null);
+      await sb(
+        env,
+        "two45_analysis_state?analysis_key=eq." + encodeURIComponent(analysisKeyV2(owned)),
+        {
+          method: "PATCH",
+          timeoutMs: 6000,
+          body: JSON.stringify({
+            status: "PENDING",
+            refreshing: false,
+            started_at: null,
+            updated_at: new Date().toISOString(),
+            last_error: "Auto-requeued after bounded analysis timeout: " + msg,
+            next_retry_at: new Date(Date.now() + 60000).toISOString()
+          })
+        }
+      ).catch(() => null);
+      result = {
+        fixtureId: owned.fixture_id,
+        status: "DEFERRED",
+        rateLimited: false,
+        autoRecovered: true,
+        error: msg
+      };
+    }
     results.push(result);
     if (result.rateLimited) break; // Stop before consuming further budget/failed attempts.
   }
@@ -6799,7 +6845,7 @@ async function scheduledAnalysisV2(event, env) {
   try {
     result.model = await timedV2(
       processJobs(env, DEFAULT_MODEL_BATCH),
-      50000,
+      43000,
       "analysis pass"
     );
   } catch (e) {
