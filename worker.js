@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.29-v2-fresh-first";
+const PACING_REVISION = "2026-09-29.30-v2-canonical-freshness";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4360,7 +4360,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
   await recoverCanonicalAnalysisV2(env);
   const queue = prepared || await syncFixtureJobsV19(env);
   const candidates = rankedJobsV19(queue.jobs);
-  const freshTomorrowBacklog = candidates.filter(j => !j.completed_at && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
+  const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
   const freshBaselineBacklog = adaptive.freshBaselineBacklog;
   const cycleLimit = adaptive.limit;
@@ -6177,7 +6177,7 @@ function batchLimitV19(value) {
 }
 
 function adaptiveBatchV30(candidates, requested = DEFAULT_MODEL_BATCH) {
-  const fresh = candidates.filter(j => !j.completed_at).length;
+  const fresh = candidates.filter(j => !j.canonicalComplete).length;
   const feedMinute = new Date().getUTCMinutes() % 5 === 0;
   // V34: clear a fresh model-version backlog faster without starving feed refreshes.
   // Normal minute: up to 3 fresh matches. Every fifth minute: up to 2.
@@ -6323,7 +6323,24 @@ async function syncFixtureJobsV19(env) {
   });
 
   await ensureAnalysisRowsV2(env, jobs);
-  return {jobs, summary};
+  const canonicalRows = await canonicalAnalysisRowsV2(
+    env,
+    jobs.map(j => Number(j.fixture_id))
+  );
+  const canonicalByFixture = new Map(
+    canonicalRows
+      .filter(r => r.model_version === MODEL_VERSION)
+      .map(r => [Number(r.fixture_id), r])
+  );
+  const annotatedJobs = jobs.map(j => {
+    const row = canonicalByFixture.get(Number(j.fixture_id));
+    return {
+      ...j,
+      canonicalComplete: row?.status === "COMPLETE",
+      canonicalStatus: row?.status || "PENDING"
+    };
+  });
+  return {jobs: annotatedJobs, summary};
 }
 
 function jobDueV19(job) {
@@ -6357,9 +6374,9 @@ function rankedJobsV19(jobs) {
     return tierBase + tomorrowPenalty + kickoffUrgency - Math.min(80, wait / 3);
   };
   candidates.sort((a,b) => rank(a) - rank(b) || Date.parse(a.kickoff_at) - Date.parse(b.kickoff_at));
-  const fresh = candidates.filter(j => !j.completed_at);
-  const live = candidates.filter(j => j.completed_at && LIVE_STATUSES.has(j.metadata?.fixture_status));
-  const repeat = candidates.filter(j => j.completed_at && !LIVE_STATUSES.has(j.metadata?.fixture_status));
+  const fresh = candidates.filter(j => !j.canonicalComplete);
+  const live = candidates.filter(j => j.canonicalComplete && LIVE_STATUSES.has(j.metadata?.fixture_status));
+  const repeat = candidates.filter(j => j.canonicalComplete && !LIVE_STATUSES.has(j.metadata?.fixture_status));
   const ordered = [];
   // V22 Cruise Control: after 8 PM, finish never-analyzed Tomorrow jobs
   // before spending provider calls on repeat/deep-enrichment refreshes.
