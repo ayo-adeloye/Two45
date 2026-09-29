@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.14-v18-fast-reanalysis";
+const PACING_REVISION = "2026-09-29.15-no-default-under45";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.8";
@@ -2797,15 +2797,17 @@ function manualForecast(
       analysis
     );
 
-  const chosen =
-    decision?.decision ===
-    "PICK"
-      ? decision
-      : strongest;
-
   const picked =
     decision?.decision ===
     "PICK";
+
+  // V1.8.1: a NO_BET decision must stay NO_BET in the UI.
+  // Keep the raw model leader as context only; never promote the
+  // highest-probability market (typically Under 4.5) into a visible pick.
+  const chosen =
+    picked
+      ? decision
+      : null;
 
   return {
     fixtureId:
@@ -2964,10 +2966,10 @@ function manualForecast(
       ),
 
       ...(
-        chosen &&
+        strongest &&
         !picked
           ? [
-              "Strongest independent model market shown separately from sportsbook value decision"
+              "No qualified pick. Raw model probabilities remain available in detailed analysis only."
             ]
           : []
       )
@@ -3148,24 +3150,18 @@ function forecastRowToClient(row) {
     row.selection !==
       "NO_BET";
 
+  // V1.8.1: never turn a stored NO_BET into a synthetic pick by
+  // displaying the mathematically safest model outcome.
   const market =
     storedPick
       ? row.market
-      : (
-          strongest?.market ||
-          row.market ||
-          "NO_BET"
-        );
+      : "NO_BET";
 
   const selection =
     displaySelectionV20(
       storedPick
         ? row.selection
-        : (
-            strongest?.selection ||
-            row.selection ||
-            "NO_BET"
-          )
+        : "NO_BET"
     );
 
   const probability =
@@ -3173,13 +3169,7 @@ function forecastRowToClient(row) {
       ? pctClient(
           row.probability
         )
-      : strongest
-        ? pctClient(
-            strongest.probability
-          )
-        : pctClient(
-            row.probability
-          );
+      : 0;
 
   return {
     fixtureId:
@@ -3219,11 +3209,17 @@ function forecastRowToClient(row) {
     fairOdds:
       storedPick
         ? row.fair_odds
-        : (
-            strongest?.fairOdds ??
-            row.fair_odds ??
-            null
-          ),
+        : null,
+
+    modelLeader:
+      !storedPick && strongest
+        ? {
+            market: strongest.market,
+            selection: displaySelectionV20(strongest.selection),
+            probability: pctClient(strongest.probability),
+            fairOdds: strongest.fairOdds ?? null
+          }
+        : null,
 
     sportsbookOdds:
       row.sportsbook_odds ??
