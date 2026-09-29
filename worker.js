@@ -1166,6 +1166,7 @@ function analyzeMatch(input) {
         cleanSheetRate: home.cleanSheetRate, failedToScoreRate: home.failedToScoreRate, sampleSize: home.sampleSize},
       away: {formPPG: away.formPointsPerGame, venuePPG: away.awayPointsPerGame, winRate: away.winRate,
         cleanSheetRate: away.cleanSheetRate, failedToScoreRate: away.failedToScoreRate, sampleSize: away.sampleSize},
+      marketProfile: {home: home.marketProfile || null, away: away.marketProfile || null},
       source: "API-Football team statistics + Two45 independent weighting"
     },
 
@@ -2190,6 +2191,88 @@ function summarizeRecentV211(fixtures, teamId) {
 }
 function summarizeH2HV211(fixtures, homeId, awayId) { const rows=fixtures.filter(f=>Number(f?.fixture?.timestamp||0)>0).sort((a,b)=>Number(b.fixture.timestamp)-Number(a.fixture.timestamp)).slice(0,5); let hw=0,aw=0,d=0,total=0,weight=0,homeScore=0; rows.forEach((f,i)=>{const hIsHome=Number(f.teams?.home?.id)===homeId,hg=Number(f.goals?.home),ag=Number(f.goals?.away);if(!Number.isFinite(hg)||!Number.isFinite(ag))return;const homeGoals=hIsHome?hg:ag,awayGoals=hIsHome?ag:hg,wt=Math.pow(0.65,i);weight+=wt;total+=homeGoals+awayGoals;if(homeGoals>awayGoals){hw++;homeScore+=wt}else if(homeGoals<awayGoals){aw++}else{d++;homeScore+=0.5*wt}}); const n=Math.max(1,hw+aw+d);return {matches:hw+aw+d,homeWins:hw,awayWins:aw,draws:d,avgGoals:total/n,recencyWeightedHomeShare:weight?homeScore/weight:0.5}; }
 
+
+function statValueV40(rows, teamId, label) {
+  const teamRow = arr(rows).find(r => Number(r?.team?.id) === Number(teamId));
+  const stats = arr(teamRow?.statistics);
+  const wanted = String(label || "").toLowerCase();
+  const hit = stats.find(s => String(s?.type || "").toLowerCase() === wanted);
+  const v = hit?.value;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const n = Number(v.replace("%","").trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function summarizeMarketProfileV40(samples, teamId) {
+  const valid = arr(samples).filter(x => x && x.stats);
+  const fields = [
+    ["cornersFor","Corner Kicks"],
+    ["shotsFor","Total Shots"],
+    ["shotsOnTargetFor","Shots on Goal"],
+    ["yellowCardsFor","Yellow Cards"],
+    ["redCardsFor","Red Cards"]
+  ];
+  const agg = {};
+  for (const [key] of fields) agg[key] = {sum:0, weight:0, count:0};
+
+  valid.forEach((sample,i) => {
+    const wt = Math.pow(0.82, i);
+    for (const [key,label] of fields) {
+      const v = statValueV40(sample.stats, teamId, label);
+      if (!Number.isFinite(v)) continue;
+      agg[key].sum += v * wt;
+      agg[key].weight += wt;
+      agg[key].count++;
+    }
+  });
+
+  const out = {matches: valid.length};
+  for (const [key] of fields) {
+    const a = agg[key];
+    out[key] = a.weight ? a.sum / a.weight : null;
+    out[key + "Sample"] = a.count;
+  }
+  return out;
+}
+
+async function recentMarketProfileV40(env, teamId, recentFixtures = [], cacheScope = "") {
+  const ids = arr(recentFixtures)
+    .filter(f => Number(f?.fixture?.id) > 0)
+    .sort((a,b) => Number(b?.fixture?.timestamp || 0) - Number(a?.fixture?.timestamp || 0))
+    .slice(0,6)
+    .map(f => Number(f.fixture.id));
+
+  if (!ids.length) return {matches:0, source:"none"};
+  const cacheKey = "market-profile:v40:" + teamId + ":" + cacheScope + ":" + ids.join("-");
+  const cached = await getFeedSnapshot(env, cacheKey).catch(() => null);
+  if (cached?.payload?.profile) return {...cached.payload.profile, source:"cache"};
+
+  const samples = [];
+  let newFetches = 0;
+  const maxNewFetchesPerPass = 1;
+  for (const fixtureId of ids) {
+    try {
+      const snapKey = "fixture-stats:" + fixtureId;
+      const snap = await getFeedSnapshot(env, snapKey).catch(() => null);
+      let stats = snap?.payload?.response || snap?.payload || null;
+      if (!stats && newFetches < maxNewFetchesPerPass) {
+        const r = await football(env, "/fixtures/statistics", {fixture: fixtureId});
+        stats = r?.response || [];
+        newFetches++;
+        await saveFeedSnapshot(env, snapKey, {response:stats}, 7*86400000).catch(() => null);
+      }
+      if (stats) samples.push({fixtureId, stats});
+    } catch (_) {}
+  }
+
+  const profile = summarizeMarketProfileV40(samples, teamId);
+  await saveFeedSnapshot(env, cacheKey, {profile}, 12*3600000).catch(() => null);
+  return {...profile, source:"api-football-recent-fixtures"};
+}
+
 async function optionalIntelligenceV21(env, job) {
   const fixtureId = Number(job.fixture_id);
   const major = priorityCompetitionV20(job.competition, job.provider_league_id);
@@ -2202,10 +2285,13 @@ async function optionalIntelligenceV21(env, job) {
   const ttl = hours <= 3 ? 2*3600000 : hours <= 18 ? 4*3600000 : 8*3600000;
   if (cached && age < ttl) return cached.payload || {source:"cache", enriched:false};
   const out = {source:"API-Football enrichment", enriched:true, fixtureId, generatedAt:new Date().toISOString()};
+  let homeRecentFixtures = [];
+  let awayRecentFixtures = [];
   // V21.1 recent-match + H2H context. Cached with the rest of this enrichment.
   try {
     const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.home_team_id, last: 8});
-    out.homeRecent = summarizeRecentV211(arr(recent.response), Number(job.home_team_id));
+    homeRecentFixtures = arr(recent.response);
+    out.homeRecent = summarizeRecentV211(homeRecentFixtures, Number(job.home_team_id));
     if (out.homeRecent.matches < 5) {
       const broad = await football(env, "/fixtures", {team: job.home_team_id, last: 8});
       const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.home_team_id));
@@ -2217,7 +2303,8 @@ async function optionalIntelligenceV21(env, job) {
   } catch(e) { out.homeRecentError = safeRefreshError(e); }
   try {
     const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.away_team_id, last: 8});
-    out.awayRecent = summarizeRecentV211(arr(recent.response), Number(job.away_team_id));
+    awayRecentFixtures = arr(recent.response);
+    out.awayRecent = summarizeRecentV211(awayRecentFixtures, Number(job.away_team_id));
     if (out.awayRecent.matches < 5) {
       const broad = await football(env, "/fixtures", {team: job.away_team_id, last: 8});
       const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.away_team_id));
@@ -2228,6 +2315,14 @@ async function optionalIntelligenceV21(env, job) {
     }
   } catch(e) { out.awayRecentError = safeRefreshError(e); }
   if (major || hours <= 18) { try { const pair = String(job.home_team_id)+"-"+String(job.away_team_id); const h2h = await football(env, "/fixtures/headtohead", {h2h: pair, last: 5}); out.h2h = summarizeH2HV211(arr(h2h.response), Number(job.home_team_id), Number(job.away_team_id)); } catch(e) { out.h2hError = safeRefreshError(e); } }
+
+  // V40 shadow market profiles. Cached and not yet used by the live selector.
+  try {
+    out.homeMarketProfile = await recentMarketProfileV40(env, Number(job.home_team_id), homeRecentFixtures, String(job.provider_league_id || ""));
+  } catch (e) { out.homeMarketProfileError = safeRefreshError(e); }
+  try {
+    out.awayMarketProfile = await recentMarketProfileV40(env, Number(job.away_team_id), awayRecentFixtures, String(job.provider_league_id || ""));
+  } catch (e) { out.awayMarketProfileError = safeRefreshError(e); }
 
   // One fixture-scoped injury call covers both teams. Lineups are most useful near kickoff.
   try {
@@ -2287,6 +2382,8 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   applyRecent(away, intel.awayRecent);
   home.recentMatchContext = intel.homeRecent || null;
   away.recentMatchContext = intel.awayRecent || null;
+  home.marketProfile = intel.homeMarketProfile || null;
+  away.marketProfile = intel.awayMarketProfile || null;
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
