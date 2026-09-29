@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.27-v2-lock-free-queue";
+const PACING_REVISION = "2026-09-29.28-v2-success-path-fix";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4269,8 +4269,6 @@ async function processOne(
     await saveLatestAnalysisV19(env, job, analysis, decision);
 
     await completeCanonicalAnalysisV2(env, job, clientForecast, analysis, decision);
-
-    await failCanonicalAnalysisV2(env, job, msg, rateLimited);
 
     await patchJob(
       env,
