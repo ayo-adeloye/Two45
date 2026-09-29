@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.32-v2-self-healing-watchdog";
+const WORKER_VERSION = 35;
+const PACING_REVISION = "2026-09-29.35-permanent-pipeline";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -1155,7 +1155,7 @@ function analyzeMatch(input) {
       MODEL_VERSION,
 
     coreUsesSportsbookOdds:
-      false,
+      true,
 
     homeTeam:
       input.homeTeam ||
@@ -1493,6 +1493,21 @@ function selectIndependent(
 
   const consensus = consensusCandidates(marketOdds);
   const watch = [];
+
+  // Analysis options are allowed without a sportsbook price; final picks are not forced.
+  for (const m of modeled) {
+    if (num(m.probability, 0) < 0.50) continue;
+    if (m.market === "TOTAL_GOALS" && String(m.selection) === "UNDER_4_5") continue;
+    const alreadyQualified = strong.some(x => x.market === m.market && x.selection === m.selection) ||
+      risky.some(x => x.market === m.market && x.selection === m.selection);
+    if (alreadyQualified) continue;
+    watch.push({
+      ...m, rawMarket: m.market, bookmaker: null, sportsbookOdds: null,
+      noVigMarketProbability: null, valueEdge: null, bookmakerCount: null,
+      dataQuality: analysis.dataQuality, competitionReliability: analysis.competitionReliability,
+      qualificationMode: "MODEL_WATCH", analysisSource: "independent-model-watch"
+    });
+  }
 
   for (const c of consensus) {
     if (
@@ -3089,7 +3104,10 @@ async function writeForecast(
     },
 
     probability_snapshot:
-      analysis.probabilities
+      analysis.probabilities,
+
+    created_at:
+      new Date().toISOString()
   };
 
   const {
@@ -3116,7 +3134,7 @@ async function writeForecast(
             "application/json",
 
           Prefer:
-            "resolution=ignore-duplicates,return=representation"
+            "resolution=merge-duplicates,return=representation"
         },
 
         body:
@@ -4480,7 +4498,7 @@ async function modelStatus(env) {
       MODEL_VERSION,
 
     coreUsesSportsbookOdds:
-      false,
+      true,
 
     forecastCount:
       forecasts,
@@ -6435,28 +6453,57 @@ async function oddsForJobV19(env, job) {
   const live = LIVE_STATUSES.has(job.metadata?.fixture_status);
   const key = live ? 'live-odds' : oddsKey(dateOfV19(job.kickoff_at));
   const row = await getFeedSnapshot(env, key);
-  if (!row || (live && Date.now() - Date.parse(row.refreshed_at) > 10 * 60000)) return {response: []};
-  if (live && !['1H','HT','2H','LIVE'].includes(job.metadata.fixture_status)) return {response: []};
-  if (!live) return row.payload || {response: []};
-  // odds/live is a separate provider format. Only unblocked, active prices
-  // with explicitly recognized full-match market names are used.
-  return {response: arr(row.payload?.response).filter(f =>
-    !f.status?.blocked && !f.status?.stopped && !f.status?.finished
-  ).map(f => {
-    if (Array.isArray(f.bookmakers)) return f;
-    const aliases = {'Match Winner': 'Match Winner', 'Fulltime Result': 'Match Winner',
-      'Match Goals': 'Goals Over/Under', 'Goals Over/Under': 'Goals Over/Under',
-      'Both Teams to Score': 'Both Teams Score', 'Both Teams Score': 'Both Teams Score',
-      'Double Chance': 'Double Chance'};
-    const bets = arr(f.odds).filter(b => aliases[b.name]).map(b => ({
-      name: aliases[b.name], values: arr(b.values).filter(v => !v.suspended && v.main !== false).map(v => ({
-        value: v.handicap != null && !/\d/.test(String(v.value))
-          ? `${v.value} ${v.handicap}` : v.value,
-        odd: v.odd
-      }))
-    }));
-    return {...f, bookmakers: [{name: 'API-Football Live', bets}]};
-  })};
+
+  if (live) {
+    if (!row || Date.now() - Date.parse(row.refreshed_at) > 10 * 60000) return {response: []};
+    if (!['1H','HT','2H','LIVE'].includes(job.metadata.fixture_status)) return {response: []};
+    return {response: arr(row.payload?.response).filter(f =>
+      !f.status?.blocked && !f.status?.stopped && !f.status?.finished
+    ).map(f => {
+      if (Array.isArray(f.bookmakers)) return f;
+      const aliases = {'Match Winner': 'Match Winner', 'Fulltime Result': 'Match Winner',
+        'Match Goals': 'Goals Over/Under', 'Goals Over/Under': 'Goals Over/Under',
+        'Both Teams to Score': 'Both Teams Score', 'Both Teams Score': 'Both Teams Score',
+        'Double Chance': 'Double Chance'};
+      const bets = arr(f.odds).filter(b => aliases[b.name]).map(b => ({
+        name: aliases[b.name], values: arr(b.values).filter(v => !v.suspended && v.main !== false).map(v => ({
+          value: v.handicap != null && !/\d/.test(String(v.value))
+            ? `${v.value} ${v.handicap}` : v.value,
+          odd: v.odd
+        }))
+      }));
+      return {...f, bookmakers: [{name: 'API-Football Live', bets}]};
+    })};
+  }
+
+  const snapshotPayload = row?.payload || {response: []};
+  if (oddsMarketsFromSnapshot(snapshotPayload, job.fixture_id).length) return snapshotPayload;
+
+  const directKey = `fixture-odds:${job.fixture_id}`;
+  const cached = await getFeedSnapshot(env, directKey).catch(() => null);
+  if (cached && Date.now() - Date.parse(cached.refreshed_at) < 30 * 60000) {
+    return cached.payload || snapshotPayload;
+  }
+
+  try {
+    const direct = await providerFetchV18(env, 'odds', {
+      fixture: String(job.fixture_id),
+      page: 1
+    });
+    const payload = {
+      ok: true,
+      service: 'two45-live-worker',
+      type: 'fixture-odds',
+      fixtureId: Number(job.fixture_id),
+      updatedAt: new Date().toISOString(),
+      response: arr(direct?.response).map(slimOddsRowV18)
+    };
+    await saveFeedSnapshot(env, directKey, payload, 1800);
+    return payload;
+  } catch (_) {
+    await saveFeedSnapshot(env, directKey, {response: []}, 600).catch(() => null);
+    return snapshotPayload;
+  }
 }
 
 async function refreshCarryoverV19(env) {
@@ -6732,7 +6779,7 @@ async function scheduledAnalysisV2(event, env) {
 
   try {
     result.model = await timedV2(
-      processJobs(env, 1),
+      processJobs(env, DEFAULT_MODEL_BATCH),
       50000,
       "analysis pass"
     );
