@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.30-v2-canonical-freshness";
+const PACING_REVISION = "2026-09-29.31-v2-bounded-heartbeat";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6670,6 +6670,93 @@ async function runCycleV19(event, env, force = false) {
 }
 
 
+
+async function timedV2(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + " timed out after " + ms + "ms")), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function scheduledAnalysisV2(event, env) {
+  const startedAt = new Date().toISOString();
+  const result = {
+    ok: true,
+    version: WORKER_VERSION,
+    pacingRevision: PACING_REVISION,
+    engine: "analysis-engine-v2",
+    cron: event?.cron || "* * * * *",
+    startedAt,
+    model: null,
+    maintenance: []
+  };
+
+  await saveFeedSnapshot(env, "cron-status", {
+    status: "running",
+    cron: result.cron,
+    startedAt,
+    heartbeatAt: startedAt,
+    result
+  }, 1800).catch(() => null);
+
+  try {
+    result.model = await timedV2(
+      processJobs(env, 1),
+      50000,
+      "analysis pass"
+    );
+  } catch (e) {
+    result.ok = false;
+    result.model = {
+      ok: false,
+      claimed: 0,
+      processed: 0,
+      error: safeRefreshError(e)
+    };
+  }
+
+  const modelCompletedAt = new Date().toISOString();
+  await saveFeedSnapshot(env, "cron-status", {
+    status: result.ok ? "analysis-complete" : "analysis-partial",
+    cron: result.cron,
+    startedAt,
+    completedAt: modelCompletedAt,
+    heartbeatAt: modelCompletedAt,
+    result
+  }, 1800).catch(() => null);
+
+  const minute = new Date().getUTCMinutes();
+
+  if (minute % 5 === 0) {
+    try {
+      result.maintenance.push(await timedV2(
+        refreshOneFeed(env, false),
+        22000,
+        "feed refresh"
+      ));
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"feed", error:safeRefreshError(e)});
+    }
+  }
+
+  if (minute % 10 === 0) {
+    try {
+      result.settled = await timedV2(settle(env), 10000, "settlement");
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"settlement", error:safeRefreshError(e)});
+    }
+  }
+
+  return result;
+}
+
 export default {
   async fetch(
     request,
@@ -7084,6 +7171,6 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runCycleV19(event, env));
+    ctx.waitUntil(scheduledAnalysisV2(event, env));
   }
 };
