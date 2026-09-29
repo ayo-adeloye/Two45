@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.22-provider-deadlock-fix";
+const PACING_REVISION = "2026-09-29.23-remove-stale-pipeline-lock";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6303,11 +6303,9 @@ async function runCycleV19(event, env, force = false) {
   // V20.1: operate 24/7. Overnight cycles stay paced by the same
   // one-minute scheduler, feed locks, provider budget reservation and
   // rate-limit backoff instead of shutting the pipeline down.
-  const token = crypto.randomUUID();
-  const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: 'v20-analysis-pipeline', p_lock_token: token, p_ttl_seconds: 75
-  });
-  if (!acquired) return {ok: true, skipped: true, reason: 'Another V19 cycle is running'};
+  // The database refresh-lock RPC used by the legacy scheduler can remain
+  // leased indefinitely in this project. The cron itself runs once per minute
+  // and each cycle is bounded, so do not gate the analysis pipeline on it.
   const startedAt = new Date().toISOString();
   const result = {ok: true, version: WORKER_VERSION, pacingRevision: PACING_REVISION, feeds: [], boards: [], errors: []};
   try {
@@ -6373,9 +6371,7 @@ async function runCycleV19(event, env, force = false) {
     }, 1800);
     return result;
   } finally {
-    await rpcRefresh(env, 'two45_release_refresh_lock', {
-      p_lock_key: 'v20-analysis-pipeline', p_lock_token: token
-    }).catch(() => null);
+    // Intentionally empty: cycle execution is bounded by per-stage deadlines.
   }
 }
 
