@@ -8,7 +8,7 @@ const WORKER_VERSION = 33;
 const PACING_REVISION = "2026-09-29.13-healthy-throughput";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
-const MODEL_VERSION = "two45-independent-v1.7";
+const MODEL_VERSION = "two45-independent-v1.8";
 const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
 
 const API_BASE = "https://v3.football.api-sports.io";
@@ -1382,14 +1382,39 @@ function selectIndependent(
 
   // V21 independent-conviction lane: sportsbook price is confirmation/value,
   // not a hard prerequisite. Prefer safer non-1X2 markets when model quality is high.
+  // V1.8: markets compete on usefulness + value, not just raw safety.
+  // Goal totals still qualify, but ultra-safe Under 4.5 no longer gets an
+  // automatic board advantage over handicap, corners or shot markets.
   const corePreference = market => ({
-    TOTAL_GOALS: 0.030,
-    DOUBLE_CHANCE: 0.025,
-    HOME_TEAM_GOALS: 0.020,
-    AWAY_TEAM_GOALS: 0.020,
+    DOUBLE_CHANCE: 0.020,
+    HANDICAP: 0.022,
+    TOTAL_CORNERS: 0.020,
+    CORNERS_HANDICAP: 0.018,
+    TOTAL_SHOTS: 0.018,
+    TOTAL_SHOTS_ON_TARGET: 0.022,
+    TOTAL_SHOTS_OFF_TARGET: 0.012,
+    HOME_PLAYER_SHOTS: 0.010,
+    AWAY_PLAYER_SHOTS: 0.010,
+    HOME_PLAYER_SHOTS_ON_TARGET: 0.012,
+    AWAY_PLAYER_SHOTS_ON_TARGET: 0.012,
+    TOTAL_GOALS: 0.008,
+    HOME_TEAM_GOALS: 0.010,
+    AWAY_TEAM_GOALS: 0.010,
     BTTS: 0.010,
-    MATCH_RESULT: -0.025
+    MATCH_RESULT: -0.020
   }[market] || 0);
+
+  const selectionAdjustment = x => {
+    const s = String(x?.selection || "");
+    // Under 4.5 is useful as a safety market, but its naturally high model
+    // probability should not dominate the main card at tiny/ordinary prices.
+    if (x?.market === "TOTAL_GOALS" && s === "UNDER_4_5") {
+      const priced = num(x?.sportsbookOdds, 0);
+      const edge = num(x?.valueEdge, 0);
+      return priced >= 1.45 && edge >= 0.035 ? -0.010 : -0.050;
+    }
+    return 0;
+  };
 
   for (const m of modeled) {
     if (!["TOTAL_GOALS","DOUBLE_CHANCE","HOME_TEAM_GOALS","AWAY_TEAM_GOALS","BTTS","MATCH_RESULT"].includes(m.market)) continue;
@@ -1504,12 +1529,23 @@ function selectIndependent(
   }
 
   const score =
-    x =>
-      x.probability * 0.62 +
-      clamp(num(x.dataQuality, analysis.dataQuality), 0, 1) * 0.16 +
-      clamp(num(x.competitionReliability, analysis.competitionReliability), 0, 1) * 0.12 +
-      Math.max(0, num(x.valueEdge, 0)) * 0.10 +
-      corePreference(x.market);
+    x => {
+      const odds = num(x.sportsbookOdds, 0);
+      const usablePrice =
+        odds > 1
+          ? clamp((odds - 1.15) / 1.35, 0, 1)
+          : 0;
+
+      return (
+        x.probability * 0.50 +
+        clamp(num(x.dataQuality, analysis.dataQuality), 0, 1) * 0.14 +
+        clamp(num(x.competitionReliability, analysis.competitionReliability), 0, 1) * 0.10 +
+        Math.max(0, num(x.valueEdge, 0)) * 0.16 +
+        usablePrice * 0.06 +
+        corePreference(x.market) +
+        selectionAdjustment(x)
+      );
+    };
 
   strong.sort(
     (
@@ -1529,61 +1565,39 @@ function selectIndependent(
       score(a)
   );
 
-  const topMarkets =
-    [
-      ...strong.slice(
-        0,
-        3
-      ),
+  // Keep the detailed analysis useful: prefer different market families
+  // before repeating multiple selections from the same family.
+  const rankedCandidates = [
+    ...strong.slice(0, 8),
+    ...risky.slice(0, 8)
+  ].sort((a, b) => score(b) - score(a));
 
-      ...risky.slice(
-        0,
-        3
-      )
-    ]
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          score(b) -
-          score(a)
-      )
-      .slice(
-        0,
-        3
-      )
-      .map(
-        x => ({
-          market:
-            x.market,
+  const diverseTop = [];
+  const seenMarkets = new Set();
+  for (const x of rankedCandidates) {
+    if (seenMarkets.has(x.market)) continue;
+    diverseTop.push(x);
+    seenMarkets.add(x.market);
+    if (diverseTop.length >= 3) break;
+  }
+  if (diverseTop.length < 3) {
+    for (const x of rankedCandidates) {
+      if (diverseTop.includes(x)) continue;
+      diverseTop.push(x);
+      if (diverseTop.length >= 3) break;
+    }
+  }
 
-          selection:
-            x.selection,
-
-          probability:
-            x.probability,
-
-          sportsbookOdds:
-            x.sportsbookOdds,
-
-          bookmaker:
-            x.bookmaker,
-
-          valueEdge:
-            x.valueEdge,
-
-          analysisSource:
-            x.analysisSource,
-
-          lane:
-            strong.includes(
-              x
-            )
-              ? "STRONG"
-              : "RISKY_VALUE"
-        })
-      );
+  const topMarkets = diverseTop.map(x => ({
+    market: x.market,
+    selection: x.selection,
+    probability: x.probability,
+    sportsbookOdds: x.sportsbookOdds,
+    bookmaker: x.bookmaker,
+    valueEdge: x.valueEdge,
+    analysisSource: x.analysisSource,
+    lane: strong.includes(x) ? "STRONG" : "RISKY_VALUE"
+  }));
 
   const b =
     strong[0] ||
@@ -4111,10 +4125,12 @@ async function modelStatus(env) {
       "goals",
       "btts",
       "corners",
+      "corner-handicap",
       "cards",
       "shots",
       "shots-on-target",
-      "shots-off-target"
+      "shots-off-target",
+      "player-shots"
     ]
   };
 }
