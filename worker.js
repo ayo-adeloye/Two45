@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 25;
-const PACING_REVISION = "2026-09-29.6-rate-telemetry";
+const WORKER_VERSION = 26;
+const PACING_REVISION = "2026-09-29.7-wait-fix";
 const PROVIDER_INTERVAL_MS = 22000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
@@ -4274,7 +4274,7 @@ async function providerFetchV18(env, path, params = {}) {
     if (blockedWait > 20000) throw new Error('API-Football rate limit cooldown is active');
     if (blockedWait) await new Promise(resolve => setTimeout(resolve, blockedWait));
     const wait = Math.max(0, num(pacing.nextAt) - Date.now());
-    if (wait > 20000) throw new Error('API-Football rate limit cooldown is active');
+    if (wait > 45000) throw new Error('API-Football rate limit cooldown is active');
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
     if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
     pacing = {...pacing, nextAt: Date.now() + PROVIDER_INTERVAL_MS};
@@ -4408,14 +4408,14 @@ async function providerFetchReservedV18(
   const minuteLimit = Number(response.headers.get("x-ratelimit-limit") ?? NaN);
   const minuteRemaining = Number(response.headers.get("x-ratelimit-remaining") ?? NaN);
   const dailyLimit = Number(response.headers.get("x-ratelimit-requests-limit") ?? NaN);
-  pacing = {...pacing,
+  Object.assign(pacing, {
     providerMinuteLimit: Number.isFinite(minuteLimit) ? minuteLimit : null,
     providerMinuteRemaining: Number.isFinite(minuteRemaining) ? minuteRemaining : null,
     providerDailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
     providerDailyRemaining: Number.isFinite(remaining) ? remaining : null,
     lastProviderStatus: response.status,
     lastProviderAt: new Date().toISOString()
-  };
+  });
   await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
   const retryAfter = response.headers.get('retry-after');
   const retryAt = Number.isFinite(Number(retryAfter))
