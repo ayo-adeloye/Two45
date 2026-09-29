@@ -5,10 +5,10 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.16-normalize-cached-no-bet";
+const PACING_REVISION = "2026-09-29.17-v19-international-market-depth";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
-const MODEL_VERSION = "two45-independent-v1.8";
+const MODEL_VERSION = "two45-independent-v1.9";
 const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
 
 const API_BASE = "https://v3.football.api-sports.io";
@@ -923,6 +923,17 @@ function probabilities(
       NO: 0
     },
 
+    HANDICAP: {
+      HOME_MINUS_0_5: 0,
+      HOME_PLUS_0_5: 0,
+      AWAY_MINUS_0_5: 0,
+      AWAY_PLUS_0_5: 0,
+      HOME_MINUS_1_5: 0,
+      HOME_PLUS_1_5: 0,
+      AWAY_MINUS_1_5: 0,
+      AWAY_PLUS_1_5: 0
+    },
+
     HOME_TEAM_GOALS: {
       OVER_0_5: 0,
       OVER_1_5: 0
@@ -990,6 +1001,16 @@ function probabilities(
     } else {
       out.MATCH_RESULT.AWAY += p;
     }
+
+    const diff = h - a;
+    if (diff >= 1) out.HANDICAP.HOME_MINUS_0_5 += p;
+    if (diff >= 0) out.HANDICAP.HOME_PLUS_0_5 += p;
+    if (diff <= -1) out.HANDICAP.AWAY_MINUS_0_5 += p;
+    if (diff <= 0) out.HANDICAP.AWAY_PLUS_0_5 += p;
+    if (diff >= 2) out.HANDICAP.HOME_MINUS_1_5 += p;
+    if (diff >= -1) out.HANDICAP.HOME_PLUS_1_5 += p;
+    if (diff <= -2) out.HANDICAP.AWAY_MINUS_1_5 += p;
+    if (diff <= 1) out.HANDICAP.AWAY_PLUS_1_5 += p;
 
     if (g > 1) {
       out.TOTAL_GOALS.OVER_1_5 += p;
@@ -1427,8 +1448,9 @@ function selectIndependent(
   };
 
   for (const m of modeled) {
-    if (!["TOTAL_GOALS","DOUBLE_CHANCE","HOME_TEAM_GOALS","AWAY_TEAM_GOALS","BTTS","MATCH_RESULT"].includes(m.market)) continue;
+    if (!["TOTAL_GOALS","DOUBLE_CHANCE","HANDICAP","HOME_TEAM_GOALS","AWAY_TEAM_GOALS","BTTS","MATCH_RESULT"].includes(m.market)) continue;
     const floor = m.market === "MATCH_RESULT" ? 0.76 :
+      m.market === "HANDICAP" ? 0.70 :
       m.market === "BTTS" ? 0.73 :
       m.selection === "UNDER_4_5" ? 0.80 : 0.72;
     const qualityGate = analysis.competitionReliability >= 0.86 ? 0.66 : 0.70;
@@ -1469,12 +1491,26 @@ function selectIndependent(
    * no-vig consensus.
    */
 
-  for (
-    const c
-    of consensusCandidates(
-      marketOdds
-    )
-  ) {
+  const consensus = consensusCandidates(marketOdds);
+  const watch = [];
+
+  for (const c of consensus) {
+    if (
+      c.probability >= 0.50 &&
+      c.sportsbookOdds > 1
+    ) {
+      watch.push({
+        ...c,
+        dataQuality: analysis.dataQuality,
+        competitionReliability: analysis.competitionReliability,
+        qualificationMode: "MARKET_WATCH",
+        analysisSource: c.bookmakerCount >= 2
+          ? "cross-book-market-watch"
+          : "single-book-market-watch"
+      });
+    }
+
+
     if (
       [
         "MATCH_RESULT",
@@ -1575,26 +1611,37 @@ function selectIndependent(
       score(a)
   );
 
-  // Keep the detailed analysis useful: prefer different market families
-  // before repeating multiple selections from the same family.
+  // Detailed analysis should stay useful even when nothing clears the final bet gate.
+  // Qualified picks rank first; then market-watch options fill out other families.
   const rankedCandidates = [
-    ...strong.slice(0, 8),
-    ...risky.slice(0, 8)
-  ].sort((a, b) => score(b) - score(a));
+    ...strong.slice(0, 12),
+    ...risky.slice(0, 12),
+    ...watch.sort((a,b) => score(b) - score(a)).slice(0, 20)
+  ].sort((a, b) => {
+    const qa = strong.includes(a) ? 2 : risky.includes(a) ? 1 : 0;
+    const qb = strong.includes(b) ? 2 : risky.includes(b) ? 1 : 0;
+    return qb - qa || score(b) - score(a);
+  });
 
   const diverseTop = [];
   const seenMarkets = new Set();
   for (const x of rankedCandidates) {
+    // Never let Under 4.5 consume a watch slot when other families exist.
+    if (
+      x.market === "TOTAL_GOALS" &&
+      String(x.selection) === "UNDER_4_5" &&
+      rankedCandidates.some(y => y.market !== "TOTAL_GOALS")
+    ) continue;
     if (seenMarkets.has(x.market)) continue;
     diverseTop.push(x);
     seenMarkets.add(x.market);
-    if (diverseTop.length >= 3) break;
+    if (diverseTop.length >= 8) break;
   }
-  if (diverseTop.length < 3) {
+  if (diverseTop.length < 8) {
     for (const x of rankedCandidates) {
       if (diverseTop.includes(x)) continue;
       diverseTop.push(x);
-      if (diverseTop.length >= 3) break;
+      if (diverseTop.length >= 8) break;
     }
   }
 
@@ -1604,9 +1651,14 @@ function selectIndependent(
     probability: x.probability,
     sportsbookOdds: x.sportsbookOdds,
     bookmaker: x.bookmaker,
+    bookmakerCount: x.bookmakerCount ?? null,
     valueEdge: x.valueEdge,
     analysisSource: x.analysisSource,
-    lane: strong.includes(x) ? "STRONG" : "RISKY_VALUE"
+    lane: strong.includes(x)
+      ? "STRONG"
+      : risky.includes(x)
+        ? "RISKY_VALUE"
+        : "WATCH"
   }));
 
   const b =
@@ -1619,9 +1671,9 @@ function selectIndependent(
         "NO_BET",
 
       reason:
-        "No market passed Two45 probability, value and data-quality gates",
+        "No market passed the final Two45 bet gate, but alternative market signals are shown for analysis.",
 
-      topMarkets: []
+      topMarkets
     };
   }
 
@@ -1874,7 +1926,34 @@ function toFeatures(stats) {
   };
 }
 
-function summarizeRecentV211(fixtures, teamId) { const rows=fixtures.filter(f=>Number(f?.fixture?.timestamp||0)>0).sort((a,b)=>Number(b.fixture.timestamp)-Number(a.fixture.timestamp)).slice(0,5); let w=0,d=0,l=0,gf=0,ga=0,btts=0,over25=0,weight=0,weightedPPG=0; rows.forEach((f,i)=>{const home=Number(f.teams?.home?.id)===teamId,a=Number(home?f.goals?.home:f.goals?.away),b=Number(home?f.goals?.away:f.goals?.home);if(!Number.isFinite(a)||!Number.isFinite(b))return;const wt=Math.pow(0.82,i);weight+=wt;gf+=a;ga+=b;if(a>b){w++;weightedPPG+=3*wt}else if(a===b){d++;weightedPPG+=wt}else l++;if(a>0&&b>0)btts++;if(a+b>=3)over25++;}); const n=Math.max(1,w+d+l);return {matches:w+d+l,wins:w,draws:d,losses:l,goalsForAvg:gf/n,goalsAgainstAvg:ga/n,bttsRate:btts/n,over25Rate:over25/n,recencyWeightedPPG:weight?weightedPPG/weight:1.5}; }
+function summarizeRecentV211(fixtures, teamId) {
+  const rows = fixtures
+    .filter(f => Number(f?.fixture?.timestamp || 0) > 0)
+    .sort((a,b) => Number(b.fixture.timestamp) - Number(a.fixture.timestamp))
+    .slice(0,8);
+  let w=0,d=0,l=0,gf=0,ga=0,btts=0,over25=0,clean=0,failed=0,weight=0,weightedPPG=0;
+  rows.forEach((f,i)=>{
+    const home=Number(f.teams?.home?.id)===teamId;
+    const a=Number(home?f.goals?.home:f.goals?.away);
+    const b=Number(home?f.goals?.away:f.goals?.home);
+    if(!Number.isFinite(a)||!Number.isFinite(b))return;
+    const wt=Math.pow(0.82,i);
+    weight+=wt; gf+=a; ga+=b;
+    if(a>b){w++;weightedPPG+=3*wt}else if(a===b){d++;weightedPPG+=wt}else l++;
+    if(a>0&&b>0)btts++;
+    if(a+b>=3)over25++;
+    if(b===0)clean++;
+    if(a===0)failed++;
+  });
+  const n=Math.max(1,w+d+l);
+  return {
+    matches:w+d+l,wins:w,draws:d,losses:l,
+    goalsForAvg:gf/n,goalsAgainstAvg:ga/n,
+    bttsRate:btts/n,over25Rate:over25/n,
+    cleanSheetRate:clean/n,failedToScoreRate:failed/n,
+    recencyWeightedPPG:weight?weightedPPG/weight:1.5
+  };
+}
 function summarizeH2HV211(fixtures, homeId, awayId) { const rows=fixtures.filter(f=>Number(f?.fixture?.timestamp||0)>0).sort((a,b)=>Number(b.fixture.timestamp)-Number(a.fixture.timestamp)).slice(0,5); let hw=0,aw=0,d=0,total=0,weight=0,homeScore=0; rows.forEach((f,i)=>{const hIsHome=Number(f.teams?.home?.id)===homeId,hg=Number(f.goals?.home),ag=Number(f.goals?.away);if(!Number.isFinite(hg)||!Number.isFinite(ag))return;const homeGoals=hIsHome?hg:ag,awayGoals=hIsHome?ag:hg,wt=Math.pow(0.65,i);weight+=wt;total+=homeGoals+awayGoals;if(homeGoals>awayGoals){hw++;homeScore+=wt}else if(homeGoals<awayGoals){aw++}else{d++;homeScore+=0.5*wt}}); const n=Math.max(1,hw+aw+d);return {matches:hw+aw+d,homeWins:hw,awayWins:aw,draws:d,avgGoals:total/n,recencyWeightedHomeShare:weight?homeScore/weight:0.5}; }
 
 async function optionalIntelligenceV21(env, job) {
@@ -1890,8 +1969,30 @@ async function optionalIntelligenceV21(env, job) {
   if (cached && age < ttl) return cached.payload || {source:"cache", enriched:false};
   const out = {source:"API-Football enrichment", enriched:true, fixtureId, generatedAt:new Date().toISOString()};
   // V21.1 recent-match + H2H context. Cached with the rest of this enrichment.
-  try { const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.home_team_id, last: 5}); out.homeRecent = summarizeRecentV211(arr(recent.response), Number(job.home_team_id)); } catch(e) { out.homeRecentError = safeRefreshError(e); }
-  try { const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.away_team_id, last: 5}); out.awayRecent = summarizeRecentV211(arr(recent.response), Number(job.away_team_id)); } catch(e) { out.awayRecentError = safeRefreshError(e); }
+  try {
+    const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.home_team_id, last: 8});
+    out.homeRecent = summarizeRecentV211(arr(recent.response), Number(job.home_team_id));
+    if (out.homeRecent.matches < 5) {
+      const broad = await football(env, "/fixtures", {team: job.home_team_id, last: 8});
+      const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.home_team_id));
+      if (broadSummary.matches > out.homeRecent.matches) {
+        out.homeRecent = broadSummary;
+        out.homeRecentSource = "all-competitions";
+      }
+    }
+  } catch(e) { out.homeRecentError = safeRefreshError(e); }
+  try {
+    const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.away_team_id, last: 8});
+    out.awayRecent = summarizeRecentV211(arr(recent.response), Number(job.away_team_id));
+    if (out.awayRecent.matches < 5) {
+      const broad = await football(env, "/fixtures", {team: job.away_team_id, last: 8});
+      const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.away_team_id));
+      if (broadSummary.matches > out.awayRecent.matches) {
+        out.awayRecent = broadSummary;
+        out.awayRecentSource = "all-competitions";
+      }
+    }
+  } catch(e) { out.awayRecentError = safeRefreshError(e); }
   if (major || hours <= 18) { try { const pair = String(job.home_team_id)+"-"+String(job.away_team_id); const h2h = await football(env, "/fixtures/headtohead", {h2h: pair, last: 5}); out.h2h = summarizeH2HV211(arr(h2h.response), Number(job.home_team_id), Number(job.away_team_id)); } catch(e) { out.h2hError = safeRefreshError(e); } }
 
   // One fixture-scoped injury call covers both teams. Lineups are most useful near kickoff.
@@ -1925,9 +2026,33 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   away.lineupCertainty = confirmed ? 0.95 : 0.72;
   home.availability = {reportedAbsences:h,lineupConfirmed:confirmed};
   away.availability = {reportedAbsences:a,lineupConfirmed:confirmed};
-  if (intel.homeRecent?.matches >= 3) home.formPointsPerGame = clamp(num(home.formPointsPerGame,1.5)*0.55 + num(intel.homeRecent.recencyWeightedPPG,1.5)*0.45,0,3);
-  if (intel.awayRecent?.matches >= 3) away.formPointsPerGame = clamp(num(away.formPointsPerGame,1.5)*0.55 + num(intel.awayRecent.recencyWeightedPPG,1.5)*0.45,0,3);
-  home.recentMatchContext = intel.homeRecent || null; away.recentMatchContext = intel.awayRecent || null;
+  const applyRecent = (team, recent) => {
+    if (!recent || recent.matches < 3) return;
+    const sparse = num(team.sampleSize,0) < 5;
+    team.formPointsPerGame = sparse
+      ? clamp(num(recent.recencyWeightedPPG,1.5),0,3)
+      : clamp(num(team.formPointsPerGame,1.5)*0.55 + num(recent.recencyWeightedPPG,1.5)*0.45,0,3);
+    if (sparse) {
+      team.sampleSize = Math.max(num(team.sampleSize,0), num(recent.matches,0));
+      team.goalsForAvg = num(recent.goalsForAvg, team.goalsForAvg);
+      team.goalsAgainstAvg = num(recent.goalsAgainstAvg, team.goalsAgainstAvg);
+      team.homeGoalsForAvg = team.goalsForAvg;
+      team.homeGoalsAgainstAvg = team.goalsAgainstAvg;
+      team.awayGoalsForAvg = team.goalsForAvg;
+      team.awayGoalsAgainstAvg = team.goalsAgainstAvg;
+      team.homePointsPerGame = team.formPointsPerGame;
+      team.awayPointsPerGame = team.formPointsPerGame;
+      team.winRate = recent.matches ? num(recent.wins,0)/recent.matches : team.winRate;
+      team.drawRate = recent.matches ? num(recent.draws,0)/recent.matches : team.drawRate;
+      team.lossRate = recent.matches ? num(recent.losses,0)/recent.matches : team.lossRate;
+      team.cleanSheetRate = num(recent.cleanSheetRate, team.cleanSheetRate);
+      team.failedToScoreRate = num(recent.failedToScoreRate, team.failedToScoreRate);
+    }
+  };
+  applyRecent(home, intel.homeRecent);
+  applyRecent(away, intel.awayRecent);
+  home.recentMatchContext = intel.homeRecent || null;
+  away.recentMatchContext = intel.awayRecent || null;
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
