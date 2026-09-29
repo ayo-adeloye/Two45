@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.18-picks-with-options-ux";
+const PACING_REVISION = "2026-09-29.19-real-options-no-u45-default";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -1661,8 +1661,17 @@ function selectIndependent(
         : "WATCH"
   }));
 
+  const nonU45Strong = strong.find(x =>
+    !(x.market === "TOTAL_GOALS" && String(x.selection) === "UNDER_4_5")
+  );
+  const nonU45Risky = risky.find(x =>
+    !(x.market === "TOTAL_GOALS" && String(x.selection) === "UNDER_4_5")
+  );
+
   const b =
+    nonU45Strong ||
     strong[0] ||
+    nonU45Risky ||
     risky[0];
 
   if (!b) {
@@ -3282,6 +3291,7 @@ function forecastRowToClient(row) {
 
   let strongest =
     null;
+  let snapshotOptions = [];
 
   try {
     const flat =
@@ -3299,6 +3309,27 @@ function forecastRowToClient(row) {
     strongest =
       flat[0] ||
       null;
+
+    const preferred = flat
+      .filter(x => num(x.probability, 0) >= 0.50)
+      .filter(x => !(x.market === "TOTAL_GOALS" && String(x.selection) === "UNDER_4_5"))
+      .sort((a, b) => num(b.probability, 0) - num(a.probability, 0));
+
+    const seen = new Set();
+    for (const x of preferred) {
+      if (seen.has(x.market)) continue;
+      snapshotOptions.push({
+        ...x,
+        lane: "WATCH",
+        sportsbookOdds: null,
+        bookmaker: null,
+        bookmakerCount: null,
+        valueEdge: null,
+        analysisSource: "saved-model-snapshot"
+      });
+      seen.add(x.market);
+      if (snapshotOptions.length >= 6) break;
+    }
   } catch (_) {}
 
   const storedPick =
@@ -3433,7 +3464,10 @@ function forecastRowToClient(row) {
 
     alternatives:
       displayAlternativesV20(
-        row?.feature_snapshot?.topMarkets
+        Array.isArray(row?.feature_snapshot?.topMarkets) &&
+        row.feature_snapshot.topMarkets.length
+          ? row.feature_snapshot.topMarkets
+          : snapshotOptions
       ),
 
     modelConfidence:
