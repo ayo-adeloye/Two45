@@ -4,9 +4,9 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 29;
-const PACING_REVISION = "2026-09-29.9-24h-cruise";
-const PROVIDER_INTERVAL_MS = 22000;
+const WORKER_VERSION = 33;
+const PACING_REVISION = "2026-09-29.13-healthy-throughput";
+const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
 const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
@@ -15,9 +15,11 @@ const API_BASE = "https://v3.football.api-sports.io";
 const TIME_ZONE = "America/New_York";
 const HARD_CAP = 7000;
 const MAX_ODDS_PAGES = 15;
-const DEFAULT_MODEL_BATCH = 1;
+const DEFAULT_MODEL_BATCH = 2;
 const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
+const TARGET_DAILY_REQUESTS = 6000;
+const FAST_BASELINE_INTERVAL_MS = 7000;
 
 const LIVE_STATUSES = new Set([
   "1H",
@@ -199,9 +201,25 @@ function shouldPreloadTomorrow() {
 }
 
 function providerQuietWindow() {
-  // V29: Two45 runs provider work 24/7. Rate pacing and daily caps
-  // control usage instead of a midnight-to-5AM shutdown.
+  // V30: provider work runs 24/7; pacing and caps control usage.
   return false;
+}
+
+function msUntilProviderResetV30() {
+  const now = new Date();
+  const nextReset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(60000, nextReset - now.getTime());
+}
+
+function adaptiveProviderIntervalV30(pacing = {}) {
+  const used = Math.max(0, num(pacing.used));
+  if (used >= PRACTICAL_DAILY_CAP) return 60000;
+  // Fresh-baseline mode is cadence-limited to about 4.2 calls/minute,
+  // so a 7-second intra-cycle gap completes two matches inside one cron event.
+  if (pacing.fastBaselineMode) return FAST_BASELINE_INTERVAL_MS;
+  const targetRemaining = Math.max(1, TARGET_DAILY_REQUESTS - used);
+  const ideal = Math.round(msUntilProviderResetV30() / targetRemaining);
+  return Math.trunc(clamp(ideal, 12000, 22000));
 }
 
 function easternWeekday() {
@@ -1676,7 +1694,7 @@ async function requeueStale(env) {
       body:
         JSON.stringify({
           p_stale_minutes:
-            20
+            5
         })
     }
   );
@@ -3939,16 +3957,24 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
   const queue = prepared || await syncFixtureJobsV19(env);
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.completed_at && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
+  const adaptive = adaptiveBatchV30(candidates, limit);
+  const freshBaselineBacklog = adaptive.freshBaselineBacklog;
+  const cycleLimit = adaptive.limit;
   const pacing = (await getFeedSnapshot(env, 'api-football-pacing').catch(() => null))?.payload || {};
+  const fastBaselineMode = freshBaselineBacklog > 0;
+  if (Boolean(pacing.fastBaselineMode) !== fastBaselineMode) {
+    pacing.fastBaselineMode = fastBaselineMode;
+    await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
+  }
   const cooldownWait = Math.max(0, num(pacing.blockedUntil) - Date.now());
   if (cooldownWait > 20000) {
-    return {ok:true, skipped:true, cooldownActive:true, retryAt:num(pacing.blockedUntil), reason:'Provider cooldown', claimed:0, processed:0, freshTomorrowBacklog, queue:queue.summary, results:[]};
+    return {ok:true, skipped:true, cooldownActive:true, retryAt:num(pacing.blockedUntil), reason:'Provider cooldown', claimed:0, processed:0, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue:queue.summary, results:[]};
   }
   const results = [];
-  const deadline = Date.now() + 100000;
+  const deadline = Date.now() + (freshBaselineBacklog > 0 ? 28000 : 25000);
   let claimed = 0;
   for (const candidate of candidates) {
-    if (claimed >= batchLimitV19(limit) || Date.now() >= deadline) break;
+    if (claimed >= cycleLimit || Date.now() >= deadline) break;
     // READY jobs become pending only when due. Do not reset failed-job backoff.
     let job = candidate;
     if (job.status === 'READY') {
@@ -3968,7 +3994,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     if (result.rateLimited) break; // Stop before consuming further budget/failed attempts.
   }
   return {ok: results.every(x => x.status === 'READY'), claimed,
-    processed: results.length, freshTomorrowBacklog, queue: queue.summary, results};
+    processed: results.length, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue: queue.summary, results};
 }
 
 async function settle(env) {
@@ -4062,7 +4088,7 @@ async function modelStatus(env) {
       ready,
 
     pacingRevision: PACING_REVISION,
-    providerPacing: {intervalMs: PROVIDER_INTERVAL_MS, practicalDailyCap: PRACTICAL_DAILY_CAP, hardCap: HARD_CAP, state: (await getFeedSnapshot(env, "api-football-pacing"))?.payload || null},
+    providerPacing: {minIntervalMs: FAST_BASELINE_INTERVAL_MS, maxIntervalMs: 22000, targetDailyRequests: TARGET_DAILY_REQUESTS, practicalDailyCap: PRACTICAL_DAILY_CAP, hardCap: HARD_CAP, state: (await getFeedSnapshot(env, "api-football-pacing"))?.payload || null, currentIntervalMs: adaptiveProviderIntervalV30((await getFeedSnapshot(env, "api-football-pacing"))?.payload || {})},
     modelBatch: batchLimitV19(env.TWO45_MODEL_BATCH),
     pipeline: (await getFeedSnapshot(env, "cron-status").catch(() => null))?.payload || null,
 
@@ -4278,10 +4304,10 @@ async function providerFetchV18(env, path, params = {}) {
     if (wait > 45000) throw new Error('API-Football rate limit cooldown is active');
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
     if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
-    pacing = {...pacing, nextAt: Date.now() + PROVIDER_INTERVAL_MS};
+    pacing = {...pacing, nextAt: Date.now() + adaptiveProviderIntervalV30(pacing)};
     await saveFeedSnapshot(env, lockKey, pacing, 172800);
     const payload = await providerFetchReservedV18(env, path, params, pacing, leaseDeadline);
-    await saveFeedSnapshot(env, lockKey, {...pacing, nextAt: Date.now() + PROVIDER_INTERVAL_MS}, 172800);
+    await saveFeedSnapshot(env, lockKey, {...pacing, nextAt: Date.now() + adaptiveProviderIntervalV30(pacing)}, 172800);
     return payload;
   } catch (error) {
     if (pacing && /Too many requests|HTTP 429|exceeded.*minute/i.test(safeRefreshError(error))) {
@@ -4357,7 +4383,7 @@ async function providerFetchReservedV18(
     await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
     throw new Error('Two45 practical daily cap of 6500 reached.');
   }
-  pacing.nextAt = Date.now() + PROVIDER_INTERVAL_MS;
+  pacing.nextAt = Date.now() + adaptiveProviderIntervalV30(pacing);
   await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
   if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
 
@@ -5746,7 +5772,15 @@ function groupMarketLinesV19(groups) {
 }
 
 function batchLimitV19(value) {
-  return Math.trunc(clamp(num(value, DEFAULT_MODEL_BATCH), 1, 8));
+  return Math.trunc(clamp(num(value, DEFAULT_MODEL_BATCH), 1, 9));
+}
+
+function adaptiveBatchV30(candidates, requested = DEFAULT_MODEL_BATCH) {
+  const fresh = candidates.filter(j => !j.completed_at).length;
+  const feedMinute = new Date().getUTCMinutes() % 5 === 0;
+  // Normal minute: 2 fresh matches. Every fifth minute: 1 fresh match
+  // leaves room for one feed refresh while staying under cron wall time.
+  return {freshBaselineBacklog: fresh, limit: fresh > 0 ? (feedMinute ? 1 : 2) : 1};
 }
 
 function dateOfV19(value) {
@@ -6066,7 +6100,7 @@ async function runCycleV19(event, env, force = false) {
   // rate-limit backoff instead of shutting the pipeline down.
   const token = crypto.randomUUID();
   const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: 'v19-pipeline', p_lock_token: token, p_ttl_seconds: 90
+    p_lock_key: 'v19-pipeline', p_lock_token: token, p_ttl_seconds: 75
   });
   if (!acquired) return {ok: true, skipped: true, reason: 'Another V19 cycle is running'};
   const startedAt = new Date().toISOString();
@@ -6074,7 +6108,7 @@ async function runCycleV19(event, env, force = false) {
   try {
     // V22 Cruise Control: after 8 PM, model work gets first use of
     // the pacing window so Tomorrow cannot remain stuck at zero.
-    const modelFirst = shouldPreloadTomorrow();
+    const modelFirst = true;
     if (modelFirst) {
       try {
         result.model = await processJobs(env, batchLimitV19(env.TWO45_MODEL_BATCH));
@@ -6082,10 +6116,12 @@ async function runCycleV19(event, env, force = false) {
       } catch (e) { result.errors.push({stage: 'model', error: safeRefreshError(e)}); }
     }
 
-    const clearingTomorrow = modelFirst && num(result.model?.freshTomorrowBacklog) > 0;
+    const clearingFresh = modelFirst && num(result.model?.freshBaselineBacklog) > 0;
+    const feedMinute = new Date().getUTCMinutes();
+    const refreshFeedThisCycle = !clearingFresh || feedMinute % 5 === 0;
     const providerCooling = Boolean(result.model?.cooldownActive);
-    if (clearingTomorrow || providerCooling) {
-      result.feeds.push({ok:true, skipped:true, reason: providerCooling ? 'Provider cooldown: model retry has priority' : 'Tomorrow baseline backlog has priority'});
+    if (providerCooling || !refreshFeedThisCycle) {
+      result.feeds.push({ok:true, skipped:true, reason: providerCooling ? 'Provider cooldown: model retry has priority' : 'Fresh baseline backlog: feed refresh runs every 5 minutes'});
     } else {
       for (let i = 0; i < 1; i++) {
         try {
@@ -6108,10 +6144,15 @@ async function runCycleV19(event, env, force = false) {
       } catch (e) { result.errors.push({stage: 'model', error: safeRefreshError(e)}); }
     }
 
-    // Publish boards after processing so fresh forecasts show this same cycle.
-    for (const date of activeDatesV19().slice().sort((a, b) => Number(b === tomorrowEasternDate()) - Number(a === tomorrowEasternDate()))) {
-      try { result.boards.push(await evaluateBoardV19(env, date)); }
-      catch (e) { result.errors.push({stage: 'board', date, error: safeRefreshError(e)}); }
+    // Forecast inserts already refresh the model board through the Supabase trigger.
+    // Skip the heavier full evaluator while clearing fresh baselines.
+    if (clearingFresh) {
+      result.boards.push({ok:true, skipped:true, reason:'Dynamic forecast trigger keeps board current during baseline clearing'});
+    } else {
+      for (const date of activeDatesV19().slice().sort((a, b) => Number(b === tomorrowEasternDate()) - Number(a === tomorrowEasternDate()))) {
+        try { result.boards.push(await evaluateBoardV19(env, date)); }
+        catch (e) { result.errors.push({stage: 'board', date, error: safeRefreshError(e)}); }
+      }
     }
     // Settlement is independent of model success and still sweeps stored finished fixtures.
     try { result.settled = await settle(env); }
@@ -6233,7 +6274,7 @@ export default {
                   env.TWO45_MODEL_BATCH,
                   DEFAULT_MODEL_BATCH
                 ),
-                8
+                9
               )
             )
         });
