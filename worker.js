@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.26-v2-fast-first-pass";
+const PACING_REVISION = "2026-09-29.27-v2-lock-free-queue";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6274,50 +6274,58 @@ function jobFromFixtureV19(f, date, now) {
 }
 
 async function syncFixtureJobsV19(env) {
-  const token = crypto.randomUUID();
-  const locked = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: 'v19-fixture-queue', p_lock_token: token, p_ttl_seconds: 180
-  });
-  if (!locked) return {jobs: [], summary: {skipped: true, reason: 'Queue sync is already running'}};
-  try {
-    const wanted = [];
-    const summary = {eligible: 0, inserted: 0, existing: 0, excluded: 0, dates: []};
-    const now = new Date().toISOString();
-    for (const date of activeDatesV19()) {
-      const snapshot = await fixtureSnapshotV19(env, date);
-      summary.dates.push({date, fixtures: snapshot.fixtures.length});
-      for (const fixture of snapshot.fixtures) {
-        if (eligibleFixtureV19(fixture, date)) wanted.push(jobFromFixtureV19(fixture, date, now));
-        else summary.excluded++;
-      }
+  // V2: queue synchronization is intentionally lock-free and idempotent.
+  // Unique job_key + compare-and-set claiming prevent duplicate processing,
+  // while overlapping cron runs can no longer freeze the whole queue.
+  const wanted = [];
+  const summary = {eligible: 0, inserted: 0, existing: 0, excluded: 0, dates: []};
+  const now = new Date().toISOString();
+
+  for (const date of activeDatesV19()) {
+    const snapshot = await fixtureSnapshotV19(env, date);
+    summary.dates.push({date, fixtures: snapshot.fixtures.length});
+    for (const fixture of snapshot.fixtures) {
+      if (eligibleFixtureV19(fixture, date)) wanted.push(jobFromFixtureV19(fixture, date, now));
+      else summary.excluded++;
     }
-    const distinct = [...new Map(wanted.map(j => [j.job_key, j])).values()];
-    summary.eligible = distinct.length;
-    const existing = await rowsForIdsV19(env, 'two45_feature_jobs', 'job_key', distinct.map(j => j.job_key));
-    const byKey = new Map(existing.map(j => [j.job_key, j]));
-    summary.existing = existing.length;
-    const missing = distinct.filter(j => !byKey.has(j.job_key));
-    for (let i = 0; i < missing.length; i += 100) {
-      // Ignore duplicates: a competing producer must not reset READY/IN_PROGRESS rows.
-      const inserted = arr(await sb(env, 'two45_feature_jobs?on_conflict=job_key', {
-        method: 'POST', prefer: 'resolution=ignore-duplicates,return=representation',
-        body: JSON.stringify(missing.slice(i, i + 100))
-      }));
-      summary.inserted += inserted.length;
-      for (const row of inserted) byKey.set(row.job_key, row);
-    }
-    const jobs = distinct.flatMap(current => {
-      const stored = byKey.get(current.job_key);
-      return stored ? [{...stored, kickoff_at: current.kickoff_at,
-        metadata: {...stored.metadata, ...current.metadata}}] : [];
-    });
-    await ensureAnalysisRowsV2(env, jobs);
-    return {jobs, summary};
-  } finally {
-    await rpcRefresh(env, 'two45_release_refresh_lock', {
-      p_lock_key: 'v19-fixture-queue', p_lock_token: token
-    }).catch(() => null);
   }
+
+  const distinct = [...new Map(wanted.map(j => [j.job_key, j])).values()];
+  summary.eligible = distinct.length;
+
+  const existing = await rowsForIdsV19(
+    env,
+    "two45_feature_jobs",
+    "job_key",
+    distinct.map(j => j.job_key)
+  );
+  const byKey = new Map(existing.map(j => [j.job_key, j]));
+  summary.existing = existing.length;
+
+  const missing = distinct.filter(j => !byKey.has(j.job_key));
+  for (let i = 0; i < missing.length; i += 100) {
+    const inserted = arr(await sb(env, "two45_feature_jobs?on_conflict=job_key", {
+      method: "POST",
+      prefer: "resolution=ignore-duplicates,return=representation",
+      body: JSON.stringify(missing.slice(i, i + 100))
+    }));
+    summary.inserted += inserted.length;
+    for (const row of inserted) byKey.set(row.job_key, row);
+  }
+
+  const jobs = distinct.flatMap(current => {
+    const stored = byKey.get(current.job_key);
+    return stored
+      ? [{
+          ...stored,
+          kickoff_at: current.kickoff_at,
+          metadata: {...stored.metadata, ...current.metadata}
+        }]
+      : [];
+  });
+
+  await ensureAnalysisRowsV2(env, jobs);
+  return {jobs, summary};
 }
 
 function jobDueV19(job) {
