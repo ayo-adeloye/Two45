@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.25-v2-cache-throughput";
+const PACING_REVISION = "2026-09-29.26-v2-fast-first-pass";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4204,8 +4204,15 @@ async function processOne(
 
     // V22 Cruise Control: publish the first forecast from the minimum
     // reliable team-stat inputs; layer costly enrichment on later refreshes.
-    const priorAnalysis = await getFeedSnapshot(env, `model-analysis:${job.fixture_id}`).catch(() => null);
-    const baselineFirstPass = !priorAnalysis;
+    const canonicalBefore =
+      await currentCanonicalAnalysisV2(env, job.fixture_id).catch(() => null);
+    const canonicalResult =
+      canonicalBefore?.result &&
+      typeof canonicalBefore.result === "object"
+        ? canonicalBefore.result
+        : {};
+    const baselineFirstPass =
+      !Object.keys(canonicalResult).length;
     const optionalIntel = baselineFirstPass
       ? {source:"baseline-first-pass", enriched:false, deferred:true}
       : await optionalIntelligenceV21(env, job);
