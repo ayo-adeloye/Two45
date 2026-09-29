@@ -2215,8 +2215,15 @@ function summarizeMarketProfileV40(samples, teamId) {
     ["yellowCardsFor","Yellow Cards"],
     ["redCardsFor","Red Cards"]
   ];
+  const againstFields = [
+    ["cornersAgainst","Corner Kicks"],
+    ["shotsAgainst","Total Shots"],
+    ["shotsOnTargetAgainst","Shots on Goal"],
+    ["yellowCardsAgainst","Yellow Cards"],
+    ["redCardsAgainst","Red Cards"]
+  ];
   const agg = {};
-  for (const [key] of fields) agg[key] = {sum:0, weight:0, count:0};
+  for (const [key] of [...fields, ...againstFields]) agg[key] = {sum:0, weight:0, count:0};
 
   valid.forEach((sample,i) => {
     const wt = Math.pow(0.82, i);
@@ -2226,6 +2233,17 @@ function summarizeMarketProfileV40(samples, teamId) {
       agg[key].sum += v * wt;
       agg[key].weight += wt;
       agg[key].count++;
+    }
+    const opponentRow = arr(sample.stats).find(r => Number(r?.team?.id) !== Number(teamId));
+    const opponentId = Number(opponentRow?.team?.id);
+    if (Number.isFinite(opponentId)) {
+      for (const [key,label] of againstFields) {
+        const v = statValueV40(sample.stats, opponentId, label);
+        if (!Number.isFinite(v)) continue;
+        agg[key].sum += v * wt;
+        agg[key].weight += wt;
+        agg[key].count++;
+      }
     }
   });
 
@@ -2271,6 +2289,95 @@ async function recentMarketProfileV40(env, teamId, recentFixtures = [], cacheSco
   const profile = summarizeMarketProfileV40(samples, teamId);
   await saveFeedSnapshot(env, cacheKey, {profile}, 12*3600000).catch(() => null);
   return {...profile, source:"api-football-recent-fixtures"};
+}
+
+
+function poissonOverV40(lambda, line) {
+  if (!Number.isFinite(lambda) || lambda <= 0) return null;
+  const threshold = Math.floor(Number(line));
+  let underEq = 0;
+  for (let k = 0; k <= threshold; k++) underEq += poisson(k, lambda);
+  return clamp(1 - underEq, 0, 1);
+}
+
+function poissonUnderV40(lambda, line) {
+  const over = poissonOverV40(lambda, line);
+  return over == null ? null : 1 - over;
+}
+
+function blendedMeanV40(forAvg, oppAgainst, fallback) {
+  const a = num(forAvg, fallback);
+  const b = num(oppAgainst, fallback);
+  return clamp((a * 0.58) + (b * 0.42), 0.05, fallback * 2.5);
+}
+
+function shadowMarketProbabilitiesV40(homeProfile, awayProfile) {
+  if (!homeProfile || !awayProfile) return {};
+  const hc = blendedMeanV40(homeProfile.cornersFor, awayProfile.cornersAgainst, 5.0);
+  const ac = blendedMeanV40(awayProfile.cornersFor, homeProfile.cornersAgainst, 4.5);
+  const hs = blendedMeanV40(homeProfile.shotsFor, awayProfile.shotsAgainst, 12.0);
+  const as = blendedMeanV40(awayProfile.shotsFor, homeProfile.shotsAgainst, 10.5);
+  const hsot = blendedMeanV40(homeProfile.shotsOnTargetFor, awayProfile.shotsOnTargetAgainst, 4.3);
+  const asot = blendedMeanV40(awayProfile.shotsOnTargetFor, homeProfile.shotsOnTargetAgainst, 3.8);
+  const hy = blendedMeanV40(homeProfile.yellowCardsFor, awayProfile.yellowCardsAgainst, 2.1);
+  const ay = blendedMeanV40(awayProfile.yellowCardsFor, homeProfile.yellowCardsAgainst, 2.1);
+
+  const out = {
+    HOME_CORNERS: {},
+    AWAY_CORNERS: {},
+    TOTAL_CORNERS: {},
+    HOME_SHOTS: {},
+    AWAY_SHOTS: {},
+    TOTAL_SHOTS: {},
+    HOME_SHOTS_ON_TARGET: {},
+    AWAY_SHOTS_ON_TARGET: {},
+    TOTAL_SHOTS_ON_TARGET: {},
+    TOTAL_CARDS: {}
+  };
+
+  for (const line of [2.5,3.5,4.5,5.5]) {
+    out.HOME_CORNERS["OVER_"+String(line).replace(".","_")] = poissonOverV40(hc,line);
+    out.AWAY_CORNERS["OVER_"+String(line).replace(".","_")] = poissonOverV40(ac,line);
+  }
+  for (const line of [8.5,9.5,10.5,11.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_CORNERS["OVER_"+key] = poissonOverV40(hc+ac,line);
+    out.TOTAL_CORNERS["UNDER_"+key] = poissonUnderV40(hc+ac,line);
+  }
+  for (const line of [8.5,10.5,12.5,14.5]) {
+    out.HOME_SHOTS["OVER_"+String(line).replace(".","_")] = poissonOverV40(hs,line);
+    out.AWAY_SHOTS["OVER_"+String(line).replace(".","_")] = poissonOverV40(as,line);
+  }
+  for (const line of [20.5,22.5,24.5,26.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_SHOTS["OVER_"+key] = poissonOverV40(hs+as,line);
+    out.TOTAL_SHOTS["UNDER_"+key] = poissonUnderV40(hs+as,line);
+  }
+  for (const line of [1.5,2.5,3.5,4.5]) {
+    out.HOME_SHOTS_ON_TARGET["OVER_"+String(line).replace(".","_")] = poissonOverV40(hsot,line);
+    out.AWAY_SHOTS_ON_TARGET["OVER_"+String(line).replace(".","_")] = poissonOverV40(asot,line);
+  }
+  for (const line of [5.5,6.5,7.5,8.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_SHOTS_ON_TARGET["OVER_"+key] = poissonOverV40(hsot+asot,line);
+    out.TOTAL_SHOTS_ON_TARGET["UNDER_"+key] = poissonUnderV40(hsot+asot,line);
+  }
+  for (const line of [2.5,3.5,4.5,5.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_CARDS["OVER_"+key] = poissonOverV40(hy+ay,line);
+    out.TOTAL_CARDS["UNDER_"+key] = poissonUnderV40(hy+ay,line);
+  }
+  return {
+    expected: {
+      homeCorners:hc, awayCorners:ac,
+      homeShots:hs, awayShots:as,
+      homeShotsOnTarget:hsot, awayShotsOnTarget:asot,
+      homeYellowCards:hy, awayYellowCards:ay
+    },
+    probabilities: out,
+    model:"two45-market-shadow-v40",
+    calibrated:false
+  };
 }
 
 async function optionalIntelligenceV21(env, job) {
@@ -2384,6 +2491,7 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   away.recentMatchContext = intel.awayRecent || null;
   home.marketProfile = intel.homeMarketProfile || null;
   away.marketProfile = intel.awayMarketProfile || null;
+  intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
@@ -4365,7 +4473,11 @@ async function processOne(
         }
       });
 
-    analysis.intelligence = {...(analysis.intelligence || {}), availability: optionalIntel};
+    analysis.intelligence = {
+      ...(analysis.intelligence || {}),
+      availability: optionalIntel,
+      shadowMarketModel: optionalIntel?.shadowMarketModel || null
+    };
     await applyLiveStateV19(env, job, analysis);
     const odds = analysis.live && !analysis.liveUsable ? {response: []} : await oddsForJobV19(env, job);
 
