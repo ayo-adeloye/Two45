@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 24;
-const PACING_REVISION = "2026-09-29.5-cruise-final";
+const WORKER_VERSION = 25;
+const PACING_REVISION = "2026-09-29.6-rate-telemetry";
 const PROVIDER_INTERVAL_MS = 22000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
@@ -4405,6 +4405,18 @@ async function providerFetchReservedV18(
 
   const remaining =
     Number(response.headers.get("x-ratelimit-requests-remaining") ?? NaN);
+  const minuteLimit = Number(response.headers.get("x-ratelimit-limit") ?? NaN);
+  const minuteRemaining = Number(response.headers.get("x-ratelimit-remaining") ?? NaN);
+  const dailyLimit = Number(response.headers.get("x-ratelimit-requests-limit") ?? NaN);
+  pacing = {...pacing,
+    providerMinuteLimit: Number.isFinite(minuteLimit) ? minuteLimit : null,
+    providerMinuteRemaining: Number.isFinite(minuteRemaining) ? minuteRemaining : null,
+    providerDailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
+    providerDailyRemaining: Number.isFinite(remaining) ? remaining : null,
+    lastProviderStatus: response.status,
+    lastProviderAt: new Date().toISOString()
+  };
+  await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
   const retryAfter = response.headers.get('retry-after');
   const retryAt = Number.isFinite(Number(retryAfter))
     ? Date.now() + Number(retryAfter) * 1000 : Date.parse(retryAfter || '');
