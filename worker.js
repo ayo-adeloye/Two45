@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.13-healthy-throughput";
+const PACING_REVISION = "2026-09-29.14-v18-fast-reanalysis";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.8";
@@ -15,7 +15,7 @@ const API_BASE = "https://v3.football.api-sports.io";
 const TIME_ZONE = "America/New_York";
 const HARD_CAP = 7000;
 const MAX_ODDS_PAGES = 15;
-const DEFAULT_MODEL_BATCH = 2;
+const DEFAULT_MODEL_BATCH = 3;
 const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
 const TARGET_DAILY_REQUESTS = 6000;
@@ -5794,9 +5794,13 @@ function batchLimitV19(value) {
 function adaptiveBatchV30(candidates, requested = DEFAULT_MODEL_BATCH) {
   const fresh = candidates.filter(j => !j.completed_at).length;
   const feedMinute = new Date().getUTCMinutes() % 5 === 0;
-  // Normal minute: 2 fresh matches. Every fifth minute: 1 fresh match
-  // leaves room for one feed refresh while staying under cron wall time.
-  return {freshBaselineBacklog: fresh, limit: fresh > 0 ? (feedMinute ? 1 : 2) : 1};
+  // V34: clear a fresh model-version backlog faster without starving feed refreshes.
+  // Normal minute: up to 3 fresh matches. Every fifth minute: up to 2.
+  const desired = fresh > 0 ? (feedMinute ? 2 : 3) : 1;
+  return {
+    freshBaselineBacklog: fresh,
+    limit: Math.min(batchLimitV19(requested || DEFAULT_MODEL_BATCH), desired)
+  };
 }
 
 function dateOfV19(value) {
@@ -5869,7 +5873,7 @@ function jobFromFixtureV19(f, date, now) {
   const id = fixtureIdV19(f);
   const major = priorityCompetitionV20(f.league.name, f.league.id);
   return {
-    job_key: `${id}:${f.league.season}`, provider_match_id: String(id), fixture_id: id,
+    job_key: `${MODEL_VERSION}:${id}:${f.league.season}`, provider_match_id: String(id), fixture_id: id,
     kickoff_at: new Date(f.fixture.date).toISOString(), competition: f.league.name || 'Unknown competition',
     provider_league_id: String(f.league.id), season: Number(f.league.season),
     home_team_id: String(f.teams.home.id), away_team_id: String(f.teams.away.id),
