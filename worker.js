@@ -1,15 +1,12 @@
---a6f4ca4b726a1d93e23cebdfb67f8a6e5f20b8a50d11da69d4456e137f98
-Content-Disposition: form-data; name="worker.js"
-
 /**
  * Two45 Cloudflare Worker
  * Version 20 — Priority Coverage and Market Expansion
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 21;
-const PACING_REVISION = "2026-09-29.2";
-const PROVIDER_INTERVAL_MS = 14000;
+const WORKER_VERSION = 24;
+const PACING_REVISION = "2026-09-29.5-cruise-final";
+const PROVIDER_INTERVAL_MS = 22000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
 const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
@@ -18,7 +15,7 @@ const API_BASE = "https://v3.football.api-sports.io";
 const TIME_ZONE = "America/New_York";
 const HARD_CAP = 7000;
 const MAX_ODDS_PAGES = 15;
-const DEFAULT_MODEL_BATCH = 2;
+const DEFAULT_MODEL_BATCH = 4;
 const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
 
@@ -125,6 +122,11 @@ function json(data, status = 200) {
   );
 }
 
+function internalRequestAuthorized(request, env) {
+  const supplied = request.headers.get("x-two45-internal-key") || "";
+  return Boolean(env.TWO45_INTERNAL_KEY && supplied === env.TWO45_INTERNAL_KEY);
+}
+
 function easternParts(date = new Date()) {
   const parts =
     new Intl.DateTimeFormat(
@@ -194,6 +196,11 @@ function shouldPreloadTomorrow() {
     easternHour() >=
     TOMORROW_PRELOAD_HOUR_ET
   );
+}
+
+function providerQuietWindow() {
+  const hour = easternHour();
+  return hour >= 0 && hour < 5;
 }
 
 function easternWeekday() {
@@ -3546,7 +3553,7 @@ async function analyzeFixtureOnDemand(
       : Infinity;
 
   const rateLimited =
-    /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation/i.test(
+    /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window/i.test(
       String(
         job.last_error ||
         ""
@@ -3642,6 +3649,10 @@ async function analyzeFixtureOnDemand(
     };
   }
 
+  if (providerQuietWindow()) {
+    return {httpStatus:202, body:{ok:true,status:"QUEUED",fixtureId,message:"Analysis queued. Two45 provider requests resume at 5:00 AM Eastern."}};
+  }
+
   const claimed =
     await claimSpecificJob(
       env,
@@ -3716,7 +3727,7 @@ async function analyzeFixtureOnDemand(
   }
 
   const isRate =
-    /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation/i.test(
+    /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window/i.test(
       String(
         result.error ||
         ""
@@ -3788,7 +3799,13 @@ async function processOne(
         as
       );
 
-    const optionalIntel = await optionalIntelligenceV21(env, job);
+    // V22 Cruise Control: publish the first forecast from the minimum
+    // reliable team-stat inputs; layer costly enrichment on later refreshes.
+    const priorAnalysis = await getFeedSnapshot(env, `model-analysis:${job.fixture_id}`).catch(() => null);
+    const baselineFirstPass = !priorAnalysis;
+    const optionalIntel = baselineFirstPass
+      ? {source:"baseline-first-pass", enriched:false, deferred:true}
+      : await optionalIntelligenceV21(env, job);
     applyOptionalIntelligenceV21(hf, af, optionalIntel, job);
 
     const analysis =
@@ -3874,7 +3891,7 @@ async function processOne(
       String(e);
 
     const rateLimited =
-      /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation/i.test(
+      /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window/i.test(
         msg
       );
 
@@ -3914,9 +3931,18 @@ async function processOne(
 }
 
 async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
+  if (providerQuietWindow()) {
+    return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York", claimed:0, processed:0, queue:null, results:[]};
+  }
   await requeueStale(env);
   const queue = prepared || await syncFixtureJobsV19(env);
   const candidates = rankedJobsV19(queue.jobs);
+  const freshTomorrowBacklog = candidates.filter(j => !j.completed_at && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
+  const pacing = (await getFeedSnapshot(env, 'api-football-pacing').catch(() => null))?.payload || {};
+  const cooldownWait = Math.max(0, num(pacing.blockedUntil) - Date.now());
+  if (cooldownWait > 20000) {
+    return {ok:true, skipped:true, cooldownActive:true, retryAt:num(pacing.blockedUntil), reason:'Provider cooldown', claimed:0, processed:0, freshTomorrowBacklog, queue:queue.summary, results:[]};
+  }
   const results = [];
   const deadline = Date.now() + 100000;
   let claimed = 0;
@@ -3941,7 +3967,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     if (result.rateLimited) break; // Stop before consuming further budget/failed attempts.
   }
   return {ok: results.every(x => x.status === 'READY'), claimed,
-    processed: results.length, queue: queue.summary, results};
+    processed: results.length, freshTomorrowBacklog, queue: queue.summary, results};
 }
 
 async function settle(env) {
@@ -4044,6 +4070,12 @@ async function modelStatus(env) {
 
     tomorrowPreloadActive:
       shouldPreloadTomorrow(),
+
+    providerQuietWindowActive:
+      providerQuietWindow(),
+
+    providerQuietHours:
+      "00:00-05:00 America/New_York",
 
     supportedAnalysisFamilies: [
       "match-result",
@@ -4221,6 +4253,9 @@ async function feedDue(
 // Shared database lock serializes cron, on-demand and process requests across isolates.
 // Fail closed if pacing storage is unavailable; never bypass the existing budget RPC.
 async function providerFetchV18(env, path, params = {}) {
+  if (providerQuietWindow()) {
+    throw new Error("API-Football quiet window is active until 05:00 America/New_York");
+  }
   const token = crypto.randomUUID();
   const lockKey = 'api-football-pacing';
   const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
@@ -4235,9 +4270,9 @@ async function providerFetchV18(env, path, params = {}) {
     if (pacing.budgetDate === utcDate && num(pacing.used) >= PRACTICAL_DAILY_CAP) {
       throw new Error('Two45 practical daily cap of 6500 reached.');
     }
-    if (num(pacing.blockedUntil) > Date.now()) {
-      throw new Error('API-Football rate limit cooldown is active');
-    }
+    const blockedWait = Math.max(0, num(pacing.blockedUntil) - Date.now());
+    if (blockedWait > 20000) throw new Error('API-Football rate limit cooldown is active');
+    if (blockedWait) await new Promise(resolve => setTimeout(resolve, blockedWait));
     const wait = Math.max(0, num(pacing.nextAt) - Date.now());
     if (wait > 20000) throw new Error('API-Football rate limit cooldown is active');
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
@@ -5443,6 +5478,9 @@ async function refreshOneFeed(
   env,
   force = false
 ) {
+  if (providerQuietWindow()) {
+    return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York"};
+  }
   const token =
     crypto.randomUUID();
 
@@ -5869,6 +5907,14 @@ function rankedJobsV19(jobs) {
   const live = candidates.filter(j => j.completed_at && LIVE_STATUSES.has(j.metadata?.fixture_status));
   const repeat = candidates.filter(j => j.completed_at && !LIVE_STATUSES.has(j.metadata?.fixture_status));
   const ordered = [];
+  // V22 Cruise Control: after 8 PM, finish never-analyzed Tomorrow jobs
+  // before spending provider calls on repeat/deep-enrichment refreshes.
+  if (shouldPreloadTomorrow()) {
+    const tomorrow = tomorrowEasternDate();
+    const tomorrowFresh = fresh.filter(j => dateOfV19(j.kickoff_at) === tomorrow);
+    const otherFresh = fresh.filter(j => dateOfV19(j.kickoff_at) !== tomorrow);
+    return [...tomorrowFresh, ...otherFresh, ...live, ...repeat];
+  }
   const lanes = Math.floor(Date.now() / 300000) % 2 ? [fresh, live, fresh, repeat] : [live, fresh, repeat, fresh];
   while (fresh.length || live.length || repeat.length) {
     for (const lane of lanes) if (lane.length) ordered.push(lane.shift());
@@ -5939,6 +5985,7 @@ async function oddsForJobV19(env, job) {
 }
 
 async function refreshCarryoverV19(env) {
+  if (providerQuietWindow()) return {ok:true, skipped:true, reason:"Provider quiet window"};
   const yesterday = datePlusDays(easternDate(), -1);
   const row = await getFeedSnapshot(env, fixtureKey(yesterday));
   if (!row || Date.now() - Date.parse(row.refreshed_at) < 15 * 60000) return null;
@@ -6019,28 +6066,47 @@ async function runCycleV19(event, env, force = false) {
   const startedAt = new Date().toISOString();
   const result = {ok: true, version: WORKER_VERSION, pacingRevision: PACING_REVISION, feeds: [], boards: [], errors: []};
   try {
-    // Four bounded feed operations per tick give fixture/live/odds work a chance
-    // to advance together. The provider's atomic reservation applies to each.
-    for (let i = 0; i < 1; i++) {
+    // V22 Cruise Control: after 8 PM, model work gets first use of
+    // the pacing window so Tomorrow cannot remain stuck at zero.
+    const modelFirst = shouldPreloadTomorrow();
+    if (modelFirst) {
       try {
-        const feed = await refreshOneFeed(env, force && i === 0);
-        result.feeds.push(feed);
-        if (!feed.ok) result.errors.push({stage: 'feed', error: feed.error});
-        if (feed.skipped || !feed.ok) break;
-      } catch (e) { result.errors.push({stage: 'feed', error: safeRefreshError(e)}); break; }
+        result.model = await processJobs(env, batchLimitV19(env.TWO45_MODEL_BATCH));
+        if (!result.model.ok) result.errors.push({stage: 'model', error: 'One or more jobs failed; see model results'});
+      } catch (e) { result.errors.push({stage: 'model', error: safeRefreshError(e)}); }
     }
-    try {
-      const carryover = await refreshCarryoverV19(env);
-      if (carryover) result.feeds.push(carryover);
-    } catch (e) { result.errors.push({stage: 'carryover', error: safeRefreshError(e)}); }
+
+    const clearingTomorrow = modelFirst && num(result.model?.freshTomorrowBacklog) > 0;
+    const providerCooling = Boolean(result.model?.cooldownActive);
+    if (clearingTomorrow || providerCooling) {
+      result.feeds.push({ok:true, skipped:true, reason: providerCooling ? 'Provider cooldown: model retry has priority' : 'Tomorrow baseline backlog has priority'});
+    } else {
+      for (let i = 0; i < 1; i++) {
+        try {
+          const feed = await refreshOneFeed(env, force && i === 0);
+          result.feeds.push(feed);
+          if (!feed.ok) result.errors.push({stage: 'feed', error: feed.error});
+          if (feed.skipped || !feed.ok) break;
+        } catch (e) { result.errors.push({stage: 'feed', error: safeRefreshError(e)}); break; }
+      }
+      try {
+        const carryover = await refreshCarryoverV19(env);
+        if (carryover) result.feeds.push(carryover);
+      } catch (e) { result.errors.push({stage: 'carryover', error: safeRefreshError(e)}); }
+    }
+
+    if (!modelFirst) {
+      try {
+        result.model = await processJobs(env, batchLimitV19(env.TWO45_MODEL_BATCH));
+        if (!result.model.ok) result.errors.push({stage: 'model', error: 'One or more jobs failed; see model results'});
+      } catch (e) { result.errors.push({stage: 'model', error: safeRefreshError(e)}); }
+    }
+
+    // Publish boards after processing so fresh forecasts show this same cycle.
     for (const date of activeDatesV19().slice().sort((a, b) => Number(b === tomorrowEasternDate()) - Number(a === tomorrowEasternDate()))) {
       try { result.boards.push(await evaluateBoardV19(env, date)); }
       catch (e) { result.errors.push({stage: 'board', date, error: safeRefreshError(e)}); }
     }
-    try {
-      result.model = await processJobs(env, batchLimitV19(env.TWO45_MODEL_BATCH));
-      if (!result.model.ok) result.errors.push({stage: 'model', error: 'One or more jobs failed; see model results'});
-    } catch (e) { result.errors.push({stage: 'model', error: safeRefreshError(e)}); }
     // Settlement is independent of model success and still sweeps stored finished fixtures.
     try { result.settled = await settle(env); }
     catch (e) { result.errors.push({stage: 'settlement', error: safeRefreshError(e)}); }
@@ -6381,6 +6447,9 @@ export default {
         request.method ===
           "POST"
       ) {
+        if (!internalRequestAuthorized(request, env)) {
+          return json({ok:false,error:"Protected Two45 processing endpoint."},403);
+        }
         const body =
           await request
             .json()
@@ -6405,6 +6474,9 @@ export default {
         request.method ===
           "POST"
       ) {
+        if (!internalRequestAuthorized(request, env)) {
+          return json({ok:false,error:"Protected Two45 settlement endpoint."},403);
+        }
         return json({
           ok:
             true,
@@ -6455,5 +6527,3 @@ export default {
     ctx.waitUntil(runCycleV19(event, env));
   }
 };
-
---45fccd682bbe5cd0c0b20a4da3c5c28ef8858f128488f099752b1154de8e--
