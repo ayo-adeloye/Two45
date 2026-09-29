@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.23-remove-stale-pipeline-lock";
+const PACING_REVISION = "2026-09-29.24-analysis-engine-v2";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -1807,6 +1807,207 @@ async function patchJob(
   );
 }
 
+
+function analysisKeyV2(job, modelVersion = MODEL_VERSION) {
+  return `${modelVersion}:${Number(job.fixture_id)}`;
+}
+
+async function ensureAnalysisRowsV2(env, jobs = []) {
+  const rows = [];
+  for (const job of jobs) {
+    if (!job?.fixture_id) continue;
+    rows.push({
+      analysis_key: analysisKeyV2(job),
+      fixture_id: Number(job.fixture_id),
+      provider_match_id: String(job.provider_match_id || job.fixture_id),
+      model_version: MODEL_VERSION,
+      kickoff_at: job.kickoff_at,
+      competition: job.competition || null,
+      home_team: job.home_team,
+      away_team: job.away_team,
+      status: "PENDING",
+      refreshing: false,
+      priority: num(job.priority, 100),
+      attempts: 0,
+      requested_at: job.requested_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      source_snapshot_key: job.source_snapshot_key || null,
+      legacy_source: false
+    });
+  }
+  for (let i = 0; i < rows.length; i += 100) {
+    await sb(env, "two45_analysis_state?on_conflict=analysis_key", {
+      method: "POST",
+      prefer: "resolution=ignore-duplicates,return=minimal",
+      body: JSON.stringify(rows.slice(i, i + 100))
+    });
+  }
+}
+
+async function canonicalAnalysisRowsV2(env, fixtureIds = []) {
+  if (!fixtureIds.length) return [];
+  return await rowsForIdsV19(env, "two45_analysis_state", "fixture_id", fixtureIds);
+}
+
+function canonicalForecastV2(row) {
+  if (!row || row.status !== "COMPLETE") return null;
+  const result = row.result || {};
+  if (result.forecast && typeof result.forecast === "object") {
+    return {
+      ...result.forecast,
+      canonicalStatus: row.status,
+      canonicalModelVersion: row.model_version,
+      canonicalCompletedAt: row.completed_at,
+      generatedAt: result.forecast.generatedAt || row.completed_at,
+      createdAt: result.forecast.createdAt || row.completed_at
+    };
+  }
+  if (result.forecast_key || result.probability_snapshot || result.feature_snapshot) {
+    return {
+      ...forecastRowToClient(result),
+      canonicalStatus: row.status,
+      canonicalModelVersion: row.model_version,
+      canonicalCompletedAt: row.completed_at,
+      generatedAt: row.completed_at,
+      createdAt: row.completed_at
+    };
+  }
+  return null;
+}
+
+async function currentCanonicalAnalysisV2(env, fixtureId) {
+  const rows = await sb(
+    env,
+    `two45_analysis_state?fixture_id=eq.${encodeURIComponent(fixtureId)}&model_version=eq.${encodeURIComponent(MODEL_VERSION)}&select=*&limit=1`
+  );
+  return arr(rows)[0] || null;
+}
+
+async function beginCanonicalAnalysisV2(env, job) {
+  const key = analysisKeyV2(job);
+  const current = await currentCanonicalAnalysisV2(env, job.fixture_id).catch(() => null);
+  const hasResult = current?.result && typeof current.result === "object" &&
+    Object.keys(current.result).length > 0;
+  const now = new Date().toISOString();
+  const body = {
+    status: hasResult ? "COMPLETE" : "PROCESSING",
+    refreshing: hasResult,
+    started_at: now,
+    updated_at: now,
+    attempts: num(current?.attempts, 0) + 1,
+    last_error: null,
+    next_retry_at: null,
+    priority: num(job.priority, current?.priority || 100),
+    requested_at: current?.requested_at || job.requested_at || now
+  };
+  const rows = await sb(
+    env,
+    `two45_analysis_state?analysis_key=eq.${encodeURIComponent(key)}&select=*`,
+    {method:"PATCH", body: JSON.stringify(body)}
+  );
+  return arr(rows)[0] || current;
+}
+
+async function completeCanonicalAnalysisV2(env, job, forecast, analysis, decision) {
+  const now = new Date().toISOString();
+  const alternatives = Array.isArray(forecast?.alternatives) ? forecast.alternatives : [];
+  const body = {
+    analysis_key: analysisKeyV2(job),
+    fixture_id: Number(job.fixture_id),
+    provider_match_id: String(job.provider_match_id || job.fixture_id),
+    model_version: MODEL_VERSION,
+    kickoff_at: job.kickoff_at,
+    competition: job.competition || null,
+    home_team: job.home_team,
+    away_team: job.away_team,
+    status: "COMPLETE",
+    refreshing: false,
+    priority: num(job.priority, 100),
+    attempts: 0,
+    requested_at: job.requested_at || now,
+    started_at: now,
+    completed_at: now,
+    updated_at: now,
+    next_retry_at: null,
+    last_error: null,
+    result: {
+      forecast,
+      probabilityBoard: analysis?.probabilities || {},
+      marketOptions: decision?.topMarkets || [],
+      intelligence: analysis?.intelligence || null
+    },
+    options_count: alternatives.length,
+    data_quality: analysis?.dataQuality ?? null,
+    decision: decision?.decision || "NO_BET",
+    source_snapshot_key: job.source_snapshot_key || null,
+    legacy_source: false
+  };
+  await sb(env, "two45_analysis_state?on_conflict=analysis_key", {
+    method:"POST",
+    prefer:"resolution=merge-duplicates,return=minimal",
+    body:JSON.stringify(body)
+  });
+  return body;
+}
+
+async function failCanonicalAnalysisV2(env, job, error, deferred = false) {
+  const current = await currentCanonicalAnalysisV2(env, job.fixture_id).catch(() => null);
+  const hasResult = current?.result && typeof current.result === "object" &&
+    Object.keys(current.result).length > 0;
+  const now = new Date().toISOString();
+  const status = hasResult ? "COMPLETE" : (deferred ? "PENDING" : "FAILED");
+  const nextRetry = deferred
+    ? new Date(Date.now() + 60000).toISOString()
+    : new Date(Date.now() + Math.min(15, Math.max(2, num(current?.attempts,1) * 2)) * 60000).toISOString();
+  await sb(
+    env,
+    `two45_analysis_state?analysis_key=eq.${encodeURIComponent(analysisKeyV2(job))}`,
+    {
+      method:"PATCH",
+      body:JSON.stringify({
+        status,
+        refreshing:false,
+        updated_at:now,
+        started_at:null,
+        next_retry_at:nextRetry,
+        last_error:String(error || "Analysis failed").slice(0,500)
+      })
+    }
+  ).catch(() => null);
+}
+
+async function recoverCanonicalAnalysisV2(env) {
+  try {
+    return await sb(env, "rpc/two45_recover_stale_analysis", {
+      method:"POST",
+      body:JSON.stringify({p_timeout_minutes:5})
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function analysisHealthV2(env, date = easternDate()) {
+  const rows = await sb(env, "rpc/two45_analysis_health", {
+    method:"POST",
+    body:JSON.stringify({p_date:date, p_model_version:MODEL_VERSION})
+  });
+  const health = arr(rows)[0] || {};
+  return {
+    date,
+    modelVersion: MODEL_VERSION,
+    fixturesTotal: num(health.fixtures_total),
+    pending: num(health.pending),
+    processing: num(health.processing),
+    complete: num(health.complete),
+    failed: num(health.failed),
+    refreshing: num(health.refreshing),
+    oldestPending: health.oldest_pending || null,
+    lastCompletedAt: health.last_completed_at || null
+  };
+}
+
+
 /* =========================================================
    API-FOOTBALL
    ========================================================= */
@@ -3557,7 +3758,9 @@ async function claimSpecificJob(env, job) {
       metadata: job.metadata || {}
     })
   });
-  return arr(rows)[0] || null;
+  const owned = arr(rows)[0] || null;
+  if (owned) await beginCanonicalAnalysisV2(env, owned);
+  return owned;
 }
 
 async function analyzeFixtureOnDemand(
@@ -3625,108 +3828,37 @@ async function analyzeFixtureOnDemand(
     };
   }
 
-  const latest = await getFeedSnapshot(env, `model-analysis:${fixtureId}`);
-  if (latest?.payload?.forecast && dateAllowedV19(latest.payload.date)) {
-    const cd = cooldownState({created_at: latest.payload.generatedAt});
-    if (!force || cd.active) return {httpStatus: 200, body: {ok: true, status: "READY", source: "latest-analysis", forecast: latest.payload.forecast, canReanalyze: !cd.active, nextRefreshAt: cd.nextRefreshAt, cooldownSeconds: Math.ceil(cd.remainingMs / 1000)}};
-  }
-  const stored =
-    await existingForecast(
-      env,
-      fixtureId
-    );
 
-  if (
-    stored &&
-    !force
-  ) {
-    const cd =
-      cooldownState(
-        stored
-      );
-
-    return {
-      httpStatus:
-        200,
-
-      body: {
-        ok:
-          true,
-
-        status:
-          "READY",
-
-        source:
-          "forecast-ledger",
-
-        forecast:
-          forecastRowToClient(
-            stored
-          ),
-
-        canReanalyze:
-          !cd.active,
-
-        nextRefreshAt:
-          cd.nextRefreshAt,
-
-        cooldownSeconds:
-          Math.ceil(
-            cd.remainingMs /
-            1000
-          )
-      }
-    };
-  }
-
-  if (
-    stored &&
-    force
-  ) {
-    const cd =
-      cooldownState(
-        stored
-      );
-
-    if (
-      cd.active
-    ) {
+  const canonical = await currentCanonicalAnalysisV2(env, fixtureId).catch(() => null);
+  if (canonical?.status === "COMPLETE" && !canonical.refreshing && !force) {
+    const forecast = canonicalForecastV2(canonical);
+    if (forecast) {
+      const cd = cooldownState({created_at: canonical.completed_at});
       return {
-        httpStatus:
-          200,
-
+        httpStatus: 200,
         body: {
-          ok:
-            true,
-
-          status:
-            "READY",
-
-          source:
-            "cooldown",
-
-          forecast:
-            forecastRowToClient(
-              stored
-            ),
-
-          canReanalyze:
-            false,
-
-          nextRefreshAt:
-            cd.nextRefreshAt,
-
-          cooldownSeconds:
-            Math.ceil(
-              cd.remainingMs /
-              1000
-            ),
-
-          message:
-            "This fixture was analyzed recently. Refresh becomes available after the short cooldown."
+          ok: true,
+          status: "READY",
+          source: "canonical-analysis-v2",
+          forecast,
+          canReanalyze: !cd.active,
+          nextRefreshAt: cd.nextRefreshAt,
+          cooldownSeconds: Math.ceil(cd.remainingMs / 1000)
         }
       };
     }
+  }
+
+  if (canonical?.status === "PROCESSING" || canonical?.refreshing) {
+    return {
+      httpStatus: 202,
+      body: {
+        ok: true,
+        status: "QUEUED",
+        fixtureId,
+        message: "Analysis is already running."
+      }
+    };
   }
 
   let job =
@@ -3923,7 +4055,7 @@ async function analyzeFixtureOnDemand(
             : "on-demand",
 
         forecast:
-          manualForecast(
+          result.forecast || manualForecast(
             claimed,
             result.analysis,
             result.decision
@@ -4068,6 +4200,8 @@ async function processOne(
         marketOdds
       );
 
+    const clientForecast = manualForecast(job, analysis, decision);
+
     await writeForecast(
       env,
       job,
@@ -4076,6 +4210,10 @@ async function processOne(
     );
 
     await saveLatestAnalysisV19(env, job, analysis, decision);
+
+    await completeCanonicalAnalysisV2(env, job, clientForecast, analysis, decision);
+
+    await failCanonicalAnalysisV2(env, job, msg, rateLimited);
 
     await patchJob(
       env,
@@ -4103,7 +4241,9 @@ async function processOne(
 
       decision,
 
-      analysis
+      analysis,
+
+      forecast: clientForecast
     };
 
   } catch (e) {
@@ -4156,6 +4296,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York", claimed:0, processed:0, queue:null, results:[]};
   }
   await requeueStale(env);
+  await recoverCanonicalAnalysisV2(env);
   const queue = prepared || await syncFixtureJobsV19(env);
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.completed_at && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
@@ -6107,6 +6248,7 @@ async function syncFixtureJobsV19(env) {
       return stored ? [{...stored, kickoff_at: current.kickoff_at,
         metadata: {...stored.metadata, ...current.metadata}}] : [];
     });
+    await ensureAnalysisRowsV2(env, jobs);
     return {jobs, summary};
   } finally {
     await rpcRefresh(env, 'two45_release_refresh_lock', {
@@ -6243,61 +6385,123 @@ async function refreshCarryoverV19(env) {
   return {ok: true, key: fixtureKey(yesterday), total: payload.total, settlementOnly: true};
 }
 
+
 async function evaluateBoardV19(env, date, light = false) {
   if (!dateAllowedV19(date)) return {ok: true, skipped: true, date};
+
   const previous = await getFeedSnapshot(env, modelBoardKey(date));
   let external = {ok: true, board: previous?.payload || null};
   if (!light) {
-    try { external = await runBackgroundEvaluationV18(env, date, null); }
-    catch (error) { external = {ok: false, error: safeRefreshError(error), board: previous?.payload || null}; }
+    try {
+      external = await runBackgroundEvaluationV18(env, date, null);
+    } catch (error) {
+      external = {
+        ok: false,
+        error: safeRefreshError(error),
+        board: previous?.payload || null
+      };
+    }
   }
+
   const base = external.board || previous?.payload || {};
   const fixtureData = await fixtureSnapshotV19(env, date);
   const fixtures = fixtureData.fixtures;
   const ids = fixtures.map(fixtureIdV19);
-  const forecasts = new Map(arr(base.independentForecasts).map(f => [Number(f.fixtureId), f]));
-  // Include ledger history for already analyzed games, then overlay latest mutable results.
-  const ledger = await rowsForIdsV19(env, 'two45_model_forecasts', 'fixture_id', ids);
-  ledger.sort((a,b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  for (const row of ledger) forecasts.set(Number(row.fixture_id), {
-    ...forecastRowToClient(row), createdAt: row.created_at, generatedAt: row.created_at,
-    settled: row.settled, outcome: row.outcome
-  });
-  const latest = await rowsForIdsV19(env, 'two45_feed_snapshots', 'snapshot_key', ids.map(id => `model-analysis:${id}`));
-  for (const row of latest) {
-    if (row.payload?.date === date && row.payload?.forecast) {
-      const f = row.payload.forecast;
-      forecasts.set(Number(f.fixtureId), f);
+  const canonicalRows = await canonicalAnalysisRowsV2(env, ids);
+
+  // One source of truth: the canonical analysis state table.
+  // Prefer the current model version; use a legacy completed record only until
+  // the current version finishes for that fixture.
+  const chosenRows = new Map();
+  for (const row of canonicalRows) {
+    if (row.status !== "COMPLETE") continue;
+    const forecast = canonicalForecastV2(row);
+    if (!forecast) continue;
+    const id = Number(row.fixture_id);
+    const rank = row.model_version === MODEL_VERSION ? 2 : 1;
+    const completed = Date.parse(row.completed_at || row.updated_at || row.requested_at || 0);
+    const prev = chosenRows.get(id);
+    if (!prev || rank > prev.rank || (rank === prev.rank && completed > prev.completed)) {
+      chosenRows.set(id, {row, forecast, rank, completed});
     }
   }
-  const independentForecasts = ids.map(id => forecasts.get(id)).filter(Boolean);
+
+  const independentForecasts = ids
+    .map(id => chosenRows.get(Number(id))?.forecast)
+    .filter(Boolean);
+
   const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
-  const picks = independentForecasts.filter(f => {
-    const status = byId.get(Number(f.fixtureId))?.fixture?.status?.short;
-    return f.decision === 'PICK' && (UPCOMING_STATUSES.has(status) ||
-      (LIVE_STATUSES.has(status) && f.live === true && Date.now() - Date.parse(f.generatedAt) < 15 * 60000));
-  }).map(f => ({...f, fixtureId: String(f.fixtureId),
-    band: f.pickType === 'RISKY_VALUE' ? 'Risky Play' : 'Top Pick',
-    score: num(f.probability), rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3
-  })).sort((a,b) => b.rankScore - a.rankScore);
+  const picks = independentForecasts
+    .filter(f => {
+      const status = byId.get(Number(f.fixtureId))?.fixture?.status?.short;
+      return f.decision === "PICK" && (
+        UPCOMING_STATUSES.has(status) ||
+        (LIVE_STATUSES.has(status) && f.live === true &&
+          Date.now() - Date.parse(f.generatedAt || 0) < 15 * 60000)
+      );
+    })
+    .map(f => ({
+      ...f,
+      fixtureId: String(f.fixtureId),
+      band: f.pickType === "RISKY_VALUE" ? "Risky Play" : "Top Pick",
+      score: num(f.probability),
+      rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3
+    }))
+    .sort((a,b) => b.rankScore - a.rankScore);
+
   const now = new Date().toISOString();
-  const strongPicks = picks.filter(f => f.pickType !== 'RISKY_VALUE');
-  const riskyPlays = picks.filter(f => f.pickType === 'RISKY_VALUE');
-  const board = {...base, ok: true, date, service: 'two45-live-worker',
-    games: fixtures, fixtures, picks, strongPicks, riskyPlays, independentForecasts,
-    updatedAt: now, analyzedCount: independentForecasts.length,
-    independentModel: {...base.independentModel, version: MODEL_VERSION, updatedAt: now,
-      forecastCount: independentForecasts.length, qualifiedValuePicks: picks.length,
-      strongPicks: strongPicks.length, riskyPlays: riskyPlays.length,
-      strongModelViews: independentForecasts.filter(f => num(f.probability) >= 75 && num(f.dataQuality) >= 68).length},
-    evaluation: {source: 'worker-v20', date, evaluatedAt: now,
-      pagesEvaluationOk: external.ok, pagesEvaluationError: external.error || null,
-      fixtureUpdatedAt: fixtureData.refreshedAt}
+  const strongPicks = picks.filter(f => f.pickType !== "RISKY_VALUE");
+  const riskyPlays = picks.filter(f => f.pickType === "RISKY_VALUE");
+  const health = await analysisHealthV2(env, date).catch(() => null);
+
+  const board = {
+    ...base,
+    ok: true,
+    date,
+    service: "two45-live-worker",
+    games: fixtures,
+    fixtures,
+    picks,
+    strongPicks,
+    riskyPlays,
+    independentForecasts,
+    updatedAt: now,
+    analyzedCount: independentForecasts.length,
+    analysisHealth: health,
+    independentModel: {
+      ...base.independentModel,
+      version: MODEL_VERSION,
+      updatedAt: now,
+      forecastCount: independentForecasts.length,
+      qualifiedValuePicks: picks.length,
+      strongPicks: strongPicks.length,
+      riskyPlays: riskyPlays.length,
+      strongModelViews: independentForecasts.filter(
+        f => num(f.probability) >= 75 && num(f.dataQuality) >= 68
+      ).length
+    },
+    evaluation: {
+      source: "analysis-engine-v2",
+      date,
+      evaluatedAt: now,
+      pagesEvaluationOk: external.ok,
+      pagesEvaluationError: external.error || null,
+      fixtureUpdatedAt: fixtureData.refreshedAt
+    }
   };
+
   await saveFeedSnapshot(env, modelBoardKey(date), board, 1800);
-  return {ok: true, date, analyzed: independentForecasts.length, picks: picks.length,
-    pagesEvaluationOk: external.ok, pagesEvaluationError: external.error || null};
+  return {
+    ok: true,
+    date,
+    analyzed: independentForecasts.length,
+    picks: picks.length,
+    analysisHealth: health,
+    pagesEvaluationOk: external.ok,
+    pagesEvaluationError: external.error || null
+  };
 }
+
 
 async function runCycleV19(event, env, force = false) {
   // V20.1: operate 24/7. Overnight cycles stay paced by the same
@@ -6423,6 +6627,20 @@ export default {
 
           modelLoaded:
             true
+        });
+      }
+
+      if (
+        url.pathname ===
+        "/api/health/analysis"
+      ) {
+        const health = await analysisHealthV2(env);
+        return json({
+          ok: true,
+          service: "two45-live-worker",
+          engine: "analysis-engine-v2",
+          pacingRevision: PACING_REVISION,
+          ...health
         });
       }
 
