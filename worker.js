@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.20-analysis-stall-fix";
+const PACING_REVISION = "2026-09-29.21-pipeline-lock-recovery";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6315,7 +6315,7 @@ async function runCycleV19(event, env, force = false) {
   // rate-limit backoff instead of shutting the pipeline down.
   const token = crypto.randomUUID();
   const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: 'v19-pipeline', p_lock_token: token, p_ttl_seconds: 75
+    p_lock_key: 'v20-analysis-pipeline', p_lock_token: token, p_ttl_seconds: 75
   });
   if (!acquired) return {ok: true, skipped: true, reason: 'Another V19 cycle is running'};
   const startedAt = new Date().toISOString();
@@ -6384,7 +6384,7 @@ async function runCycleV19(event, env, force = false) {
     return result;
   } finally {
     await rpcRefresh(env, 'two45_release_refresh_lock', {
-      p_lock_key: 'v19-pipeline', p_lock_token: token
+      p_lock_key: 'v20-analysis-pipeline', p_lock_token: token
     }).catch(() => null);
   }
 }
