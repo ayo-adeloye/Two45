@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 27;
-const PACING_REVISION = "2026-09-29.8-supabase-egress";
+const WORKER_VERSION = 29;
+const PACING_REVISION = "2026-09-29.9-24h-cruise";
 const PROVIDER_INTERVAL_MS = 22000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
@@ -15,7 +15,7 @@ const API_BASE = "https://v3.football.api-sports.io";
 const TIME_ZONE = "America/New_York";
 const HARD_CAP = 7000;
 const MAX_ODDS_PAGES = 15;
-const DEFAULT_MODEL_BATCH = 4;
+const DEFAULT_MODEL_BATCH = 1;
 const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
 
@@ -199,8 +199,9 @@ function shouldPreloadTomorrow() {
 }
 
 function providerQuietWindow() {
-  const hour = easternHour();
-  return hour >= 0 && hour < 5;
+  // V29: Two45 runs provider work 24/7. Rate pacing and daily caps
+  // control usage instead of a midnight-to-5AM shutdown.
+  return false;
 }
 
 function easternWeekday() {
@@ -4075,7 +4076,7 @@ async function modelStatus(env) {
       providerQuietWindow(),
 
     providerQuietHours:
-      "00:00-05:00 America/New_York",
+      "Disabled — provider operates 24/7",
 
     supportedAnalysisFamilies: [
       "match-result",
@@ -4259,7 +4260,7 @@ async function providerFetchV18(env, path, params = {}) {
   const token = crypto.randomUUID();
   const lockKey = 'api-football-pacing';
   const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: lockKey, p_lock_token: token, p_ttl_seconds: 120
+    p_lock_key: lockKey, p_lock_token: token, p_ttl_seconds: 90
   });
   if (!acquired) throw new Error('API-Football rate limit pacing: another request is active');
   const leaseDeadline = Date.now() + 90000;
@@ -4433,16 +4434,10 @@ async function providerFetchReservedV18(
     remaining >=
       0
   ) {
-    await rpcRefresh(
-      env,
-      "two45_set_provider_remaining",
-      {
-        p_remaining:
-          remaining
-      }
-    ).catch(
-      () => null
-    );
+    await Promise.race([
+      rpcRefresh(env, "two45_set_provider_remaining", {p_remaining: remaining}),
+      new Promise(resolve => setTimeout(() => resolve(null), 3000))
+    ]).catch(() => null);
   }
 
   const payload =
@@ -6071,7 +6066,7 @@ async function runCycleV19(event, env, force = false) {
   // rate-limit backoff instead of shutting the pipeline down.
   const token = crypto.randomUUID();
   const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: 'v19-pipeline', p_lock_token: token, p_ttl_seconds: 900
+    p_lock_key: 'v19-pipeline', p_lock_token: token, p_ttl_seconds: 90
   });
   if (!acquired) return {ok: true, skipped: true, reason: 'Another V19 cycle is running'};
   const startedAt = new Date().toISOString();
