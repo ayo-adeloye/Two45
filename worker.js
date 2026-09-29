@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.31-v2-bounded-heartbeat";
+const PACING_REVISION = "2026-09-29.32-v2-self-healing-watchdog";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6685,6 +6685,27 @@ async function timedV2(promise, ms, label) {
   }
 }
 
+async function runAnalysisWatchdogV2(env) {
+  try {
+    const rows = await sb(env, "rpc/two45_analysis_watchdog", {
+      method: "POST",
+      body: JSON.stringify({p_model_version: MODEL_VERSION, p_timeout_minutes: 3})
+    });
+    const row = arr(rows)[0] || {};
+    return {
+      recoveredAnalysis: num(row.recovered_analysis),
+      recoveredJobs: num(row.recovered_jobs),
+      pending: num(row.pending),
+      processing: num(row.processing),
+      complete: num(row.complete),
+      failed: num(row.failed),
+      lastCompletedAt: row.last_completed_at || null
+    };
+  } catch (e) {
+    return {recoveredAnalysis:0,recoveredJobs:0,error:safeRefreshError(e)};
+  }
+}
+
 async function scheduledAnalysisV2(event, env) {
   const startedAt = new Date().toISOString();
   const result = {
@@ -6695,8 +6716,11 @@ async function scheduledAnalysisV2(event, env) {
     cron: event?.cron || "* * * * *",
     startedAt,
     model: null,
+    watchdog: null,
     maintenance: []
   };
+
+  result.watchdog = await runAnalysisWatchdogV2(env);
 
   await saveFeedSnapshot(env, "cron-status", {
     status: "running",
@@ -6734,7 +6758,9 @@ async function scheduledAnalysisV2(event, env) {
 
   const minute = new Date().getUTCMinutes();
 
-  if (minute % 5 === 0) {
+  const pendingBacklog = num(result.watchdog?.pending) > 0 || num(result.model?.freshBaselineBacklog) > 0;
+
+  if (!pendingBacklog && minute % 5 === 0) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
@@ -6746,7 +6772,7 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
-  if (minute % 10 === 0) {
+  if (!pendingBacklog && minute % 10 === 0) {
     try {
       result.settled = await timedV2(settle(env), 10000, "settlement");
     } catch (e) {
