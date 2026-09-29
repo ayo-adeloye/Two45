@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 26;
-const PACING_REVISION = "2026-09-29.7-wait-fix";
+const WORKER_VERSION = 27;
+const PACING_REVISION = "2026-09-29.8-supabase-egress";
 const PROVIDER_INTERVAL_MS = 22000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.7";
@@ -4360,37 +4360,27 @@ async function providerFetchReservedV18(
   await saveFeedSnapshot(env, 'api-football-pacing', pacing, 172800);
   if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
 
-  const q =
-    new URLSearchParams();
-
-  for (
-    const [
-      k,
-      v
-    ] of Object.entries(
-      params
-    )
-  ) {
-    if (
-      v !== undefined &&
-      v !== null
-    ) {
-      q.set(
-        k,
-        String(v)
-      );
-    }
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("Supabase gateway configuration missing.");
   }
+
+  const gatewayUrl =
+    `${String(env.SUPABASE_URL).replace(/\/$/, "")}/functions/v1/two45-football-gateway`;
 
   const response =
     await fetch(
-      `${(env.API_FOOTBALL_BASE_URL || API_BASE).replace(/\/$/, "")}/${path}${
-        q.size
-          ? `?${q}`
-          : ""
-      }`,
+      gatewayUrl,
       {
+        method:
+          "POST",
+
         headers: {
+          Authorization:
+            `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+
+          "Content-Type":
+            "application/json",
+
           "x-apisports-key":
             footballKey(
               env
@@ -4399,7 +4389,16 @@ async function providerFetchReservedV18(
           Accept:
             "application/json"
         },
-        signal: AbortSignal.timeout(15000)
+
+        body:
+          JSON.stringify({
+            endpoint:
+              String(path).replace(/^\/+/, ""),
+
+            params
+          }),
+
+        signal: AbortSignal.timeout(20000)
       }
     );
 
