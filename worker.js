@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.28-v2-success-path-fix";
+const PACING_REVISION = "2026-09-29.29-v2-fresh-first";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6369,8 +6369,12 @@ function rankedJobsV19(jobs) {
     const otherFresh = fresh.filter(j => dateOfV19(j.kickoff_at) !== tomorrow);
     return [...tomorrowFresh, ...otherFresh, ...live, ...repeat];
   }
-  const lanes = Math.floor(Date.now() / 300000) % 2 ? [fresh, live, fresh, repeat] : [live, fresh, repeat, fresh];
-  while (fresh.length || live.length || repeat.length) {
+  // V2 coverage rule: while any fixture has never completed the current
+  // model, clear fresh coverage before spending cycles on live/repeat refreshes.
+  if (fresh.length) return [...fresh, ...live, ...repeat];
+
+  const lanes = [live, repeat];
+  while (live.length || repeat.length) {
     for (const lane of lanes) if (lane.length) ordered.push(lane.shift());
   }
   return ordered;
