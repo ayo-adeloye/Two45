@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.15-no-default-under45";
+const PACING_REVISION = "2026-09-29.16-normalize-cached-no-bet";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.8";
@@ -352,9 +352,19 @@ function formatBoardSelectionsV20(payload) {
   if (!payload || typeof payload !== "object") return payload;
   const formatItem = item => {
     if (!item || typeof item !== "object") return item;
+    const qualified =
+      item.decision === "PICK" &&
+      item.selection &&
+      String(item.selection).toUpperCase() !== "NO_BET";
+
     return {
       ...item,
-      selection: displaySelectionV20(item.selection),
+      market: qualified ? item.market : "NO_BET",
+      selection: qualified ? displaySelectionV20(item.selection) : "NO_BET",
+      probability: qualified ? item.probability : 0,
+      fairOdds: qualified ? (item.fairOdds ?? null) : null,
+      sportsbookOdds: qualified ? (item.sportsbookOdds ?? null) : null,
+      bookmaker: qualified ? (item.bookmaker ?? null) : null,
       alternatives: displayAlternativesV20(item.alternatives)
     };
   };
