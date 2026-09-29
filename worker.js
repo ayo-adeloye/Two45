@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.24-analysis-engine-v2";
+const PACING_REVISION = "2026-09-29.25-v2-cache-throughput";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -2276,6 +2276,30 @@ async function teamStats(
       ? job.home_team_id
       : job.away_team_id;
 
+  const teamName =
+    side === "home"
+      ? job.home_team
+      : job.away_team;
+
+  const cutoffDate = cutoff(job.kickoff_at);
+  const featureKey =
+    `${teamId}:${job.provider_league_id}:${job.season}:${cutoffDate}`;
+
+  try {
+    const cached = await sb(
+      env,
+      `two45_team_feature_snapshots?feature_key=eq.${encodeURIComponent(featureKey)}&select=raw_features,as_of&limit=1`
+    );
+    const row = arr(cached)[0];
+    if (
+      row?.raw_features &&
+      typeof row.raw_features === "object" &&
+      Object.keys(row.raw_features).length
+    ) {
+      return row.raw_features;
+    }
+  } catch (_) {}
+
   const data =
     await football(
       env,
@@ -2291,16 +2315,42 @@ async function teamStats(
           teamId,
 
         date:
-          cutoff(
-            job.kickoff_at
-          )
+          cutoffDate
       }
     );
 
-  return (
-    data.response ||
-    {}
-  );
+  const raw = data.response || {};
+
+  try {
+    const sampleSize = num(raw?.fixtures?.played?.total, 0);
+    await sb(
+      env,
+      "two45_team_feature_snapshots?on_conflict=feature_key",
+      {
+        method: "POST",
+        prefer: "resolution=merge-duplicates,return=minimal",
+        body: JSON.stringify({
+          feature_key: featureKey,
+          provider_team_id: String(teamId),
+          team_name: teamName || String(teamId),
+          provider_league_id: String(job.provider_league_id || ""),
+          competition: job.competition || null,
+          season: num(job.season, null),
+          as_of: new Date().toISOString(),
+          sample_size: sampleSize,
+          data_quality: clamp(sampleSize / 10, 0, 1),
+          raw_features: raw,
+          source_meta: {
+            provider: "api-football",
+            cutoff: cutoffDate,
+            cachedBy: "analysis-engine-v2"
+          }
+        })
+      }
+    );
+  } catch (_) {}
+
+  return raw;
 }
 
 /* =========================================================
@@ -4128,19 +4178,19 @@ async function processOne(
   job
 ) {
   try {
-    const hs =
-      await teamStats(
-        env,
-        job,
-        "home"
-      );
-
-    const as =
-      await teamStats(
-        env,
-        job,
-        "away"
-      );
+    const [hs, as] =
+      await Promise.all([
+        teamStats(
+          env,
+          job,
+          "home"
+        ),
+        teamStats(
+          env,
+          job,
+          "away"
+        )
+      ]);
 
     const hf =
       toFeatures(
@@ -4270,6 +4320,12 @@ async function processOne(
               ) >= 4
               ? "FAILED"
               : "PENDING",
+
+        attempts:
+          rateLimited ? 0 : num(job.attempts, 0),
+
+        started_at:
+          rateLimited ? null : job.started_at,
 
         last_error:
           msg
