@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.19-real-options-no-u45-default";
+const PACING_REVISION = "2026-09-29.20-analysis-stall-fix";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4112,7 +4112,7 @@ async function processOne(
       String(e);
 
     const rateLimited =
-      /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window/i.test(
+      /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window|pacing lock busy|another request is active/i.test(
         msg
       );
 
@@ -4141,7 +4141,7 @@ async function processOne(
         job.fixture_id,
 
       status:
-        "FAILED",
+        rateLimited ? "DEFERRED" : "FAILED",
 
       error:
         msg,
@@ -4195,7 +4195,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     results.push(result);
     if (result.rateLimited) break; // Stop before consuming further budget/failed attempts.
   }
-  return {ok: results.every(x => x.status === 'READY'), claimed,
+  return {ok: results.every(x => x.status === 'READY' || x.status === 'DEFERRED'), claimed,
     processed: results.length, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue: queue.summary, results};
 }
 
@@ -4489,10 +4489,15 @@ async function providerFetchV18(env, path, params = {}) {
   }
   const token = crypto.randomUUID();
   const lockKey = 'api-football-pacing';
-  const acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
-    p_lock_key: lockKey, p_lock_token: token, p_ttl_seconds: 90
-  });
-  if (!acquired) throw new Error('API-Football rate limit pacing: another request is active');
+  let acquired = false;
+  const lockWaitDeadline = Date.now() + 15000;
+  while (!acquired && Date.now() < lockWaitDeadline) {
+    acquired = await rpcRefresh(env, 'two45_try_refresh_lock', {
+      p_lock_key: lockKey, p_lock_token: token, p_ttl_seconds: 90
+    });
+    if (!acquired) await new Promise(resolve => setTimeout(resolve, 750));
+  }
+  if (!acquired) throw new Error('API-Football pacing lock busy after retry window');
   const leaseDeadline = Date.now() + 90000;
   let pacing;
   try {
@@ -6248,12 +6253,14 @@ async function refreshCarryoverV19(env) {
   return {ok: true, key: fixtureKey(yesterday), total: payload.total, settlementOnly: true};
 }
 
-async function evaluateBoardV19(env, date) {
+async function evaluateBoardV19(env, date, light = false) {
   if (!dateAllowedV19(date)) return {ok: true, skipped: true, date};
-  let external;
-  try { external = await runBackgroundEvaluationV18(env, date, null); }
-  catch (error) { external = {ok: false, error: safeRefreshError(error)}; }
   const previous = await getFeedSnapshot(env, modelBoardKey(date));
+  let external = {ok: true, board: previous?.payload || null};
+  if (!light) {
+    try { external = await runBackgroundEvaluationV18(env, date, null); }
+    catch (error) { external = {ok: false, error: safeRefreshError(error), board: previous?.payload || null}; }
+  }
   const base = external.board || previous?.payload || {};
   const fixtureData = await fixtureSnapshotV19(env, date);
   const fixtures = fixtureData.fixtures;
@@ -6355,7 +6362,11 @@ async function runCycleV19(event, env, force = false) {
     // Forecast inserts already refresh the model board through the Supabase trigger.
     // Skip the heavier full evaluator while clearing fresh baselines.
     if (clearingFresh) {
-      result.boards.push({ok:true, skipped:true, reason:'Dynamic forecast trigger keeps board current during baseline clearing'});
+      try {
+        result.boards.push(await evaluateBoardV19(env, easternDate(), true));
+      } catch (e) {
+        result.errors.push({stage: 'board-light', date: easternDate(), error: safeRefreshError(e)});
+      }
     } else {
       for (const date of activeDatesV19().slice().sort((a, b) => Number(b === tomorrowEasternDate()) - Number(a === tomorrowEasternDate()))) {
         try { result.boards.push(await evaluateBoardV19(env, date)); }
