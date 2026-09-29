@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 35;
-const PACING_REVISION = "2026-09-29.35-permanent-pipeline";
+const PACING_REVISION = "2026-09-29.36-serialized-cruise";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6754,6 +6754,25 @@ async function runAnalysisWatchdogV2(env) {
 }
 
 async function scheduledAnalysisV2(event, env) {
+  const cycleToken = crypto.randomUUID();
+  const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
+    p_lock_key: "scheduled-analysis-v36",
+    p_lock_token: cycleToken,
+    p_ttl_seconds: 90
+  }).catch(() => false);
+
+  if (!acquired) {
+    return {
+      ok: true,
+      skipped: true,
+      version: WORKER_VERSION,
+      pacingRevision: PACING_REVISION,
+      engine: "analysis-engine-v2",
+      reason: "Previous analysis cycle still running"
+    };
+  }
+
+  try {
   const startedAt = new Date().toISOString();
   const result = {
     ok: true,
@@ -6828,6 +6847,12 @@ async function scheduledAnalysisV2(event, env) {
   }
 
   return result;
+  } finally {
+    await rpcRefresh(env, "two45_release_refresh_lock", {
+      p_lock_key: "scheduled-analysis-v36",
+      p_lock_token: cycleToken
+    }).catch(() => false);
+  }
 }
 
 export default {
