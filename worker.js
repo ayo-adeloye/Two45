@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 33;
-const PACING_REVISION = "2026-09-29.17-v19-international-market-depth";
+const PACING_REVISION = "2026-09-29.18-picks-with-options-ux";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -3241,10 +3241,33 @@ function displaySelectionV20(value) {
 
 function displayAlternativesV20(items) {
   return Array.isArray(items)
-    ? items.map(item => ({
-        ...item,
-        selection: displaySelectionV20(item?.selection)
-      }))
+    ? items.map(item => {
+        const lane = item?.lane || "WATCH";
+        const edge = item?.valueEdge != null
+          ? Math.round(num(item.valueEdge,0) * 1000) / 10
+          : null;
+        const role =
+          lane === "STRONG"
+            ? "STRONG_OPTION"
+            : lane === "RISKY_VALUE"
+              ? "VALUE_OPTION"
+              : "WATCH_OPTION";
+        const reason =
+          lane === "STRONG"
+            ? "Cleared Two45 probability, data-quality and market-value gates."
+            : lane === "RISKY_VALUE"
+              ? "Higher-variance option with a positive model/market edge."
+              : num(item?.bookmakerCount,0) >= 2
+                ? "Supported across multiple sportsbook lines; kept as an analysis option."
+                : "Available market signal; useful for analysis but not yet a final Two45 pick.";
+        return {
+          ...item,
+          selection: displaySelectionV20(item?.selection),
+          role,
+          reason,
+          valueEdgePct: edge
+        };
+      })
     : [];
 }
 
