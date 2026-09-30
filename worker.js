@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 44;
-const PACING_REVISION = "2026-09-29.48-finish-fixture-before-next";
+const WORKER_VERSION = 45;
+const PACING_REVISION = "2026-09-29.49-prioritize-partial-baselines";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7183,17 +7183,29 @@ function rankedJobsV19(jobs) {
   const live = candidates.filter(j => j.canonicalComplete && LIVE_STATUSES.has(j.metadata?.fixture_status));
   const repeat = candidates.filter(j => j.canonicalComplete && !LIVE_STATUSES.has(j.metadata?.fixture_status));
   const ordered = [];
+
+  const partiallyStaged = fresh.filter(j =>
+    String(j.last_error || "").includes("Baseline home input cached")
+  );
+  const stagedIds = new Set(partiallyStaged.map(j => j.id));
+  const untouchedFresh = fresh.filter(j => !stagedIds.has(j.id));
+
+  // Finish a partially staged fixture before opening another fresh fixture.
+  if (partiallyStaged.length) {
+    return [...partiallyStaged, ...untouchedFresh, ...live, ...repeat];
+  }
+
   // V22 Cruise Control: after 8 PM, finish never-analyzed Tomorrow jobs
   // before spending provider calls on repeat/deep-enrichment refreshes.
   if (shouldPreloadTomorrow()) {
     const tomorrow = tomorrowEasternDate();
-    const tomorrowFresh = fresh.filter(j => dateOfV19(j.kickoff_at) === tomorrow);
-    const otherFresh = fresh.filter(j => dateOfV19(j.kickoff_at) !== tomorrow);
+    const tomorrowFresh = untouchedFresh.filter(j => dateOfV19(j.kickoff_at) === tomorrow);
+    const otherFresh = untouchedFresh.filter(j => dateOfV19(j.kickoff_at) !== tomorrow);
     return [...tomorrowFresh, ...otherFresh, ...live, ...repeat];
   }
   // V2 coverage rule: while any fixture has never completed the current
   // model, clear fresh coverage before spending cycles on live/repeat refreshes.
-  if (fresh.length) return [...fresh, ...live, ...repeat];
+  if (untouchedFresh.length) return [...untouchedFresh, ...live, ...repeat];
 
   const lanes = [live, repeat];
   while (live.length || repeat.length) {
