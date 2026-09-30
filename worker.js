@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 40;
-const PACING_REVISION = "2026-09-29.44-bounded-cron-runtime";
+const WORKER_VERSION = 41;
+const PACING_REVISION = "2026-09-29.45-complete-first-enrich-second";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4704,8 +4704,10 @@ async function processOne(
       typeof canonicalBefore.result === "object"
         ? canonicalBefore.result
         : {};
+    // A partial/stale result is not a completed baseline.
+    // Only a genuinely COMPLETE canonical analysis is allowed into the costly enrichment pass.
     const baselineFirstPass =
-      !Object.keys(canonicalResult).length;
+      canonicalBefore?.status !== "COMPLETE";
     const optionalIntel = baselineFirstPass
       ? {source:"baseline-first-pass", enriched:false, deferred:true}
       : await optionalIntelligenceV21(env, job);
