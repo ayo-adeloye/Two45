@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 41;
-const PACING_REVISION = "2026-09-29.45-complete-first-enrich-second";
+const WORKER_VERSION = 42;
+const PACING_REVISION = "2026-09-29.46-incremental-baseline";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -2753,6 +2753,24 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
+async function cachedTeamStatsV56(env, job, side) {
+  const teamId = side === "home" ? job.home_team_id : job.away_team_id;
+  const cutoffDate = cutoff(job.kickoff_at);
+  const featureKey = String(teamId) + ":" + String(job.provider_league_id) + ":" + String(job.season) + ":" + cutoffDate;
+  try {
+    const cached = await sb(
+      env,
+      "two45_team_feature_snapshots?feature_key=eq." + encodeURIComponent(featureKey) + "&select=raw_features,as_of&limit=1",
+      {timeoutMs: 3500}
+    );
+    const row = arr(cached)[0];
+    if (row?.raw_features && typeof row.raw_features === "object" && Object.keys(row.raw_features).length) {
+      return row.raw_features;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function teamStats(
   env,
   job,
@@ -4671,43 +4689,60 @@ async function processOne(
   job
 ) {
   try {
-    const [hs, as] =
-      await Promise.all([
-        teamStats(
-          env,
-          job,
-          "home"
-        ),
-        teamStats(
-          env,
-          job,
-          "away"
-        )
-      ]);
-
-    const hf =
-      toFeatures(
-        hs
-      );
-
-    const af =
-      toFeatures(
-        as
-      );
-
-    // V22 Cruise Control: publish the first forecast from the minimum
-    // reliable team-stat inputs; layer costly enrichment on later refreshes.
+    // Never hold one fixture lease across two missing upstream team-stat calls.
+    // Cache lookup is cheap; if both sides are absent, fetch one side and release.
     const canonicalBefore =
       await currentCanonicalAnalysisV2(env, job.fixture_id).catch(() => null);
-    const canonicalResult =
-      canonicalBefore?.result &&
-      typeof canonicalBefore.result === "object"
-        ? canonicalBefore.result
-        : {};
-    // A partial/stale result is not a completed baseline.
-    // Only a genuinely COMPLETE canonical analysis is allowed into the costly enrichment pass.
     const baselineFirstPass =
       canonicalBefore?.status !== "COMPLETE";
+
+    let [hs, as] = await Promise.all([
+      cachedTeamStatsV56(env, job, "home"),
+      cachedTeamStatsV56(env, job, "away")
+    ]);
+
+    const missingHome = !hs;
+    const missingAway = !as;
+
+    if (missingHome) {
+      hs = await teamStats(env, job, "home");
+    } else if (missingAway) {
+      as = await teamStats(env, job, "away");
+    }
+
+    if (missingHome && missingAway) {
+      const now = new Date().toISOString();
+      await patchJob(env, job.id, {
+        status: "PENDING",
+        attempts: 0,
+        started_at: null,
+        requested_at: now,
+        last_error: "Baseline home input cached; waiting for away input"
+      }).catch(() => null);
+      await failCanonicalAnalysisV2(
+        env,
+        job,
+        "Baseline input cached; continuing next cycle",
+        true
+      ).catch(() => null);
+      return {
+        fixtureId: job.fixture_id,
+        status: "DEFERRED",
+        baselineStaged: true,
+        waitingFor: "away-team-baseline",
+        rateLimited: false
+      };
+    }
+
+    if (!hs || !as) {
+      throw new Error("Baseline team features unavailable after incremental fetch");
+    }
+
+    const hf = toFeatures(hs);
+    const af = toFeatures(as);
+
+    // Publish the first forecast from minimum reliable cached team-stat inputs.
+    // Costly enrichment only runs after a genuine COMPLETE canonical baseline.
     const optionalIntel = baselineFirstPass
       ? {source:"baseline-first-pass", enriched:false, deferred:true}
       : await optionalIntelligenceV21(env, job);
