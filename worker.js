@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 37;
-const PACING_REVISION = "2026-09-29.41-light-queue-state";
+const WORKER_VERSION = 38;
+const PACING_REVISION = "2026-09-29.42-stateful-tomorrow-preload";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7505,34 +7505,69 @@ async function ensureTomorrowPreloadV49(env) {
 
   const tomorrow = tomorrowEasternDate();
   const key = fixtureKey(tomorrow);
-  const snap = await getFeedSnapshot(env, key).catch(() => null);
+  const stageKey = "tomorrow-staged:" + tomorrow;
+  const [snap, staged] = await Promise.all([
+    getFeedSnapshot(env, key).catch(() => null),
+    getFeedSnapshot(env, stageKey).catch(() => null)
+  ]);
+
   const ageMs = snap?.refreshed_at
     ? Date.now() - Date.parse(snap.refreshed_at)
     : Infinity;
 
   let refreshed = false;
   let fixtureCount = 0;
+  let mustSync = !staged?.payload?.staged;
 
   if (!snap || ageMs > 30 * 60000) {
     const payload = await refreshFixturesV18(env, tomorrow);
-    fixtureCount = arr(payload?.fixtures).length || arr(payload?.response).length || num(payload?.total,0);
+    fixtureCount = arr(payload?.fixtures).length ||
+      arr(payload?.response).length ||
+      num(payload?.total,0);
     await saveFeedSnapshot(env, key, payload, 1800);
     refreshed = true;
+    mustSync = true;
   } else {
     fixtureCount = arr(snap?.payload?.fixtures).length ||
       arr(snap?.payload?.response).length ||
       num(snap?.payload?.total,0);
   }
 
-  // Always sync after 8 PM so newly available tomorrow fixtures enter the queue
-  // even when today's analysis backlog is non-empty.
-  const sync = await syncFixtureJobsV19(env);
+  if (!mustSync) {
+    return {
+      ok:true,
+      date:tomorrow,
+      refreshed:false,
+      fixtureCount,
+      staged:true,
+      queue:staged?.payload?.queue || null,
+      skippedSync:true
+    };
+  }
+
+  const sync = await timedV2(
+    syncFixtureJobsV19(env),
+    9000,
+    "tomorrow queue sync"
+  );
+
+  const stagePayload = {
+    staged:true,
+    date:tomorrow,
+    fixtureCount,
+    stagedAt:new Date().toISOString(),
+    fixtureSnapshotRefreshedAt:
+      (await getFeedSnapshot(env, key).catch(() => null))?.refreshed_at || null,
+    queue:sync?.summary || null
+  };
+  await saveFeedSnapshot(env, stageKey, stagePayload, 7200).catch(() => null);
 
   return {
     ok:true,
     date:tomorrow,
     refreshed,
     fixtureCount,
+    staged:true,
     queue:sync?.summary || null
   };
 }
