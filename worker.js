@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 53;
-const PACING_REVISION = "2026-09-30.53-lock-free-cron";
+const WORKER_VERSION = 54;
+const PACING_REVISION = "2026-09-30.54-finish-staged-first";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7265,15 +7265,23 @@ function rankedJobsV19(jobs) {
   const repeat = candidates.filter(j => j.canonicalComplete && !LIVE_STATUSES.has(j.metadata?.fixture_status));
   const ordered = [];
 
-  const partiallyStaged = fresh.filter(j =>
+  const analysisReady = fresh.filter(j =>
+    String(j.last_error || "").includes("Baseline inputs ready")
+  );
+  const homeStaged = fresh.filter(j =>
     String(j.last_error || "").includes("Baseline home input cached")
   );
-  const stagedIds = new Set(partiallyStaged.map(j => j.id));
+  const stagedIds = new Set(
+    [...analysisReady, ...homeStaged].map(j => j.id)
+  );
   const untouchedFresh = fresh.filter(j => !stagedIds.has(j.id));
 
-  // Finish a partially staged fixture before opening another fresh fixture.
-  if (partiallyStaged.length) {
-    return [...partiallyStaged, ...untouchedFresh, ...live, ...repeat];
+  // V54: finish the fixture state machine before opening more work.
+  // Fully staged baselines get first priority, then half-staged baselines,
+  // then untouched fixtures. This converts steady activity into steady
+  // completions instead of endlessly staging new matches.
+  if (analysisReady.length || homeStaged.length) {
+    return [...analysisReady, ...homeStaged, ...untouchedFresh, ...live, ...repeat];
   }
 
   // V22 Cruise Control: after 8 PM, finish never-analyzed Tomorrow jobs
