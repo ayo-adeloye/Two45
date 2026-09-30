@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 45;
-const PACING_REVISION = "2026-09-29.49-prioritize-partial-baselines";
+const WORKER_VERSION = 46;
+const PACING_REVISION = "2026-09-29.50-small-ranked-queue";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4887,33 +4887,72 @@ async function processOne(
 }
 
 async function loadExistingQueueV39(env) {
-  const jobs = await allRowsV19(
-    env,
-    "two45_feature_jobs?select=id,job_key,provider_match_id,fixture_id,kickoff_at,competition,provider_league_id,season,home_team_id,home_team,away_team_id,away_team,status,priority,attempts,requested_at,started_at,completed_at,last_error,source_snapshot_key,fixture_status:metadata->>fixture_status&order=priority.asc,requested_at.asc"
-  );
-  const active = jobs
-    .filter(j => dateAllowedV19(dateOfV19(j.kickoff_at)))
-    .map(j => ({
-      ...j,
-      metadata: {fixture_status: j.fixture_status || null}
+  try {
+    const rows = arr(await sb(env, "rpc/two45_next_feature_jobs_v2", {
+      method: "POST",
+      timeoutMs: 5000,
+      body: JSON.stringify({
+        p_model_version: MODEL_VERSION,
+        p_limit: 30
+      })
     }));
-  if (!active.length) return await syncFixtureJobsV19(env);
-  const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at,shadow_attempted&order=fixture_id.asc");
-  const byFixture = new Map(canonical.map(r => [Number(r.fixture_id), r]));
-  return {
-    jobs: active.map(j => {
-      const row = byFixture.get(Number(j.fixture_id));
-      return {
-        ...j,
-        canonicalComplete: row?.status === "COMPLETE",
-        canonicalStatus: row?.status || "PENDING",
-        canonicalRefreshing: Boolean(row?.refreshing),
-        shadowAttempted: Boolean(row?.shadow_attempted)
-      };
-    }),
-    summary: {eligible: active.length, existing: active.length, inserted: 0, excluded: jobs.length - active.length, source: "direct-existing-queue-v39"}
-  };
+
+    const jobs = rows.map(r => ({
+      ...(r.job || {}),
+      canonicalComplete: Boolean(r.canonical_complete),
+      canonicalStatus: r.canonical_status || "PENDING",
+      canonicalRefreshing: Boolean(r.canonical_refreshing),
+      shadowAttempted: Boolean(r.shadow_attempted)
+    }));
+
+    return {
+      jobs,
+      summary: {
+        eligible: jobs.length,
+        existing: jobs.length,
+        inserted: 0,
+        excluded: 0,
+        source: "ranked-rpc-v2"
+      }
+    };
+  } catch (e) {
+    // Small bounded fallback only; never scan the full queue in a cron cycle.
+    const jobs = arr(await sb(
+      env,
+      "two45_feature_jobs?status=in.(PENDING,READY,FAILED)&select=id,job_key,provider_match_id,fixture_id,kickoff_at,competition,provider_league_id,season,home_team_id,home_team,away_team_id,away_team,status,priority,attempts,requested_at,started_at,completed_at,last_error,source_snapshot_key,metadata&order=priority.asc,requested_at.asc&limit=30",
+      {timeoutMs: 5000}
+    ));
+    const ids = jobs.map(j => Number(j.fixture_id)).filter(Boolean);
+    const canonical = ids.length
+      ? await rowsForIdsV19(env, "two45_analysis_state", "fixture_id", ids)
+      : [];
+    const byFixture = new Map(
+      canonical
+        .filter(r => r.model_version === MODEL_VERSION)
+        .map(r => [Number(r.fixture_id), r])
+    );
+    return {
+      jobs: jobs.map(j => {
+        const row = byFixture.get(Number(j.fixture_id));
+        return {
+          ...j,
+          canonicalComplete: row?.status === "COMPLETE",
+          canonicalStatus: row?.status || "PENDING",
+          canonicalRefreshing: Boolean(row?.refreshing),
+          shadowAttempted: Boolean(row?.shadow_attempted)
+        };
+      }),
+      summary: {
+        eligible: jobs.length,
+        existing: jobs.length,
+        inserted: 0,
+        excluded: 0,
+        source: "bounded-fallback-v2"
+      }
+    };
+  }
 }
+
 async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
   if (providerQuietWindow()) {
     return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York", claimed:0, processed:0, queue:null, results:[]};
