@@ -20,6 +20,8 @@ const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
 const TARGET_DAILY_REQUESTS = 6000;
 const FAST_BASELINE_INTERVAL_MS = 2000;
+const SHADOW_V40_DEFAULT_DAILY_CAP = 650;
+
 
 const LIVE_STATUSES = new Set([
   "1H",
@@ -2197,6 +2199,35 @@ function summarizeRecentV211(fixtures, teamId) {
 function summarizeH2HV211(fixtures, homeId, awayId) { const rows=fixtures.filter(f=>Number(f?.fixture?.timestamp||0)>0).sort((a,b)=>Number(b.fixture.timestamp)-Number(a.fixture.timestamp)).slice(0,5); let hw=0,aw=0,d=0,total=0,weight=0,homeScore=0; rows.forEach((f,i)=>{const hIsHome=Number(f.teams?.home?.id)===homeId,hg=Number(f.goals?.home),ag=Number(f.goals?.away);if(!Number.isFinite(hg)||!Number.isFinite(ag))return;const homeGoals=hIsHome?hg:ag,awayGoals=hIsHome?ag:hg,wt=Math.pow(0.65,i);weight+=wt;total+=homeGoals+awayGoals;if(homeGoals>awayGoals){hw++;homeScore+=wt}else if(homeGoals<awayGoals){aw++}else{d++;homeScore+=0.5*wt}}); const n=Math.max(1,hw+aw+d);return {matches:hw+aw+d,homeWins:hw,awayWins:aw,draws:d,avgGoals:total/n,recencyWeightedHomeShare:weight?homeScore/weight:0.5}; }
 
 
+
+function shadowV40Enabled(env) {
+  const raw = String(env.TWO45_V40_SHADOW_ENABLED ?? "0").trim().toLowerCase();
+  return ["1","true","yes","on"].includes(raw);
+}
+
+async function shadowBudgetV46(env) {
+  const key = "shadow-v40-budget:" + easternDate();
+  const snap = await getFeedSnapshot(env, key).catch(() => null);
+  const payload = snap?.payload || {};
+  return {
+    key,
+    used:Math.max(0,num(payload.used,0)),
+    cap:Math.max(50,num(env.TWO45_V40_DAILY_CAP,SHADOW_V40_DEFAULT_DAILY_CAP))
+  };
+}
+
+async function reserveShadowCallV46(env, count = 1) {
+  if (!shadowV40Enabled(env)) return false;
+  const budget = await shadowBudgetV46(env);
+  if (budget.used + count > budget.cap) return false;
+  await saveFeedSnapshot(env, budget.key, {
+    used:budget.used + count,
+    cap:budget.cap,
+    updatedAt:new Date().toISOString()
+  }, 2 * 86400).catch(() => null);
+  return true;
+}
+
 function statValueV40(rows, teamId, label) {
   const teamRow = arr(rows).find(r => Number(r?.team?.id) === Number(teamId));
   const stats = arr(teamRow?.statistics);
@@ -2282,6 +2313,8 @@ async function recentMarketProfileV40(env, teamId, recentFixtures = [], cacheSco
       const snap = await getFeedSnapshot(env, snapKey).catch(() => null);
       let stats = snap?.payload?.response || snap?.payload || null;
       if (!stats && newFetches < maxNewFetchesPerPass) {
+        const allowed = await reserveShadowCallV46(env, 1);
+        if (!allowed) continue;
         const r = await football(env, "/fixtures/statistics", {fixture: fixtureId});
         stats = r?.response || [];
         newFetches++;
@@ -2621,13 +2654,17 @@ async function optionalIntelligenceV21(env, job) {
     out.empiricalCalibration = calibration?.payload || {};
   } catch (_) { out.empiricalCalibration = {}; }
 
-  // V40 shadow market profiles. Cached and not yet used by the live selector.
-  try {
-    out.homeMarketProfile = await recentMarketProfileV40(env, Number(job.home_team_id), homeRecentFixtures, String(job.provider_league_id || ""));
-  } catch (e) { out.homeMarketProfileError = safeRefreshError(e); }
-  try {
-    out.awayMarketProfile = await recentMarketProfileV40(env, Number(job.away_team_id), awayRecentFixtures, String(job.provider_league_id || ""));
-  } catch (e) { out.awayMarketProfileError = safeRefreshError(e); }
+  // V40 shadow market profiles are explicitly gated and never drive the live selector.
+  if (shadowV40Enabled(env)) {
+    try {
+      out.homeMarketProfile = await recentMarketProfileV40(env, Number(job.home_team_id), homeRecentFixtures, String(job.provider_league_id || ""));
+    } catch (e) { out.homeMarketProfileError = safeRefreshError(e); }
+    try {
+      out.awayMarketProfile = await recentMarketProfileV40(env, Number(job.away_team_id), awayRecentFixtures, String(job.provider_league_id || ""));
+    } catch (e) { out.awayMarketProfileError = safeRefreshError(e); }
+  } else {
+    out.shadowV40Disabled = true;
+  }
 
   // One fixture-scoped injury call covers both teams. Lineups are most useful near kickoff.
   try {
@@ -4929,6 +4966,7 @@ function updateCalibrationAccumulatorV44(current, rows) {
 }
 
 async function settleShadowBacktestV44(env, limit = 1) {
+  if (!shadowV40Enabled(env)) return {ok:true,disabled:true,processed:0,skipped:0};
   const cutoffIso = new Date(Date.now() - 90 * 60000).toISOString();
   const rows = await sb(
     env,
@@ -4965,6 +5003,8 @@ async function settleShadowBacktestV44(env, limit = 1) {
     const status = String(fixture?.fixture?.status?.short || fixture?.status?.short || "").toUpperCase();
     if (!FINISHED_STATUSES.has(status)) { skipped++; continue; }
 
+    const allowed = await reserveShadowCallV46(env, 1);
+    if (!allowed) break;
     const statResponse = await football(env, "/fixtures/statistics", {fixture: fixtureId});
     const stats = arr(statResponse?.response);
     if (!stats.length) { skipped++; continue; }
@@ -5193,6 +5233,11 @@ async function modelStatus(env) {
     pacingRevision: PACING_REVISION,
     providerPacing: {minIntervalMs: FAST_BASELINE_INTERVAL_MS, maxIntervalMs: 22000, targetDailyRequests: TARGET_DAILY_REQUESTS, practicalDailyCap: PRACTICAL_DAILY_CAP, hardCap: HARD_CAP, state: (await getFeedSnapshot(env, "api-football-pacing"))?.payload || null, currentIntervalMs: adaptiveProviderIntervalV30((await getFeedSnapshot(env, "api-football-pacing"))?.payload || {})},
     modelBatch: batchLimitV19(env.TWO45_MODEL_BATCH),
+    shadowV40: {
+      enabled: shadowV40Enabled(env),
+      dailyCap: Math.max(50,num(env.TWO45_V40_DAILY_CAP,SHADOW_V40_DEFAULT_DAILY_CAP)),
+      budget: await shadowBudgetV46(env)
+    },
     pipeline: (await getFeedSnapshot(env, "cron-status").catch(() => null))?.payload || null,
 
     tomorrowPreloadStartsAt:
