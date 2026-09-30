@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 46;
-const PACING_REVISION = "2026-09-29.50-small-ranked-queue";
+const WORKER_VERSION = 47;
+const PACING_REVISION = "2026-09-29.51-preload-off-critical-path";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7600,49 +7600,53 @@ async function ensureTomorrowPreloadV49(env) {
   const tomorrow = tomorrowEasternDate();
   const key = fixtureKey(tomorrow);
   const stageKey = "tomorrow-staged:" + tomorrow;
+
   const [snap, staged] = await Promise.all([
     getFeedSnapshot(env, key).catch(() => null),
     getFeedSnapshot(env, stageKey).catch(() => null)
   ]);
 
-  const ageMs = snap?.refreshed_at
-    ? Date.now() - Date.parse(snap.refreshed_at)
-    : Infinity;
-
-  let refreshed = false;
-  let fixtureCount = 0;
-  let mustSync = !staged?.payload?.staged;
-
-  if (!snap || ageMs > 30 * 60000) {
-    const payload = await refreshFixturesV18(env, tomorrow);
-    fixtureCount = arr(payload?.fixtures).length ||
-      arr(payload?.response).length ||
-      num(payload?.total,0);
-    await saveFeedSnapshot(env, key, payload, 1800);
-    refreshed = true;
-    mustSync = true;
-  } else {
-    fixtureCount = arr(snap?.payload?.fixtures).length ||
+  // Once tomorrow has been staged successfully, never put another provider
+  // fixture refresh in front of the analysis queue. Feed maintenance can
+  // happen later; analysis must keep moving continuously.
+  if (snap && staged?.payload?.staged) {
+    const fixtureCount =
+      arr(snap?.payload?.fixtures).length ||
       arr(snap?.payload?.response).length ||
       num(snap?.payload?.total,0);
-  }
 
-  if (!mustSync) {
     return {
       ok:true,
       date:tomorrow,
       refreshed:false,
       fixtureCount,
       staged:true,
-      queue:staged?.payload?.queue || null,
-      skippedSync:true
+      skippedRefresh:true,
+      skippedSync:true,
+      queue:staged?.payload?.queue || null
     };
   }
+
+  // First-time preload only.
+  let payload = snap?.payload || null;
+  if (!payload) {
+    payload = await timedV2(
+      refreshFixturesV18(env, tomorrow),
+      9000,
+      "initial tomorrow fixture preload"
+    );
+    await saveFeedSnapshot(env, key, payload, 7200);
+  }
+
+  const fixtureCount =
+    arr(payload?.fixtures).length ||
+    arr(payload?.response).length ||
+    num(payload?.total,0);
 
   const sync = await timedV2(
     syncFixtureJobsV19(env),
     9000,
-    "tomorrow queue sync"
+    "initial tomorrow queue sync"
   );
 
   const stagePayload = {
@@ -7650,16 +7654,16 @@ async function ensureTomorrowPreloadV49(env) {
     date:tomorrow,
     fixtureCount,
     stagedAt:new Date().toISOString(),
-    fixtureSnapshotRefreshedAt:
-      (await getFeedSnapshot(env, key).catch(() => null))?.refreshed_at || null,
     queue:sync?.summary || null
   };
-  await saveFeedSnapshot(env, stageKey, stagePayload, 7200).catch(() => null);
+
+  await saveFeedSnapshot(env, stageKey, stagePayload, 12 * 3600)
+    .catch(() => null);
 
   return {
     ok:true,
     date:tomorrow,
-    refreshed,
+    refreshed:!snap,
     fixtureCount,
     staged:true,
     queue:sync?.summary || null
