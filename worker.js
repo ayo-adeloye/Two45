@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 52;
-const PACING_REVISION = "2026-09-30.52-bounded-provider-cycle";
+const PACING_REVISION = "2026-09-30.52-one-provider-call-no-wait";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4708,30 +4708,43 @@ async function processOne(
     const missingHome = !hs;
     const missingAway = !as;
 
+    let fetchedBaselineSide = null;
     if (missingHome) {
       hs = await teamStats(env, job, "home");
+      fetchedBaselineSide = "home";
     } else if (missingAway) {
       as = await teamStats(env, job, "away");
+      fetchedBaselineSide = "away";
     }
 
-    if (missingHome && missingAway) {
+    // V52 reliability invariant: at most one provider request per fixture per
+    // cron cycle. Even when this fetch completes the two-team baseline, defer
+    // final analysis/odds to the next cron rather than making a second provider
+    // call in the same Worker event.
+    if (fetchedBaselineSide) {
+      const stillNeedsAway = missingHome && missingAway;
       await patchJob(env, job.id, {
         status: "PENDING",
         attempts: 0,
         started_at: null,
-        last_error: "Baseline home input cached; waiting for away input"
+        last_error: stillNeedsAway
+          ? "Baseline home input cached; waiting for away input"
+          : "Baseline inputs ready; continuing analysis next cycle"
       }).catch(() => null);
       await failCanonicalAnalysisV2(
         env,
         job,
-        "Baseline input cached; continuing next cycle",
+        stillNeedsAway
+          ? "Baseline input cached; continuing next cycle"
+          : "Baseline inputs ready; final analysis continuing next cycle",
         true
       ).catch(() => null);
       return {
         fixtureId: job.fixture_id,
         status: "DEFERRED",
         baselineStaged: true,
-        waitingFor: "away-team-baseline",
+        fetchedBaselineSide,
+        waitingFor: stillNeedsAway ? "away-team-baseline" : "analysis-next-cycle",
         rateLimited: false
       };
     }
@@ -4968,7 +4981,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     await timedV2(requeueStale(env), 4000, "stale job recovery").catch(() => null);
     await timedV2(recoverCanonicalAnalysisV2(env), 4000, "canonical recovery").catch(() => null);
   }
-  const queue = prepared || await timedV2(loadExistingQueueV39(env), 2500, "queue load");
+  const queue = prepared || await timedV2(loadExistingQueueV39(env), 4000, "queue load");
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
@@ -5009,7 +5022,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     try {
       result = await timedV2(
         processOne(env, owned),
-        7000,
+        10000,
         "fixture " + owned.fixture_id + " analysis"
       );
     } catch (e) {
@@ -5558,7 +5571,7 @@ async function providerFetchV18(env, path, params = {}) {
   // Cron is already serialized at the pipeline level; daily usage is still
   // protected by the atomic reservation RPC below.
   const lockKey = 'api-football-pacing';
-  const leaseDeadline = Date.now() + 90000;
+  const leaseDeadline = Date.now() + 12000;
   let pacing;
   try {
     pacing = (await getFeedSnapshot(env, lockKey))?.payload || {};
@@ -5567,11 +5580,20 @@ async function providerFetchV18(env, path, params = {}) {
       throw new Error('Two45 practical daily cap of 6500 reached.');
     }
     const blockedWait = Math.max(0, num(pacing.blockedUntil) - Date.now());
-    if (blockedWait > 20000) throw new Error('API-Football rate limit cooldown is active');
-    if (blockedWait) await new Promise(resolve => setTimeout(resolve, blockedWait));
+    if (blockedWait > 0) {
+      const error = new Error('API-Football rate limit pacing not ready; retry on next cron');
+      error.retryAt = num(pacing.blockedUntil);
+      throw error;
+    }
     const wait = Math.max(0, num(pacing.nextAt) - Date.now());
-    if (wait > 45000) throw new Error('API-Football rate limit cooldown is active');
-    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    // V52: scheduled work never sleeps inside a Worker event. Cron runs every
+    // minute, so waiting here only increases the chance Cloudflare ends the
+    // event before Two45 can persist progress. Defer to the next cron instead.
+    if (wait > 0) {
+      const error = new Error('API-Football rate limit pacing not ready; retry on next cron');
+      error.retryAt = num(pacing.nextAt);
+      throw error;
+    }
     if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
     pacing = {...pacing, nextAt: Date.now() + adaptiveProviderIntervalV30(pacing)};
     await saveFeedSnapshot(env, lockKey, pacing, 172800);
@@ -5690,7 +5712,7 @@ async function providerFetchReservedV18(
             params
           }),
 
-        signal: AbortSignal.timeout(4500)
+        signal: AbortSignal.timeout(6500)
       }
     );
 
@@ -7695,7 +7717,7 @@ async function scheduledAnalysisV2(event, env) {
   const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
     p_lock_key: "scheduled-analysis-v36",
     p_lock_token: cycleToken,
-    p_ttl_seconds: 25
+    p_ttl_seconds: 50
   }).catch(() => false);
 
   if (!acquired) {
@@ -7747,18 +7769,10 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
-  await saveFeedSnapshot(env, "cron-status", {
-    status: "analysis-starting",
-    cron: result.cron,
-    startedAt,
-    heartbeatAt: new Date().toISOString(),
-    result
-  }, 1800).catch(() => null);
-
   try {
     result.model = await timedV2(
       processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-      9500,
+      14000,
       "analysis pass"
     );
   } catch (e) {
