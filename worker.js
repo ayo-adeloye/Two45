@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 52;
-const PACING_REVISION = "2026-09-30.52-one-provider-call-no-wait";
+const WORKER_VERSION = 53;
+const PACING_REVISION = "2026-09-30.53-lock-free-cron";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7713,25 +7713,10 @@ async function ensureTomorrowPreloadV49(env) {
 }
 
 async function scheduledAnalysisV2(event, env) {
-  const cycleToken = crypto.randomUUID();
-  const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
-    p_lock_key: "scheduled-analysis-v36",
-    p_lock_token: cycleToken,
-    p_ttl_seconds: 50
-  }).catch(() => false);
-
-  if (!acquired) {
-    return {
-      ok: true,
-      skipped: true,
-      version: WORKER_VERSION,
-      pacingRevision: PACING_REVISION,
-      engine: "analysis-engine-v2",
-      reason: "Previous analysis cycle still running"
-    };
-  }
-
-  try {
+  // V53: scheduled cron is intentionally lock-free. Fixture ownership is
+  // already protected by the atomic Postgres claim RPC, so a global refresh
+  // lock is unnecessary and was a single point of failure: if lock acquisition
+  // failed, the entire minute was silently skipped.
   const startedAt = new Date().toISOString();
   const result = {
     ok: true,
@@ -7744,6 +7729,16 @@ async function scheduledAnalysisV2(event, env) {
     watchdog: null,
     maintenance: []
   };
+
+  // Persist entry before any RPC/model work so cron invocation itself is
+  // observable even if a later dependency fails.
+  await saveFeedSnapshot(env, "cron-status", {
+    status: "starting",
+    cron: result.cron,
+    startedAt,
+    heartbeatAt: startedAt,
+    result
+  }, 1800).catch(() => null);
 
   result.watchdog = await runAnalysisWatchdogV2(env);
 
@@ -7870,12 +7865,6 @@ async function scheduledAnalysisV2(event, env) {
   }
 
   return result;
-  } finally {
-    await rpcRefresh(env, "two45_release_refresh_lock", {
-      p_lock_key: "scheduled-analysis-v36",
-      p_lock_token: cycleToken
-    }).catch(() => false);
-  }
 }
 
 export default {
