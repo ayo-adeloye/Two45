@@ -2447,6 +2447,45 @@ function rankShadowMarketsV41(shadow, homeProfile, awayProfile, competitionRelia
   };
 }
 
+
+function qualifyShadowDataDrivenV42(ranking, context = {}) {
+  const candidates = Array.isArray(ranking?.topMarkets) ? ranking.topMarkets : [];
+  const lineupCertainty = clamp(num(context.lineupCertainty,0.70),0,1);
+  const competitionReliability = clamp(num(context.competitionReliability,0.75),0,1);
+  return candidates.map(x => {
+    const evidence = clamp(num(x.evidenceQuality,0),0,1);
+    const p = clamp(num(x.calibratedProbability,0.5),0,1);
+    const dataDriven =
+      evidence >= 0.50 &&
+      p >= 0.60 &&
+      competitionReliability >= 0.75;
+    const confidenceScore = clamp(
+      p * 0.52 +
+      evidence * 0.28 +
+      competitionReliability * 0.12 +
+      lineupCertainty * 0.08,
+      0,1
+    );
+    return {
+      ...x,
+      dataDriven,
+      label: dataDriven ? "DATA_DRIVEN" : "RESEARCHING",
+      confidenceScore,
+      evidenceStatus:
+        evidence >= 0.75 ? "STRONG" :
+        evidence >= 0.50 ? "USABLE" :
+        "THIN",
+      reasons: [
+        "recent-market-profile",
+        "opponent-against-profile",
+        ranking?.calibrationStatus === "PROVISIONAL"
+          ? "provisional-calibration"
+          : "empirical-calibration"
+      ]
+    };
+  });
+}
+
 async function optionalIntelligenceV21(env, job) {
   const fixtureId = Number(job.fixture_id);
   const major = priorityCompetitionV20(job.competition, job.provider_league_id);
@@ -2559,11 +2598,19 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   home.marketProfile = intel.homeMarketProfile || null;
   away.marketProfile = intel.awayMarketProfile || null;
   intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
+  const compReliability = competitionReliability(job.competition, job.provider_league_id);
   intel.shadowMarketRanking = rankShadowMarketsV41(
     intel.shadowMarketModel,
     home.marketProfile,
     away.marketProfile,
-    competitionReliability(job.competition, job.provider_league_id)
+    compReliability
+  );
+  intel.shadowRecommendations = qualifyShadowDataDrivenV42(
+    intel.shadowMarketRanking,
+    {
+      competitionReliability: compReliability,
+      lineupCertainty: (num(home.lineupCertainty,0.70) + num(away.lineupCertainty,0.70)) / 2
+    }
   );
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
@@ -4550,7 +4597,8 @@ async function processOne(
       ...(analysis.intelligence || {}),
       availability: optionalIntel,
       shadowMarketModel: optionalIntel?.shadowMarketModel || null,
-      shadowMarketRanking: optionalIntel?.shadowMarketRanking || null
+      shadowMarketRanking: optionalIntel?.shadowMarketRanking || null,
+      shadowRecommendations: optionalIntel?.shadowRecommendations || []
     };
     await applyLiveStateV19(env, job, analysis);
     const odds = analysis.live && !analysis.liveUsable ? {response: []} : await oddsForJobV19(env, job);
