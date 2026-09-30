@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 50;
-const PACING_REVISION = "2026-09-30.50-atomic-claim-self-heal";
+const WORKER_VERSION = 51;
+const PACING_REVISION = "2026-09-30.51-short-critical-path";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4957,13 +4957,18 @@ async function loadExistingQueueV39(env) {
   }
 }
 
-async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
+async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, skipRecovery = false) {
   if (providerQuietWindow()) {
     return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York", claimed:0, processed:0, queue:null, results:[]};
   }
-  await timedV2(requeueStale(env), 6000, "stale job recovery").catch(() => null);
-  await timedV2(recoverCanonicalAnalysisV2(env), 6000, "canonical recovery").catch(() => null);
-  const queue = prepared || await timedV2(loadExistingQueueV39(env), 5000, "queue load");
+  // V51: scheduledAnalysisV2 already runs the watchdog before entering this
+  // function. Do not spend up to 12 seconds repeating stale recovery in the
+  // same cron event; that was starving the actual analysis pass.
+  if (!skipRecovery) {
+    await timedV2(requeueStale(env), 4000, "stale job recovery").catch(() => null);
+    await timedV2(recoverCanonicalAnalysisV2(env), 4000, "canonical recovery").catch(() => null);
+  }
+  const queue = prepared || await timedV2(loadExistingQueueV39(env), 4000, "queue load");
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
@@ -7744,8 +7749,8 @@ async function scheduledAnalysisV2(event, env) {
 
   try {
     result.model = await timedV2(
-      processJobs(env, DEFAULT_MODEL_BATCH),
-      22000,
+      processJobs(env, DEFAULT_MODEL_BATCH, null, true),
+      18000,
       "analysis pass"
     );
   } catch (e) {
@@ -7758,25 +7763,45 @@ async function scheduledAnalysisV2(event, env) {
     };
   }
 
-  // Refresh visible boards once per cycle, not once per forecast insert.
-  // This keeps forecast persistence fast while the UI still receives fresh analyzed counts.
-  try {
-    const boardDates = shouldPreloadTomorrow()
-      ? [tomorrowEasternDate(), easternDate()]
-      : [easternDate()];
-    for (const boardDate of boardDates) {
-      result.maintenance.push(await timedV2(
-        evaluateBoardV19(env, boardDate, true),
-        5000,
-        "light board refresh " + boardDate
-      ));
+  // V51: persist the model-stage result immediately. If Cloudflare ends the
+  // event during non-critical maintenance, the dashboard still sees the last
+  // successful/failed model pass instead of a misleading permanent "running".
+  const modelStageAt = new Date().toISOString();
+  await saveFeedSnapshot(env, "cron-status", {
+    status: result.model?.ok ? "model-complete" : "model-partial",
+    cron: result.cron,
+    startedAt,
+    heartbeatAt: modelStageAt,
+    modelCompletedAt: modelStageAt,
+    result
+  }, 1800).catch(() => null);
+
+  const pendingBacklogNow =
+    num(result.watchdog?.pending) > 0 ||
+    num(result.model?.freshBaselineBacklog) > 0;
+
+  // Board evaluation is not allowed to sit in front of queue drainage.
+  // While fresh work remains, the frontend reads canonical rows directly and
+  // the heavier board refresh waits until the backlog clears.
+  if (!pendingBacklogNow) {
+    try {
+      const boardDates = shouldPreloadTomorrow()
+        ? [tomorrowEasternDate(), easternDate()]
+        : [easternDate()];
+      for (const boardDate of boardDates) {
+        result.maintenance.push(await timedV2(
+          evaluateBoardV19(env, boardDate, true),
+          4000,
+          "light board refresh " + boardDate
+        ));
+      }
+    } catch (e) {
+      result.maintenance.push({
+        ok:false,
+        stage:"light-board-refresh",
+        error:safeRefreshError(e)
+      });
     }
-  } catch (e) {
-    result.maintenance.push({
-      ok:false,
-      stage:"light-board-refresh",
-      error:safeRefreshError(e)
-    });
   }
 
   const modelCompletedAt = new Date().toISOString();
@@ -7791,7 +7816,7 @@ async function scheduledAnalysisV2(event, env) {
 
   const minute = new Date().getUTCMinutes();
 
-  const pendingBacklog = num(result.watchdog?.pending) > 0 || num(result.model?.freshBaselineBacklog) > 0;
+  const pendingBacklog = pendingBacklogNow;
 
   if (!pendingBacklog && minute % 5 === 0) {
     try {
