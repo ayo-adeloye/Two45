@@ -5002,6 +5002,104 @@ async function settleShadowBacktestV44(env, limit = 1) {
   };
 }
 
+
+function parseCalibrationBucketV45(bucket) {
+  const m = String(bucket || "").match(/^([0-9.]+)-([0-9.]+)$/);
+  if (!m) return null;
+  const low = Number(m[1]);
+  const high = Number(m[2]);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+  return {low, high, midpoint:(low+high)/2};
+}
+
+function shadowAccuracyReportFromCalibrationV45(calibration = {}) {
+  const buckets = calibration?.buckets || {};
+  const marketMap = {};
+  let brierWeighted = 0;
+  let brierN = 0;
+
+  for (const [key,row] of Object.entries(buckets)) {
+    const split = key.lastIndexOf("|");
+    if (split < 0) continue;
+    const market = key.slice(0, split);
+    const bucket = key.slice(split + 1);
+    const settled = num(row?.settled,0);
+    const wins = num(row?.wins,0);
+    const losses = num(row?.losses,0);
+    if (!settled) continue;
+
+    const hitRate = wins / settled;
+    const parsed = parseCalibrationBucketV45(bucket);
+    const statedProbability = parsed?.midpoint ?? null;
+    const calibrationError = statedProbability == null
+      ? null
+      : Math.abs(hitRate - statedProbability);
+
+    marketMap[market] = marketMap[market] || {
+      market,
+      settled:0,
+      wins:0,
+      losses:0,
+      weightedStatedProbability:0,
+      calibrationErrorWeighted:0,
+      calibrationErrorN:0,
+      buckets:[]
+    };
+    const m = marketMap[market];
+    m.settled += settled;
+    m.wins += wins;
+    m.losses += losses;
+    if (statedProbability != null) {
+      m.weightedStatedProbability += statedProbability * settled;
+      m.calibrationErrorWeighted += calibrationError * settled;
+      m.calibrationErrorN += settled;
+      brierWeighted += Math.pow(hitRate - statedProbability,2) * settled;
+      brierN += settled;
+    }
+    m.buckets.push({
+      bucket,
+      settled,
+      wins,
+      losses,
+      hitRate,
+      statedProbability,
+      calibrationError
+    });
+  }
+
+  const markets = Object.values(marketMap).map(m => ({
+    market:m.market,
+    settled:m.settled,
+    wins:m.wins,
+    losses:m.losses,
+    hitRate:m.settled ? m.wins/m.settled : null,
+    avgStatedProbability:m.calibrationErrorN
+      ? m.weightedStatedProbability/m.calibrationErrorN
+      : null,
+    meanCalibrationError:m.calibrationErrorN
+      ? m.calibrationErrorWeighted/m.calibrationErrorN
+      : null,
+    buckets:m.buckets.sort((a,b) => String(a.bucket).localeCompare(String(b.bucket)))
+  })).sort((a,b) => b.settled - a.settled);
+
+  return {
+    model:"two45-market-shadow-v40",
+    calibrationStatus:num(calibration?.settled,0) >= 20 ? "EMPIRICAL_ACTIVE" : "COLLECTING",
+    settled:num(calibration?.settled,0),
+    wins:num(calibration?.wins,0),
+    losses:num(calibration?.losses,0),
+    hitRate:calibration?.hitRate ?? (num(calibration?.settled,0) ? num(calibration?.wins,0)/num(calibration?.settled,0) : null),
+    calibrationBrier:brierN ? brierWeighted/brierN : null,
+    markets,
+    updatedAt:calibration?.updatedAt || null
+  };
+}
+
+async function shadowAccuracyReportV45(env) {
+  const calibration = (await getFeedSnapshot(env, "shadow-calibration:v44").catch(() => null))?.payload || {};
+  return shadowAccuracyReportFromCalibrationV45(calibration);
+}
+
 async function settle(env) {
   return await sb(
     env,
@@ -7715,6 +7813,19 @@ export default {
             env
           )
         );
+      }
+
+      if (
+        url.pathname ===
+          "/api/internal/model-accuracy"
+      ) {
+        if (!internalRequestAuthorized(request, env)) {
+          return json({ok:false,error:"Protected Two45 accuracy endpoint."},403);
+        }
+        return json({
+          ok:true,
+          ...(await shadowAccuracyReportV45(env))
+        });
       }
 
       if (
