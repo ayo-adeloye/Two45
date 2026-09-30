@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 47;
-const PACING_REVISION = "2026-09-29.51-preload-off-critical-path";
+const WORKER_VERSION = 50;
+const PACING_REVISION = "2026-09-30.50-atomic-claim-self-heal";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4308,17 +4308,21 @@ async function jobForFixture(
 async function claimSpecificJob(env, job) {
   if (!dateAllowedV19(dateOfV19(job.kickoff_at))) return null;
   if (!['PENDING', 'READY', 'FAILED'].includes(job.status)) return null;
-  // requested_at and attempts prevent a stale reader from claiming a later incarnation.
-  const filter = `id=eq.${encodeURIComponent(job.id)}&status=eq.${job.status}` +
-    `&attempts=eq.${num(job.attempts)}&requested_at=eq.${encodeURIComponent(job.requested_at)}`;
-  const now = new Date().toISOString();
-  const rows = await sb(env, `two45_feature_jobs?${filter}&select=*`, {
-    method: 'PATCH',
+
+  // V50 reliability: claim inside Postgres as one atomic operation.
+  // This removes the fragile timestamp-filter PATCH path and makes
+  // overlapping cron isolates harmless: only one caller can own the row.
+  const rows = await sb(env, "rpc/two45_claim_feature_job", {
+    method: "POST",
+    timeoutMs: 5000,
     body: JSON.stringify({
-      status: 'IN_PROGRESS', attempts: num(job.attempts) + 1,
-      started_at: now, last_error: null
+      p_job_id: job.id,
+      p_expected_status: job.status,
+      p_expected_attempts: num(job.attempts),
+      p_expected_requested_at: job.requested_at
     })
   });
+
   const owned = arr(rows)[0] || null;
   if (owned) await beginCanonicalAnalysisV2(env, owned);
   return owned;
@@ -5037,8 +5041,19 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     results.push(result);
     if (result.rateLimited) break; // Stop before consuming further budget/failed attempts.
   }
-  return {ok: results.every(x => x.status === 'READY' || x.status === 'DEFERRED'), claimed,
-    processed: results.length, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue: queue.summary, results};
+  const claimStarved = candidates.length > 0 && claimed === 0;
+  return {
+    ok: !claimStarved && results.every(x => x.status === 'READY' || x.status === 'DEFERRED'),
+    claimed,
+    processed: results.length,
+    claimStarved,
+    candidateCount: candidates.length,
+    freshTomorrowBacklog,
+    freshBaselineBacklog,
+    adaptiveBatch:cycleLimit,
+    queue: queue.summary,
+    results
+  };
 }
 
 
