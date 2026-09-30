@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 36;
-const PACING_REVISION = "2026-09-29.40-cycle-board-refresh";
+const WORKER_VERSION = 37;
+const PACING_REVISION = "2026-09-29.41-light-queue-state";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -1956,7 +1956,12 @@ async function completeCanonicalAnalysisV2(env, job, forecast, analysis, decisio
     data_quality: analysis?.dataQuality ?? null,
     decision: decision?.decision || "NO_BET",
     source_snapshot_key: job.source_snapshot_key || null,
-    legacy_source: false
+    legacy_source: false,
+    shadow_attempted: Boolean(
+      analysis?.intelligence?.availability?.shadowV40Attempted ||
+      analysis?.intelligence?.shadowMarketModel ||
+      analysis?.intelligence?.shadowMarketRanking
+    )
   };
   await sb(env, "two45_analysis_state?on_conflict=analysis_key", {
     method:"POST",
@@ -4852,23 +4857,17 @@ async function loadExistingQueueV39(env) {
   const jobs = await allRowsV19(env, "two45_feature_jobs?select=*&order=priority.asc,requested_at.asc");
   const active = jobs.filter(j => dateAllowedV19(dateOfV19(j.kickoff_at)));
   if (!active.length) return await syncFixtureJobsV19(env);
-  const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at,result&order=fixture_id.asc");
+  const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at,shadow_attempted&order=fixture_id.asc");
   const byFixture = new Map(canonical.map(r => [Number(r.fixture_id), r]));
   return {
     jobs: active.map(j => {
       const row = byFixture.get(Number(j.fixture_id));
-      const availability = row?.result?.intelligence?.availability || {};
-      const shadowAttempted = Boolean(
-        availability?.shadowV40Attempted ||
-        row?.result?.intelligence?.shadowMarketModel ||
-        row?.result?.intelligence?.shadowMarketRanking
-      );
       return {
         ...j,
         canonicalComplete: row?.status === "COMPLETE",
         canonicalStatus: row?.status || "PENDING",
         canonicalRefreshing: Boolean(row?.refreshing),
-        shadowAttempted
+        shadowAttempted: Boolean(row?.shadow_attempted)
       };
     }),
     summary: {eligible: active.length, existing: active.length, inserted: 0, excluded: jobs.length - active.length, source: "direct-existing-queue-v39"}
