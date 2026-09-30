@@ -2380,6 +2380,73 @@ function shadowMarketProbabilitiesV40(homeProfile, awayProfile) {
   };
 }
 
+
+function marketSampleQualityV41(profile, market) {
+  if (!profile) return 0;
+  const map = {
+    HOME_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    AWAY_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    TOTAL_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    HOME_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    AWAY_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    TOTAL_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    HOME_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    AWAY_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    TOTAL_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    TOTAL_CARDS: ["yellowCardsForSample","yellowCardsAgainstSample"]
+  };
+  const keys = map[market] || [];
+  if (!keys.length) return 0;
+  const vals = keys.map(k => num(profile[k],0));
+  return clamp(vals.reduce((a,b)=>a+b,0) / (keys.length * 6), 0, 1);
+}
+
+function conservativeCalibrateV41(rawProbability, evidenceQuality, competitionReliability = 0.75) {
+  const p = clamp(num(rawProbability,0.5),0.01,0.99);
+  const q = clamp(num(evidenceQuality,0),0,1);
+  const r = clamp(num(competitionReliability,0.75),0.55,0.95);
+  const confidence = clamp((q * 0.72) + (r * 0.28), 0.18, 0.95);
+  return clamp(0.5 + (p - 0.5) * confidence, 0.03, 0.97);
+}
+
+function rankShadowMarketsV41(shadow, homeProfile, awayProfile, competitionReliability = 0.75) {
+  const probs = shadow?.probabilities || {};
+  const out = [];
+  for (const [market,selections] of Object.entries(probs)) {
+    const homeQuality = marketSampleQualityV41(homeProfile, market);
+    const awayQuality = marketSampleQualityV41(awayProfile, market);
+    const evidenceQuality = clamp((homeQuality + awayQuality) / 2,0,1);
+    for (const [selection,rawProbability] of Object.entries(selections || {})) {
+      if (!Number.isFinite(Number(rawProbability))) continue;
+      const calibratedProbability = conservativeCalibrateV41(rawProbability,evidenceQuality,competitionReliability);
+      const decisiveness = Math.abs(calibratedProbability - 0.5) * 2;
+      const score = calibratedProbability * 0.62 + evidenceQuality * 0.26 + decisiveness * 0.12;
+      out.push({
+        market, selection, rawProbability, calibratedProbability,
+        evidenceQuality, score,
+        fairOdds: calibratedProbability > 0 ? 1 / calibratedProbability : null,
+        calibrationMode: "PROVISIONAL_SHRINKAGE"
+      });
+    }
+  }
+  out.sort((a,b) => b.score - a.score);
+  const diverse = [];
+  const seen = new Set();
+  for (const x of out) {
+    if (x.calibratedProbability < 0.55) continue;
+    if (seen.has(x.market)) continue;
+    diverse.push(x); seen.add(x.market);
+    if (diverse.length >= 8) break;
+  }
+  return {
+    candidates: out.slice(0,24),
+    topMarkets: diverse,
+    calibrationStatus: "PROVISIONAL",
+    empiricalBacktestReady: false,
+    note: "Probabilities are conservatively shrunk until settled-pick backtesting supplies empirical calibration."
+  };
+}
+
 async function optionalIntelligenceV21(env, job) {
   const fixtureId = Number(job.fixture_id);
   const major = priorityCompetitionV20(job.competition, job.provider_league_id);
@@ -2492,6 +2559,12 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   home.marketProfile = intel.homeMarketProfile || null;
   away.marketProfile = intel.awayMarketProfile || null;
   intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
+  intel.shadowMarketRanking = rankShadowMarketsV41(
+    intel.shadowMarketModel,
+    home.marketProfile,
+    away.marketProfile,
+    competitionReliability(job.competition, job.provider_league_id)
+  );
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
@@ -4476,7 +4549,8 @@ async function processOne(
     analysis.intelligence = {
       ...(analysis.intelligence || {}),
       availability: optionalIntel,
-      shadowMarketModel: optionalIntel?.shadowMarketModel || null
+      shadowMarketModel: optionalIntel?.shadowMarketModel || null,
+      shadowMarketRanking: optionalIntel?.shadowMarketRanking || null
     };
     await applyLiveStateV19(env, job, analysis);
     const odds = analysis.live && !analysis.liveUsable ? {response: []} : await oddsForJobV19(env, job);
