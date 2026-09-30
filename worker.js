@@ -20,6 +20,8 @@ const FUTURE_FIXTURE_DAYS = 4;
 const TOMORROW_PRELOAD_HOUR_ET = 20;
 const TARGET_DAILY_REQUESTS = 6000;
 const FAST_BASELINE_INTERVAL_MS = 2000;
+const SHADOW_V40_DEFAULT_DAILY_CAP = 650;
+
 
 const LIVE_STATUSES = new Set([
   "1H",
@@ -1166,6 +1168,7 @@ function analyzeMatch(input) {
         cleanSheetRate: home.cleanSheetRate, failedToScoreRate: home.failedToScoreRate, sampleSize: home.sampleSize},
       away: {formPPG: away.formPointsPerGame, venuePPG: away.awayPointsPerGame, winRate: away.winRate,
         cleanSheetRate: away.cleanSheetRate, failedToScoreRate: away.failedToScoreRate, sampleSize: away.sampleSize},
+      marketProfile: {home: home.marketProfile || null, away: away.marketProfile || null},
       source: "API-Football team statistics + Two45 independent weighting"
     },
 
@@ -1942,7 +1945,12 @@ async function completeCanonicalAnalysisV2(env, job, forecast, analysis, decisio
       forecast,
       probabilityBoard: analysis?.probabilities || {},
       marketOptions: decision?.topMarkets || [],
-      intelligence: analysis?.intelligence || null
+      intelligence: analysis?.intelligence || null,
+      shadowContext: {
+        homeTeamId: Number(job.home_team_id),
+        awayTeamId: Number(job.away_team_id),
+        fixtureId: Number(job.fixture_id)
+      }
     },
     options_count: alternatives.length,
     data_quality: analysis?.dataQuality ?? null,
@@ -2190,6 +2198,414 @@ function summarizeRecentV211(fixtures, teamId) {
 }
 function summarizeH2HV211(fixtures, homeId, awayId) { const rows=fixtures.filter(f=>Number(f?.fixture?.timestamp||0)>0).sort((a,b)=>Number(b.fixture.timestamp)-Number(a.fixture.timestamp)).slice(0,5); let hw=0,aw=0,d=0,total=0,weight=0,homeScore=0; rows.forEach((f,i)=>{const hIsHome=Number(f.teams?.home?.id)===homeId,hg=Number(f.goals?.home),ag=Number(f.goals?.away);if(!Number.isFinite(hg)||!Number.isFinite(ag))return;const homeGoals=hIsHome?hg:ag,awayGoals=hIsHome?ag:hg,wt=Math.pow(0.65,i);weight+=wt;total+=homeGoals+awayGoals;if(homeGoals>awayGoals){hw++;homeScore+=wt}else if(homeGoals<awayGoals){aw++}else{d++;homeScore+=0.5*wt}}); const n=Math.max(1,hw+aw+d);return {matches:hw+aw+d,homeWins:hw,awayWins:aw,draws:d,avgGoals:total/n,recencyWeightedHomeShare:weight?homeScore/weight:0.5}; }
 
+
+
+function shadowV40Enabled(env) {
+  const raw = String(env.TWO45_V40_SHADOW_ENABLED ?? "0").trim().toLowerCase();
+  return ["1","true","yes","on"].includes(raw);
+}
+
+async function shadowBudgetV46(env) {
+  const key = "shadow-v40-budget:" + easternDate();
+  const snap = await getFeedSnapshot(env, key).catch(() => null);
+  const payload = snap?.payload || {};
+  return {
+    key,
+    used:Math.max(0,num(payload.used,0)),
+    cap:Math.max(50,num(env.TWO45_V40_DAILY_CAP,SHADOW_V40_DEFAULT_DAILY_CAP))
+  };
+}
+
+async function reserveShadowCallV46(env, count = 1) {
+  if (!shadowV40Enabled(env)) return false;
+  const budget = await shadowBudgetV46(env);
+  if (budget.used + count > budget.cap) return false;
+  await saveFeedSnapshot(env, budget.key, {
+    used:budget.used + count,
+    cap:budget.cap,
+    updatedAt:new Date().toISOString()
+  }, 2 * 86400).catch(() => null);
+  return true;
+}
+
+function statValueV40(rows, teamId, label) {
+  const teamRow = arr(rows).find(r => Number(r?.team?.id) === Number(teamId));
+  const stats = arr(teamRow?.statistics);
+  const wanted = String(label || "").toLowerCase();
+  const hit = stats.find(s => String(s?.type || "").toLowerCase() === wanted);
+  const v = hit?.value;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const n = Number(v.replace("%","").trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function summarizeMarketProfileV40(samples, teamId) {
+  const valid = arr(samples).filter(x => x && x.stats);
+  const fields = [
+    ["cornersFor","Corner Kicks"],
+    ["shotsFor","Total Shots"],
+    ["shotsOnTargetFor","Shots on Goal"],
+    ["yellowCardsFor","Yellow Cards"],
+    ["redCardsFor","Red Cards"]
+  ];
+  const againstFields = [
+    ["cornersAgainst","Corner Kicks"],
+    ["shotsAgainst","Total Shots"],
+    ["shotsOnTargetAgainst","Shots on Goal"],
+    ["yellowCardsAgainst","Yellow Cards"],
+    ["redCardsAgainst","Red Cards"]
+  ];
+  const agg = {};
+  for (const [key] of [...fields, ...againstFields]) agg[key] = {sum:0, weight:0, count:0};
+
+  valid.forEach((sample,i) => {
+    const wt = Math.pow(0.82, i);
+    for (const [key,label] of fields) {
+      const v = statValueV40(sample.stats, teamId, label);
+      if (!Number.isFinite(v)) continue;
+      agg[key].sum += v * wt;
+      agg[key].weight += wt;
+      agg[key].count++;
+    }
+    const opponentRow = arr(sample.stats).find(r => Number(r?.team?.id) !== Number(teamId));
+    const opponentId = Number(opponentRow?.team?.id);
+    if (Number.isFinite(opponentId)) {
+      for (const [key,label] of againstFields) {
+        const v = statValueV40(sample.stats, opponentId, label);
+        if (!Number.isFinite(v)) continue;
+        agg[key].sum += v * wt;
+        agg[key].weight += wt;
+        agg[key].count++;
+      }
+    }
+  });
+
+  const out = {matches: valid.length};
+  for (const [key] of fields) {
+    const a = agg[key];
+    out[key] = a.weight ? a.sum / a.weight : null;
+    out[key + "Sample"] = a.count;
+  }
+  return out;
+}
+
+async function recentMarketProfileV40(env, teamId, recentFixtures = [], cacheScope = "") {
+  const ids = arr(recentFixtures)
+    .filter(f => Number(f?.fixture?.id) > 0)
+    .sort((a,b) => Number(b?.fixture?.timestamp || 0) - Number(a?.fixture?.timestamp || 0))
+    .slice(0,6)
+    .map(f => Number(f.fixture.id));
+
+  if (!ids.length) return {matches:0, source:"none"};
+  const cacheKey = "market-profile:v40:" + teamId + ":" + cacheScope + ":" + ids.join("-");
+  const cached = await getFeedSnapshot(env, cacheKey).catch(() => null);
+  if (cached?.payload?.profile) return {...cached.payload.profile, source:"cache"};
+
+  const samples = [];
+  let newFetches = 0;
+  const maxNewFetchesPerPass = 1;
+  for (const fixtureId of ids) {
+    try {
+      const snapKey = "fixture-stats:" + fixtureId;
+      const snap = await getFeedSnapshot(env, snapKey).catch(() => null);
+      let stats = snap?.payload?.response || snap?.payload || null;
+      if (!stats && newFetches < maxNewFetchesPerPass) {
+        const allowed = await reserveShadowCallV46(env, 1);
+        if (!allowed) continue;
+        const r = await football(env, "/fixtures/statistics", {fixture: fixtureId});
+        stats = r?.response || [];
+        newFetches++;
+        await saveFeedSnapshot(env, snapKey, {response:stats}, 7*86400000).catch(() => null);
+      }
+      if (stats) samples.push({fixtureId, stats});
+    } catch (_) {}
+  }
+
+  const profile = summarizeMarketProfileV40(samples, teamId);
+  await saveFeedSnapshot(env, cacheKey, {profile}, 12*3600000).catch(() => null);
+  return {...profile, source:"api-football-recent-fixtures"};
+}
+
+
+function poissonOverV40(lambda, line) {
+  if (!Number.isFinite(lambda) || lambda <= 0) return null;
+  const threshold = Math.floor(Number(line));
+  let underEq = 0;
+  for (let k = 0; k <= threshold; k++) underEq += poisson(k, lambda);
+  return clamp(1 - underEq, 0, 1);
+}
+
+function poissonUnderV40(lambda, line) {
+  const over = poissonOverV40(lambda, line);
+  return over == null ? null : 1 - over;
+}
+
+function blendedMeanV40(forAvg, oppAgainst, fallback) {
+  const a = num(forAvg, fallback);
+  const b = num(oppAgainst, fallback);
+  return clamp((a * 0.58) + (b * 0.42), 0.05, fallback * 2.5);
+}
+
+function shadowMarketProbabilitiesV40(homeProfile, awayProfile) {
+  if (!homeProfile || !awayProfile) return {};
+  const hc = blendedMeanV40(homeProfile.cornersFor, awayProfile.cornersAgainst, 5.0);
+  const ac = blendedMeanV40(awayProfile.cornersFor, homeProfile.cornersAgainst, 4.5);
+  const hs = blendedMeanV40(homeProfile.shotsFor, awayProfile.shotsAgainst, 12.0);
+  const as = blendedMeanV40(awayProfile.shotsFor, homeProfile.shotsAgainst, 10.5);
+  const hsot = blendedMeanV40(homeProfile.shotsOnTargetFor, awayProfile.shotsOnTargetAgainst, 4.3);
+  const asot = blendedMeanV40(awayProfile.shotsOnTargetFor, homeProfile.shotsOnTargetAgainst, 3.8);
+  const hy = blendedMeanV40(homeProfile.yellowCardsFor, awayProfile.yellowCardsAgainst, 2.1);
+  const ay = blendedMeanV40(awayProfile.yellowCardsFor, homeProfile.yellowCardsAgainst, 2.1);
+
+  const out = {
+    HOME_CORNERS: {},
+    AWAY_CORNERS: {},
+    TOTAL_CORNERS: {},
+    HOME_SHOTS: {},
+    AWAY_SHOTS: {},
+    TOTAL_SHOTS: {},
+    HOME_SHOTS_ON_TARGET: {},
+    AWAY_SHOTS_ON_TARGET: {},
+    TOTAL_SHOTS_ON_TARGET: {},
+    TOTAL_CARDS: {}
+  };
+
+  for (const line of [2.5,3.5,4.5,5.5]) {
+    out.HOME_CORNERS["OVER_"+String(line).replace(".","_")] = poissonOverV40(hc,line);
+    out.AWAY_CORNERS["OVER_"+String(line).replace(".","_")] = poissonOverV40(ac,line);
+  }
+  for (const line of [8.5,9.5,10.5,11.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_CORNERS["OVER_"+key] = poissonOverV40(hc+ac,line);
+    out.TOTAL_CORNERS["UNDER_"+key] = poissonUnderV40(hc+ac,line);
+  }
+  for (const line of [8.5,10.5,12.5,14.5]) {
+    out.HOME_SHOTS["OVER_"+String(line).replace(".","_")] = poissonOverV40(hs,line);
+    out.AWAY_SHOTS["OVER_"+String(line).replace(".","_")] = poissonOverV40(as,line);
+  }
+  for (const line of [20.5,22.5,24.5,26.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_SHOTS["OVER_"+key] = poissonOverV40(hs+as,line);
+    out.TOTAL_SHOTS["UNDER_"+key] = poissonUnderV40(hs+as,line);
+  }
+  for (const line of [1.5,2.5,3.5,4.5]) {
+    out.HOME_SHOTS_ON_TARGET["OVER_"+String(line).replace(".","_")] = poissonOverV40(hsot,line);
+    out.AWAY_SHOTS_ON_TARGET["OVER_"+String(line).replace(".","_")] = poissonOverV40(asot,line);
+  }
+  for (const line of [5.5,6.5,7.5,8.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_SHOTS_ON_TARGET["OVER_"+key] = poissonOverV40(hsot+asot,line);
+    out.TOTAL_SHOTS_ON_TARGET["UNDER_"+key] = poissonUnderV40(hsot+asot,line);
+  }
+  for (const line of [2.5,3.5,4.5,5.5]) {
+    const key=String(line).replace(".","_");
+    out.TOTAL_CARDS["OVER_"+key] = poissonOverV40(hy+ay,line);
+    out.TOTAL_CARDS["UNDER_"+key] = poissonUnderV40(hy+ay,line);
+  }
+  return {
+    expected: {
+      homeCorners:hc, awayCorners:ac,
+      homeShots:hs, awayShots:as,
+      homeShotsOnTarget:hsot, awayShotsOnTarget:asot,
+      homeYellowCards:hy, awayYellowCards:ay
+    },
+    probabilities: out,
+    model:"two45-market-shadow-v40",
+    calibrated:false
+  };
+}
+
+
+function marketSampleQualityV41(profile, market) {
+  if (!profile) return 0;
+  const map = {
+    HOME_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    AWAY_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    TOTAL_CORNERS: ["cornersForSample","cornersAgainstSample"],
+    HOME_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    AWAY_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    TOTAL_SHOTS: ["shotsForSample","shotsAgainstSample"],
+    HOME_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    AWAY_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    TOTAL_SHOTS_ON_TARGET: ["shotsOnTargetForSample","shotsOnTargetAgainstSample"],
+    TOTAL_CARDS: ["yellowCardsForSample","yellowCardsAgainstSample"]
+  };
+  const keys = map[market] || [];
+  if (!keys.length) return 0;
+  const vals = keys.map(k => num(profile[k],0));
+  return clamp(vals.reduce((a,b)=>a+b,0) / (keys.length * 6), 0, 1);
+}
+
+function conservativeCalibrateV41(rawProbability, evidenceQuality, competitionReliability = 0.75) {
+  const p = clamp(num(rawProbability,0.5),0.01,0.99);
+  const q = clamp(num(evidenceQuality,0),0,1);
+  const r = clamp(num(competitionReliability,0.75),0.55,0.95);
+  const confidence = clamp((q * 0.72) + (r * 0.28), 0.18, 0.95);
+  return clamp(0.5 + (p - 0.5) * confidence, 0.03, 0.97);
+}
+
+function rankShadowMarketsV41(shadow, homeProfile, awayProfile, competitionReliability = 0.75, empiricalCalibration = {}) {
+  const probs = shadow?.probabilities || {};
+  const out = [];
+  for (const [market,selections] of Object.entries(probs)) {
+    const homeQuality = marketSampleQualityV41(homeProfile, market);
+    const awayQuality = marketSampleQualityV41(awayProfile, market);
+    const evidenceQuality = clamp((homeQuality + awayQuality) / 2,0,1);
+    for (const [selection,rawProbability] of Object.entries(selections || {})) {
+      if (!Number.isFinite(Number(rawProbability))) continue;
+      const provisionalProbability = conservativeCalibrateV41(rawProbability,evidenceQuality,competitionReliability);
+      const bucket = calibrationBucketV43(provisionalProbability);
+      const empirical = empiricalCalibration?.buckets?.[market + "|" + bucket] || null;
+      const empiricalN = num(empirical?.settled,0);
+      const empiricalRate = empiricalN > 0
+        ? (num(empirical?.wins,0) + 1) / (empiricalN + 2)
+        : null;
+      const empiricalWeight = empiricalN >= 8
+        ? clamp(empiricalN / (empiricalN + 32),0,0.72)
+        : 0;
+      const calibratedProbability = empiricalRate == null
+        ? provisionalProbability
+        : clamp(
+            provisionalProbability * (1 - empiricalWeight) +
+            empiricalRate * empiricalWeight,
+            0.03,0.97
+          );
+      const decisiveness = Math.abs(calibratedProbability - 0.5) * 2;
+      const score = calibratedProbability * 0.62 + evidenceQuality * 0.26 + decisiveness * 0.12;
+      out.push({
+        market, selection, rawProbability, calibratedProbability,
+        evidenceQuality, score,
+        fairOdds: calibratedProbability > 0 ? 1 / calibratedProbability : null,
+        calibrationMode: empiricalWeight > 0 ? "EMPIRICAL_BLEND" : "PROVISIONAL_SHRINKAGE",
+        empiricalSampleSize: empiricalN,
+        empiricalHitRate: empiricalRate
+      });
+    }
+  }
+  out.sort((a,b) => b.score - a.score);
+  const diverse = [];
+  const seen = new Set();
+  for (const x of out) {
+    if (x.calibratedProbability < 0.55) continue;
+    if (seen.has(x.market)) continue;
+    diverse.push(x); seen.add(x.market);
+    if (diverse.length >= 8) break;
+  }
+  return {
+    candidates: out.slice(0,24),
+    topMarkets: diverse,
+    calibrationStatus: num(empiricalCalibration?.settled,0) >= 20 ? "EMPIRICAL_ACTIVE" : "PROVISIONAL",
+    empiricalBacktestReady: num(empiricalCalibration?.settled,0) >= 20,
+    empiricalSettled: num(empiricalCalibration?.settled,0),
+    note: num(empiricalCalibration?.settled,0) >= 20
+      ? "Settled shadow results are blended into market calibration."
+      : "Probabilities are conservatively shrunk until more settled shadow results accumulate."
+  };
+}
+
+
+function qualifyShadowDataDrivenV42(ranking, context = {}) {
+  const candidates = Array.isArray(ranking?.topMarkets) ? ranking.topMarkets : [];
+  const lineupCertainty = clamp(num(context.lineupCertainty,0.70),0,1);
+  const competitionReliability = clamp(num(context.competitionReliability,0.75),0,1);
+  return candidates.map(x => {
+    const evidence = clamp(num(x.evidenceQuality,0),0,1);
+    const p = clamp(num(x.calibratedProbability,0.5),0,1);
+    const dataDriven =
+      evidence >= 0.50 &&
+      p >= 0.60 &&
+      competitionReliability >= 0.75;
+    const confidenceScore = clamp(
+      p * 0.52 +
+      evidence * 0.28 +
+      competitionReliability * 0.12 +
+      lineupCertainty * 0.08,
+      0,1
+    );
+    return {
+      ...x,
+      dataDriven,
+      label: dataDriven ? "DATA_DRIVEN" : "RESEARCHING",
+      confidenceScore,
+      evidenceStatus:
+        evidence >= 0.75 ? "STRONG" :
+        evidence >= 0.50 ? "USABLE" :
+        "THIN",
+      reasons: [
+        "recent-market-profile",
+        "opponent-against-profile",
+        ranking?.calibrationStatus === "PROVISIONAL"
+          ? "provisional-calibration"
+          : "empirical-calibration"
+      ]
+    };
+  });
+}
+
+
+function selectionLineV43(selection) {
+  const m = String(selection || "").match(/^(OVER|UNDER)_([0-9]+)_([0-9]+)$/);
+  if (!m) return null;
+  return {side:m[1], line:Number(m[2] + "." + m[3])};
+}
+
+function calibrationBucketV43(probability) {
+  const p = clamp(num(probability,0),0,1);
+  const low = Math.floor(p * 10) / 10;
+  const high = Math.min(1, low + 0.1);
+  return low.toFixed(1) + "-" + high.toFixed(1);
+}
+
+function gradeThresholdV43(value, selection) {
+  const parsed = selectionLineV43(selection);
+  if (!parsed || !Number.isFinite(Number(value))) return "UNGRADABLE";
+  const v = Number(value);
+  if (parsed.side === "OVER") return v > parsed.line ? "WIN" : "LOSS";
+  if (parsed.side === "UNDER") return v < parsed.line ? "WIN" : "LOSS";
+  return "UNGRADABLE";
+}
+
+function gradeShadowMarketV43(market, selection, statsRows, homeTeamId, awayTeamId) {
+  const homeCorners = statValueV40(statsRows, homeTeamId, "Corner Kicks");
+  const awayCorners = statValueV40(statsRows, awayTeamId, "Corner Kicks");
+  const homeShots = statValueV40(statsRows, homeTeamId, "Total Shots");
+  const awayShots = statValueV40(statsRows, awayTeamId, "Total Shots");
+  const homeSot = statValueV40(statsRows, homeTeamId, "Shots on Goal");
+  const awaySot = statValueV40(statsRows, awayTeamId, "Shots on Goal");
+  const homeY = statValueV40(statsRows, homeTeamId, "Yellow Cards");
+  const awayY = statValueV40(statsRows, awayTeamId, "Yellow Cards");
+  const values = {
+    HOME_CORNERS: homeCorners,
+    AWAY_CORNERS: awayCorners,
+    TOTAL_CORNERS: Number.isFinite(homeCorners) && Number.isFinite(awayCorners) ? homeCorners + awayCorners : null,
+    HOME_SHOTS: homeShots,
+    AWAY_SHOTS: awayShots,
+    TOTAL_SHOTS: Number.isFinite(homeShots) && Number.isFinite(awayShots) ? homeShots + awayShots : null,
+    HOME_SHOTS_ON_TARGET: homeSot,
+    AWAY_SHOTS_ON_TARGET: awaySot,
+    TOTAL_SHOTS_ON_TARGET: Number.isFinite(homeSot) && Number.isFinite(awaySot) ? homeSot + awaySot : null,
+    TOTAL_CARDS: Number.isFinite(homeY) && Number.isFinite(awayY) ? homeY + awayY : null
+  };
+  return gradeThresholdV43(values[market], selection);
+}
+
+function buildShadowBacktestRowsV43(recommendations, finalStats, homeTeamId, awayTeamId) {
+  return (Array.isArray(recommendations) ? recommendations : []).map(x => ({
+    market: x.market,
+    selection: x.selection,
+    rawProbability: x.rawProbability,
+    calibratedProbability: x.calibratedProbability,
+    evidenceQuality: x.evidenceQuality,
+    dataDriven: Boolean(x.dataDriven),
+    confidenceScore: x.confidenceScore,
+    calibrationBucket: calibrationBucketV43(x.calibratedProbability),
+    result: gradeShadowMarketV43(x.market, x.selection, finalStats, homeTeamId, awayTeamId)
+  }));
+}
+
 async function optionalIntelligenceV21(env, job) {
   const fixtureId = Number(job.fixture_id);
   const major = priorityCompetitionV20(job.competition, job.provider_league_id);
@@ -2202,10 +2618,13 @@ async function optionalIntelligenceV21(env, job) {
   const ttl = hours <= 3 ? 2*3600000 : hours <= 18 ? 4*3600000 : 8*3600000;
   if (cached && age < ttl) return cached.payload || {source:"cache", enriched:false};
   const out = {source:"API-Football enrichment", enriched:true, fixtureId, generatedAt:new Date().toISOString()};
+  let homeRecentFixtures = [];
+  let awayRecentFixtures = [];
   // V21.1 recent-match + H2H context. Cached with the rest of this enrichment.
   try {
     const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.home_team_id, last: 8});
-    out.homeRecent = summarizeRecentV211(arr(recent.response), Number(job.home_team_id));
+    homeRecentFixtures = arr(recent.response);
+    out.homeRecent = summarizeRecentV211(homeRecentFixtures, Number(job.home_team_id));
     if (out.homeRecent.matches < 5) {
       const broad = await football(env, "/fixtures", {team: job.home_team_id, last: 8});
       const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.home_team_id));
@@ -2217,7 +2636,8 @@ async function optionalIntelligenceV21(env, job) {
   } catch(e) { out.homeRecentError = safeRefreshError(e); }
   try {
     const recent = await football(env, "/fixtures", {league: job.provider_league_id, season: job.season, team: job.away_team_id, last: 8});
-    out.awayRecent = summarizeRecentV211(arr(recent.response), Number(job.away_team_id));
+    awayRecentFixtures = arr(recent.response);
+    out.awayRecent = summarizeRecentV211(awayRecentFixtures, Number(job.away_team_id));
     if (out.awayRecent.matches < 5) {
       const broad = await football(env, "/fixtures", {team: job.away_team_id, last: 8});
       const broadSummary = summarizeRecentV211(arr(broad.response), Number(job.away_team_id));
@@ -2228,6 +2648,23 @@ async function optionalIntelligenceV21(env, job) {
     }
   } catch(e) { out.awayRecentError = safeRefreshError(e); }
   if (major || hours <= 18) { try { const pair = String(job.home_team_id)+"-"+String(job.away_team_id); const h2h = await football(env, "/fixtures/headtohead", {h2h: pair, last: 5}); out.h2h = summarizeH2HV211(arr(h2h.response), Number(job.home_team_id), Number(job.away_team_id)); } catch(e) { out.h2hError = safeRefreshError(e); } }
+
+  try {
+    const calibration = await getFeedSnapshot(env, "shadow-calibration:v44");
+    out.empiricalCalibration = calibration?.payload || {};
+  } catch (_) { out.empiricalCalibration = {}; }
+
+  // V40 shadow market profiles are explicitly gated and never drive the live selector.
+  if (shadowV40Enabled(env)) {
+    try {
+      out.homeMarketProfile = await recentMarketProfileV40(env, Number(job.home_team_id), homeRecentFixtures, String(job.provider_league_id || ""));
+    } catch (e) { out.homeMarketProfileError = safeRefreshError(e); }
+    try {
+      out.awayMarketProfile = await recentMarketProfileV40(env, Number(job.away_team_id), awayRecentFixtures, String(job.provider_league_id || ""));
+    } catch (e) { out.awayMarketProfileError = safeRefreshError(e); }
+  } else {
+    out.shadowV40Disabled = true;
+  }
 
   // One fixture-scoped injury call covers both teams. Lineups are most useful near kickoff.
   try {
@@ -2287,6 +2724,25 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
   applyRecent(away, intel.awayRecent);
   home.recentMatchContext = intel.homeRecent || null;
   away.recentMatchContext = intel.awayRecent || null;
+  home.marketProfile = intel.homeMarketProfile || null;
+  away.marketProfile = intel.awayMarketProfile || null;
+  intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
+  const compReliability = competitionReliability(job.competition, job.provider_league_id);
+  const empiricalCalibration = intel.empiricalCalibration || {};
+  intel.shadowMarketRanking = rankShadowMarketsV41(
+    intel.shadowMarketModel,
+    home.marketProfile,
+    away.marketProfile,
+    compReliability,
+    empiricalCalibration
+  );
+  intel.shadowRecommendations = qualifyShadowDataDrivenV42(
+    intel.shadowMarketRanking,
+    {
+      competitionReliability: compReliability,
+      lineupCertainty: (num(home.lineupCertainty,0.70) + num(away.lineupCertainty,0.70)) / 2
+    }
+  );
   if (intel.h2h?.matches >= 2) { const edge=clamp(num(intel.h2h.recencyWeightedHomeShare,0.5)-0.5,-0.25,0.25); home.formPointsPerGame=clamp(home.formPointsPerGame+edge*0.12,0,3); away.formPointsPerGame=clamp(away.formPointsPerGame-edge*0.12,0,3); }
 }
 
@@ -3142,8 +3598,10 @@ async function writeForecast(
           "Content-Type":
             "application/json",
 
+          // Forecast core fields are immutable after first insert.
+          // Reanalysis belongs in two45_analysis_state; never mutate an existing forecast row.
           Prefer:
-            "resolution=merge-duplicates,return=representation"
+            "resolution=ignore-duplicates,return=representation"
         },
 
         body:
@@ -4268,7 +4726,13 @@ async function processOne(
         }
       });
 
-    analysis.intelligence = {...(analysis.intelligence || {}), availability: optionalIntel};
+    analysis.intelligence = {
+      ...(analysis.intelligence || {}),
+      availability: optionalIntel,
+      shadowMarketModel: optionalIntel?.shadowMarketModel || null,
+      shadowMarketRanking: optionalIntel?.shadowMarketRanking || null,
+      shadowRecommendations: optionalIntel?.shadowRecommendations || []
+    };
     await applyLiveStateV19(env, job, analysis);
     const odds = analysis.live && !analysis.liveUsable ? {response: []} : await oddsForJobV19(env, job);
 
@@ -4479,6 +4943,205 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     processed: results.length, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue: queue.summary, results};
 }
 
+
+function updateCalibrationAccumulatorV44(current, rows) {
+  const out = current && typeof current === "object"
+    ? JSON.parse(JSON.stringify(current))
+    : {};
+  out.buckets = out.buckets || {};
+  out.settled = num(out.settled,0);
+  out.wins = num(out.wins,0);
+  out.losses = num(out.losses,0);
+  for (const row of arr(rows)) {
+    if (!["WIN","LOSS"].includes(row.result)) continue;
+    const key = row.market + "|" + row.calibrationBucket;
+    const b = out.buckets[key] || {settled:0,wins:0,losses:0};
+    b.settled++; out.settled++;
+    if (row.result === "WIN") { b.wins++; out.wins++; }
+    else { b.losses++; out.losses++; }
+    b.hitRate = b.settled ? b.wins / b.settled : null;
+    out.buckets[key] = b;
+  }
+  out.hitRate = out.settled ? out.wins / out.settled : null;
+  out.updatedAt = new Date().toISOString();
+  return out;
+}
+
+async function settleShadowBacktestV44(env, limit = 1) {
+  if (!shadowV40Enabled(env)) return {ok:true,disabled:true,processed:0,skipped:0};
+  const cutoffIso = new Date(Date.now() - 90 * 60000).toISOString();
+  const rows = await sb(
+    env,
+    "two45_analysis_state?status=eq.COMPLETE&kickoff_at=lt." +
+      encodeURIComponent(cutoffIso) +
+      "&select=fixture_id,kickoff_at,result&order=kickoff_at.desc&limit=80"
+  ).catch(() => []);
+  let processed = 0;
+  let skipped = 0;
+
+  for (const row of arr(rows)) {
+    if (processed >= Math.max(1,num(limit,1))) break;
+    const fixtureId = Number(row.fixture_id);
+    const result = row.result || {};
+    const recommendations = arr(result?.intelligence?.shadowRecommendations)
+      .filter(x => x?.market && x?.selection);
+    const context = result.shadowContext || {};
+    if (!fixtureId || !recommendations.length || !context.homeTeamId || !context.awayTeamId) {
+      skipped++;
+      continue;
+    }
+
+    const existing = await getFeedSnapshot(env, "shadow-backtest:" + fixtureId).catch(() => null);
+    if (existing?.payload?.settled) { skipped++; continue; }
+
+    const date = dateOfV19(row.kickoff_at);
+    const fixtureSnap = await getFeedSnapshot(env, fixtureKey(date)).catch(() => null);
+    const fixtureRows = arr(
+      fixtureSnap?.payload?.response ||
+      fixtureSnap?.payload?.fixtures ||
+      fixtureSnap?.payload
+    );
+    const fixture = fixtureRows.find(f => Number(f?.fixture?.id || f?.id) === fixtureId);
+    const status = String(fixture?.fixture?.status?.short || fixture?.status?.short || "").toUpperCase();
+    if (!FINISHED_STATUSES.has(status)) { skipped++; continue; }
+
+    const allowed = await reserveShadowCallV46(env, 1);
+    if (!allowed) break;
+    const statResponse = await football(env, "/fixtures/statistics", {fixture: fixtureId});
+    const stats = arr(statResponse?.response);
+    if (!stats.length) { skipped++; continue; }
+
+    const graded = buildShadowBacktestRowsV43(
+      recommendations,
+      stats,
+      Number(context.homeTeamId),
+      Number(context.awayTeamId)
+    ).filter(x => x.result !== "UNGRADABLE");
+    if (!graded.length) { skipped++; continue; }
+
+    const payload = {
+      settled:true,
+      fixtureId,
+      kickoffAt:row.kickoff_at,
+      gradedAt:new Date().toISOString(),
+      rows:graded
+    };
+    await saveFeedSnapshot(env, "shadow-backtest:" + fixtureId, payload, 90 * 86400);
+
+    const currentCalibration = (await getFeedSnapshot(env, "shadow-calibration:v44").catch(() => null))?.payload || {};
+    const nextCalibration = updateCalibrationAccumulatorV44(currentCalibration, graded);
+    await saveFeedSnapshot(env, "shadow-calibration:v44", nextCalibration, 365 * 86400);
+    processed++;
+  }
+
+  const calibration = (await getFeedSnapshot(env, "shadow-calibration:v44").catch(() => null))?.payload || {};
+  return {
+    ok:true,
+    processed,
+    skipped,
+    calibrationSettled:num(calibration.settled,0),
+    calibrationHitRate:calibration.hitRate ?? null
+  };
+}
+
+
+function parseCalibrationBucketV45(bucket) {
+  const m = String(bucket || "").match(/^([0-9.]+)-([0-9.]+)$/);
+  if (!m) return null;
+  const low = Number(m[1]);
+  const high = Number(m[2]);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+  return {low, high, midpoint:(low+high)/2};
+}
+
+function shadowAccuracyReportFromCalibrationV45(calibration = {}) {
+  const buckets = calibration?.buckets || {};
+  const marketMap = {};
+  let brierWeighted = 0;
+  let brierN = 0;
+
+  for (const [key,row] of Object.entries(buckets)) {
+    const split = key.lastIndexOf("|");
+    if (split < 0) continue;
+    const market = key.slice(0, split);
+    const bucket = key.slice(split + 1);
+    const settled = num(row?.settled,0);
+    const wins = num(row?.wins,0);
+    const losses = num(row?.losses,0);
+    if (!settled) continue;
+
+    const hitRate = wins / settled;
+    const parsed = parseCalibrationBucketV45(bucket);
+    const statedProbability = parsed?.midpoint ?? null;
+    const calibrationError = statedProbability == null
+      ? null
+      : Math.abs(hitRate - statedProbability);
+
+    marketMap[market] = marketMap[market] || {
+      market,
+      settled:0,
+      wins:0,
+      losses:0,
+      weightedStatedProbability:0,
+      calibrationErrorWeighted:0,
+      calibrationErrorN:0,
+      buckets:[]
+    };
+    const m = marketMap[market];
+    m.settled += settled;
+    m.wins += wins;
+    m.losses += losses;
+    if (statedProbability != null) {
+      m.weightedStatedProbability += statedProbability * settled;
+      m.calibrationErrorWeighted += calibrationError * settled;
+      m.calibrationErrorN += settled;
+      brierWeighted += Math.pow(hitRate - statedProbability,2) * settled;
+      brierN += settled;
+    }
+    m.buckets.push({
+      bucket,
+      settled,
+      wins,
+      losses,
+      hitRate,
+      statedProbability,
+      calibrationError
+    });
+  }
+
+  const markets = Object.values(marketMap).map(m => ({
+    market:m.market,
+    settled:m.settled,
+    wins:m.wins,
+    losses:m.losses,
+    hitRate:m.settled ? m.wins/m.settled : null,
+    avgStatedProbability:m.calibrationErrorN
+      ? m.weightedStatedProbability/m.calibrationErrorN
+      : null,
+    meanCalibrationError:m.calibrationErrorN
+      ? m.calibrationErrorWeighted/m.calibrationErrorN
+      : null,
+    buckets:m.buckets.sort((a,b) => String(a.bucket).localeCompare(String(b.bucket)))
+  })).sort((a,b) => b.settled - a.settled);
+
+  return {
+    model:"two45-market-shadow-v40",
+    calibrationStatus:num(calibration?.settled,0) >= 20 ? "EMPIRICAL_ACTIVE" : "COLLECTING",
+    settled:num(calibration?.settled,0),
+    wins:num(calibration?.wins,0),
+    losses:num(calibration?.losses,0),
+    hitRate:calibration?.hitRate ?? (num(calibration?.settled,0) ? num(calibration?.wins,0)/num(calibration?.settled,0) : null),
+    calibrationBrier:brierN ? brierWeighted/brierN : null,
+    markets,
+    updatedAt:calibration?.updatedAt || null
+  };
+}
+
+async function shadowAccuracyReportV45(env) {
+  const calibration = (await getFeedSnapshot(env, "shadow-calibration:v44").catch(() => null))?.payload || {};
+  return shadowAccuracyReportFromCalibrationV45(calibration);
+}
+
 async function settle(env) {
   return await sb(
     env,
@@ -4572,6 +5235,11 @@ async function modelStatus(env) {
     pacingRevision: PACING_REVISION,
     providerPacing: {minIntervalMs: FAST_BASELINE_INTERVAL_MS, maxIntervalMs: 22000, targetDailyRequests: TARGET_DAILY_REQUESTS, practicalDailyCap: PRACTICAL_DAILY_CAP, hardCap: HARD_CAP, state: (await getFeedSnapshot(env, "api-football-pacing"))?.payload || null, currentIntervalMs: adaptiveProviderIntervalV30((await getFeedSnapshot(env, "api-football-pacing"))?.payload || {})},
     modelBatch: batchLimitV19(env.TWO45_MODEL_BATCH),
+    shadowV40: {
+      enabled: shadowV40Enabled(env),
+      dailyCap: Math.max(50,num(env.TWO45_V40_DAILY_CAP,SHADOW_V40_DEFAULT_DAILY_CAP)),
+      budget: await shadowBudgetV46(env)
+    },
     pipeline: (await getFeedSnapshot(env, "cron-status").catch(() => null))?.payload || null,
 
     tomorrowPreloadStartsAt:
@@ -6902,6 +7570,15 @@ async function scheduledAnalysisV2(event, env) {
     } catch (e) {
       result.maintenance.push({ok:false, stage:"settlement", error:safeRefreshError(e)});
     }
+    try {
+      result.shadowBacktest = await timedV2(
+        settleShadowBacktestV44(env, 1),
+        12000,
+        "shadow backtest settlement"
+      );
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"shadow-backtest", error:safeRefreshError(e)});
+    }
   }
 
   return result;
@@ -7183,6 +7860,19 @@ export default {
             env
           )
         );
+      }
+
+      if (
+        url.pathname ===
+          "/api/internal/model-accuracy"
+      ) {
+        if (!internalRequestAuthorized(request, env)) {
+          return json({ok:false,error:"Protected Two45 accuracy endpoint."},403);
+        }
+        return json({
+          ok:true,
+          ...(await shadowAccuracyReportV45(env))
+        });
       }
 
       if (
