@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 51;
-const PACING_REVISION = "2026-09-30.51-short-critical-path";
+const WORKER_VERSION = 52;
+const PACING_REVISION = "2026-09-30.52-bounded-provider-cycle";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4968,7 +4968,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     await timedV2(requeueStale(env), 4000, "stale job recovery").catch(() => null);
     await timedV2(recoverCanonicalAnalysisV2(env), 4000, "canonical recovery").catch(() => null);
   }
-  const queue = prepared || await timedV2(loadExistingQueueV39(env), 4000, "queue load");
+  const queue = prepared || await timedV2(loadExistingQueueV39(env), 2500, "queue load");
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
@@ -5009,7 +5009,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     try {
       result = await timedV2(
         processOne(env, owned),
-        15000,
+        7000,
         "fixture " + owned.fixture_id + " analysis"
       );
     } catch (e) {
@@ -5690,7 +5690,7 @@ async function providerFetchReservedV18(
             params
           }),
 
-        signal: AbortSignal.timeout(9000)
+        signal: AbortSignal.timeout(4500)
       }
     );
 
@@ -7695,7 +7695,7 @@ async function scheduledAnalysisV2(event, env) {
   const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
     p_lock_key: "scheduled-analysis-v36",
     p_lock_token: cycleToken,
-    p_ttl_seconds: 50
+    p_ttl_seconds: 25
   }).catch(() => false);
 
   if (!acquired) {
@@ -7747,10 +7747,18 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
+  await saveFeedSnapshot(env, "cron-status", {
+    status: "analysis-starting",
+    cron: result.cron,
+    startedAt,
+    heartbeatAt: new Date().toISOString(),
+    result
+  }, 1800).catch(() => null);
+
   try {
     result.model = await timedV2(
       processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-      18000,
+      9500,
       "analysis pass"
     );
   } catch (e) {
