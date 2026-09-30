@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 38;
-const PACING_REVISION = "2026-09-29.42-stateful-tomorrow-preload";
+const WORKER_VERSION = 39;
+const PACING_REVISION = "2026-09-29.43-light-feature-queue";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4298,9 +4298,7 @@ async function claimSpecificJob(env, job) {
     method: 'PATCH',
     body: JSON.stringify({
       status: 'IN_PROGRESS', attempts: num(job.attempts) + 1,
-      started_at: now, last_error: null,
-      kickoff_at: job.kickoff_at,
-      metadata: job.metadata || {}
+      started_at: now, last_error: null
     })
   });
   const owned = arr(rows)[0] || null;
@@ -4854,8 +4852,16 @@ async function processOne(
 }
 
 async function loadExistingQueueV39(env) {
-  const jobs = await allRowsV19(env, "two45_feature_jobs?select=*&order=priority.asc,requested_at.asc");
-  const active = jobs.filter(j => dateAllowedV19(dateOfV19(j.kickoff_at)));
+  const jobs = await allRowsV19(
+    env,
+    "two45_feature_jobs?select=id,job_key,provider_match_id,fixture_id,kickoff_at,competition,provider_league_id,season,home_team_id,home_team,away_team_id,away_team,status,priority,attempts,requested_at,started_at,completed_at,last_error,source_snapshot_key,fixture_status:metadata->>fixture_status&order=priority.asc,requested_at.asc"
+  );
+  const active = jobs
+    .filter(j => dateAllowedV19(dateOfV19(j.kickoff_at)))
+    .map(j => ({
+      ...j,
+      metadata: {fixture_status: j.fixture_status || null}
+    }));
   if (!active.length) return await syncFixtureJobsV19(env);
   const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at,shadow_attempted&order=fixture_id.asc");
   const byFixture = new Map(canonical.map(r => [Number(r.fixture_id), r]));
@@ -4906,7 +4912,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
       const rows = await sb(env,
         `two45_feature_jobs?id=eq.${encodeURIComponent(job.id)}&status=eq.READY&completed_at=eq.${encodeURIComponent(job.completed_at)}&select=*`, {
           method: 'PATCH', body: JSON.stringify({status: 'PENDING', attempts: 0,
-            requested_at: new Date().toISOString(), metadata: job.metadata})
+            requested_at: new Date().toISOString()})
         });
       if (!arr(rows).length) continue;
       job = {...rows[0], metadata: job.metadata, kickoff_at: job.kickoff_at};
