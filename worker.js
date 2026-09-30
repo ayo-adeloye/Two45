@@ -7866,7 +7866,11 @@ export default {
         url.pathname ===
         "/api/health/analysis"
       ) {
-        const health = await analysisHealthV2(env);
+        const healthDate =
+          url.searchParams.get("scope") === "tomorrow"
+            ? tomorrowEasternDate()
+            : easternDate();
+        const health = await analysisHealthV2(env, healthDate);
         return json({
           ok: true,
           service: "two45-live-worker",
