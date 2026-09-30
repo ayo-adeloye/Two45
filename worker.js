@@ -2486,6 +2486,67 @@ function qualifyShadowDataDrivenV42(ranking, context = {}) {
   });
 }
 
+
+function selectionLineV43(selection) {
+  const m = String(selection || "").match(/^(OVER|UNDER)_([0-9]+)_([0-9]+)$/);
+  if (!m) return null;
+  return {side:m[1], line:Number(m[2] + "." + m[3])};
+}
+
+function calibrationBucketV43(probability) {
+  const p = clamp(num(probability,0),0,1);
+  const low = Math.floor(p * 10) / 10;
+  const high = Math.min(1, low + 0.1);
+  return low.toFixed(1) + "-" + high.toFixed(1);
+}
+
+function gradeThresholdV43(value, selection) {
+  const parsed = selectionLineV43(selection);
+  if (!parsed || !Number.isFinite(Number(value))) return "UNGRADABLE";
+  const v = Number(value);
+  if (parsed.side === "OVER") return v > parsed.line ? "WIN" : "LOSS";
+  if (parsed.side === "UNDER") return v < parsed.line ? "WIN" : "LOSS";
+  return "UNGRADABLE";
+}
+
+function gradeShadowMarketV43(market, selection, statsRows, homeTeamId, awayTeamId) {
+  const homeCorners = statValueV40(statsRows, homeTeamId, "Corner Kicks");
+  const awayCorners = statValueV40(statsRows, awayTeamId, "Corner Kicks");
+  const homeShots = statValueV40(statsRows, homeTeamId, "Total Shots");
+  const awayShots = statValueV40(statsRows, awayTeamId, "Total Shots");
+  const homeSot = statValueV40(statsRows, homeTeamId, "Shots on Goal");
+  const awaySot = statValueV40(statsRows, awayTeamId, "Shots on Goal");
+  const homeY = statValueV40(statsRows, homeTeamId, "Yellow Cards");
+  const awayY = statValueV40(statsRows, awayTeamId, "Yellow Cards");
+  const values = {
+    HOME_CORNERS: homeCorners,
+    AWAY_CORNERS: awayCorners,
+    TOTAL_CORNERS: Number.isFinite(homeCorners) && Number.isFinite(awayCorners) ? homeCorners + awayCorners : null,
+    HOME_SHOTS: homeShots,
+    AWAY_SHOTS: awayShots,
+    TOTAL_SHOTS: Number.isFinite(homeShots) && Number.isFinite(awayShots) ? homeShots + awayShots : null,
+    HOME_SHOTS_ON_TARGET: homeSot,
+    AWAY_SHOTS_ON_TARGET: awaySot,
+    TOTAL_SHOTS_ON_TARGET: Number.isFinite(homeSot) && Number.isFinite(awaySot) ? homeSot + awaySot : null,
+    TOTAL_CARDS: Number.isFinite(homeY) && Number.isFinite(awayY) ? homeY + awayY : null
+  };
+  return gradeThresholdV43(values[market], selection);
+}
+
+function buildShadowBacktestRowsV43(recommendations, finalStats, homeTeamId, awayTeamId) {
+  return (Array.isArray(recommendations) ? recommendations : []).map(x => ({
+    market: x.market,
+    selection: x.selection,
+    rawProbability: x.rawProbability,
+    calibratedProbability: x.calibratedProbability,
+    evidenceQuality: x.evidenceQuality,
+    dataDriven: Boolean(x.dataDriven),
+    confidenceScore: x.confidenceScore,
+    calibrationBucket: calibrationBucketV43(x.calibratedProbability),
+    result: gradeShadowMarketV43(x.market, x.selection, finalStats, homeTeamId, awayTeamId)
+  }));
+}
+
 async function optionalIntelligenceV21(env, job) {
   const fixtureId = Number(job.fixture_id);
   const major = priorityCompetitionV20(job.competition, job.provider_league_id);
