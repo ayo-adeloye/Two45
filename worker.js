@@ -2656,6 +2656,8 @@ async function optionalIntelligenceV21(env, job) {
 
   // V40 shadow market profiles are explicitly gated and never drive the live selector.
   if (shadowV40Enabled(env)) {
+    out.shadowV40Attempted = true;
+    out.shadowV40AttemptedAt = new Date().toISOString();
     try {
       out.homeMarketProfile = await recentMarketProfileV40(env, Number(job.home_team_id), homeRecentFixtures, String(job.provider_league_id || ""));
     } catch (e) { out.homeMarketProfileError = safeRefreshError(e); }
@@ -4847,12 +4849,24 @@ async function loadExistingQueueV39(env) {
   const jobs = await allRowsV19(env, "two45_feature_jobs?select=*&order=priority.asc,requested_at.asc");
   const active = jobs.filter(j => dateAllowedV19(dateOfV19(j.kickoff_at)));
   if (!active.length) return await syncFixtureJobsV19(env);
-  const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at&order=fixture_id.asc");
+  const canonical = await allRowsV19(env, "two45_analysis_state?model_version=eq." + encodeURIComponent(MODEL_VERSION) + "&select=fixture_id,status,refreshing,completed_at,result&order=fixture_id.asc");
   const byFixture = new Map(canonical.map(r => [Number(r.fixture_id), r]));
   return {
     jobs: active.map(j => {
       const row = byFixture.get(Number(j.fixture_id));
-      return {...j, canonicalComplete: row?.status === "COMPLETE", canonicalStatus: row?.status || "PENDING", canonicalRefreshing: Boolean(row?.refreshing)};
+      const availability = row?.result?.intelligence?.availability || {};
+      const shadowAttempted = Boolean(
+        availability?.shadowV40Attempted ||
+        row?.result?.intelligence?.shadowMarketModel ||
+        row?.result?.intelligence?.shadowMarketRanking
+      );
+      return {
+        ...j,
+        canonicalComplete: row?.status === "COMPLETE",
+        canonicalStatus: row?.status || "PENDING",
+        canonicalRefreshing: Boolean(row?.refreshing),
+        shadowAttempted
+      };
     }),
     summary: {eligible: active.length, existing: active.length, inserted: 0, excluded: jobs.length - active.length, source: "direct-existing-queue-v39"}
   };
@@ -7093,7 +7107,9 @@ function jobDueV19(job) {
   if (!(LIVE_STATUSES.has(status) || UPCOMING_STATUSES.has(status))) return false;
   const now = Date.now();
   if (job.status === 'READY') {
-    const interval = LIVE_STATUSES.has(status) ? 10 * 60000 : 60 * 60000;
+    const interval = LIVE_STATUSES.has(status)
+      ? 10 * 60000
+      : (job.canonicalComplete && !job.shadowAttempted ? 2 * 60000 : 60 * 60000);
     return now - Date.parse(job.completed_at || '1970-01-01') >= interval;
   }
   if (job.status === 'FAILED') {
