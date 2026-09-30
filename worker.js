@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 43;
-const PACING_REVISION = "2026-09-29.47-one-fixture-cruise-control";
+const WORKER_VERSION = 44;
+const PACING_REVISION = "2026-09-29.48-finish-fixture-before-next";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4711,12 +4711,10 @@ async function processOne(
     }
 
     if (missingHome && missingAway) {
-      const now = new Date().toISOString();
       await patchJob(env, job.id, {
         status: "PENDING",
         attempts: 0,
         started_at: null,
-        requested_at: now,
         last_error: "Baseline home input cached; waiting for away input"
       }).catch(() => null);
       await failCanonicalAnalysisV2(
