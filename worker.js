@@ -3598,8 +3598,10 @@ async function writeForecast(
           "Content-Type":
             "application/json",
 
+          // Forecast core fields are immutable after first insert.
+          // Reanalysis belongs in two45_analysis_state; never mutate an existing forecast row.
           Prefer:
-            "resolution=merge-duplicates,return=representation"
+            "resolution=ignore-duplicates,return=representation"
         },
 
         body:
