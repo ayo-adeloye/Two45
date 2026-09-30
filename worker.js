@@ -7495,6 +7495,46 @@ async function runAnalysisWatchdogV2(env) {
   }
 }
 
+
+async function ensureTomorrowPreloadV49(env) {
+  if (!shouldPreloadTomorrow()) {
+    return {ok:true, skipped:true, reason:"Tomorrow preload window has not started"};
+  }
+
+  const tomorrow = tomorrowEasternDate();
+  const key = fixtureKey(tomorrow);
+  const snap = await getFeedSnapshot(env, key).catch(() => null);
+  const ageMs = snap?.refreshed_at
+    ? Date.now() - Date.parse(snap.refreshed_at)
+    : Infinity;
+
+  let refreshed = false;
+  let fixtureCount = 0;
+
+  if (!snap || ageMs > 30 * 60000) {
+    const payload = await refreshFixturesV18(env, tomorrow);
+    fixtureCount = arr(payload?.fixtures).length || arr(payload?.response).length || num(payload?.total,0);
+    await saveFeedSnapshot(env, key, payload, 1800);
+    refreshed = true;
+  } else {
+    fixtureCount = arr(snap?.payload?.fixtures).length ||
+      arr(snap?.payload?.response).length ||
+      num(snap?.payload?.total,0);
+  }
+
+  // Always sync after 8 PM so newly available tomorrow fixtures enter the queue
+  // even when today's analysis backlog is non-empty.
+  const sync = await syncFixtureJobsV19(env);
+
+  return {
+    ok:true,
+    date:tomorrow,
+    refreshed,
+    fixtureCount,
+    queue:sync?.summary || null
+  };
+}
+
 async function scheduledAnalysisV2(event, env) {
   const cycleToken = crypto.randomUUID();
   const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
@@ -7537,6 +7577,20 @@ async function scheduledAnalysisV2(event, env) {
     heartbeatAt: startedAt,
     result
   }, 1800).catch(() => null);
+
+  // Hard 8 PM rule: tomorrow discovery and queueing are never blocked by today's backlog.
+  if (shouldPreloadTomorrow()) {
+    try {
+      result.tomorrowPreload = await timedV2(
+        ensureTomorrowPreloadV49(env),
+        18000,
+        "tomorrow preload"
+      );
+    } catch (e) {
+      result.ok = false;
+      result.tomorrowPreload = {ok:false,error:safeRefreshError(e)};
+    }
+  }
 
   try {
     result.model = await timedV2(
