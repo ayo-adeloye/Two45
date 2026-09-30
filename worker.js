@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 35;
-const PACING_REVISION = "2026-09-29.39-direct-queue";
+const WORKER_VERSION = 36;
+const PACING_REVISION = "2026-09-29.40-cycle-board-refresh";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -3609,7 +3609,10 @@ async function writeForecast(
         body:
           JSON.stringify(
             body
-          )
+          ),
+
+        signal:
+          AbortSignal.timeout(7000)
       }
     );
 
@@ -7606,6 +7609,27 @@ async function scheduledAnalysisV2(event, env) {
       processed: 0,
       error: safeRefreshError(e)
     };
+  }
+
+  // Refresh visible boards once per cycle, not once per forecast insert.
+  // This keeps forecast persistence fast while the UI still receives fresh analyzed counts.
+  try {
+    const boardDates = shouldPreloadTomorrow()
+      ? [tomorrowEasternDate(), easternDate()]
+      : [easternDate()];
+    for (const boardDate of boardDates) {
+      result.maintenance.push(await timedV2(
+        evaluateBoardV19(env, boardDate, true),
+        9000,
+        "light board refresh " + boardDate
+      ));
+    }
+  } catch (e) {
+    result.maintenance.push({
+      ok:false,
+      stage:"light-board-refresh",
+      error:safeRefreshError(e)
+    });
   }
 
   const modelCompletedAt = new Date().toISOString();
