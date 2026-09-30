@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 39;
-const PACING_REVISION = "2026-09-29.43-light-feature-queue";
+const WORKER_VERSION = 40;
+const PACING_REVISION = "2026-09-29.44-bounded-cron-runtime";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4885,7 +4885,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
   }
   await timedV2(requeueStale(env), 6000, "stale job recovery").catch(() => null);
   await timedV2(recoverCanonicalAnalysisV2(env), 6000, "canonical recovery").catch(() => null);
-  const queue = prepared || await timedV2(loadExistingQueueV39(env), 8000, "queue load");
+  const queue = prepared || await timedV2(loadExistingQueueV39(env), 5000, "queue load");
   const candidates = rankedJobsV19(queue.jobs);
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
@@ -4902,7 +4902,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     return {ok:true, skipped:true, cooldownActive:true, retryAt:num(pacing.blockedUntil), reason:'Provider cooldown', claimed:0, processed:0, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue:queue.summary, results:[]};
   }
   const results = [];
-  const deadline = Date.now() + (freshBaselineBacklog > 0 ? 28000 : 25000);
+  const deadline = Date.now() + (freshBaselineBacklog > 0 ? 15000 : 13000);
   let claimed = 0;
   for (const candidate of candidates) {
     if (claimed >= cycleLimit || Date.now() >= deadline) break;
@@ -4924,7 +4924,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
     try {
       result = await timedV2(
         processOne(env, owned),
-        30000,
+        15000,
         "fixture " + owned.fixture_id + " analysis"
       );
     } catch (e) {
@@ -5594,7 +5594,7 @@ async function providerFetchReservedV18(
             params
           }),
 
-        signal: AbortSignal.timeout(20000)
+        signal: AbortSignal.timeout(9000)
       }
     );
 
@@ -7638,7 +7638,7 @@ async function scheduledAnalysisV2(event, env) {
   try {
     result.model = await timedV2(
       processJobs(env, DEFAULT_MODEL_BATCH),
-      43000,
+      22000,
       "analysis pass"
     );
   } catch (e) {
@@ -7660,7 +7660,7 @@ async function scheduledAnalysisV2(event, env) {
     for (const boardDate of boardDates) {
       result.maintenance.push(await timedV2(
         evaluateBoardV19(env, boardDate, true),
-        9000,
+        5000,
         "light board refresh " + boardDate
       ));
     }
