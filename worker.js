@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 42;
-const PACING_REVISION = "2026-09-29.46-incremental-baseline";
+const WORKER_VERSION = 43;
+const PACING_REVISION = "2026-09-29.47-one-fixture-cruise-control";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4927,7 +4927,9 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null) {
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
   const freshBaselineBacklog = adaptive.freshBaselineBacklog;
-  const cycleLimit = adaptive.limit;
+  // Cruise-control soak mode: while fresh baselines remain, finish one fixture lease
+  // cleanly per cron execution rather than risking a second claim late in the cycle.
+  const cycleLimit = freshBaselineBacklog > 0 ? 1 : adaptive.limit;
   const pacing = (await getFeedSnapshot(env, 'api-football-pacing').catch(() => null))?.payload || {};
   const fastBaselineMode = freshBaselineBacklog > 0;
   if (Boolean(pacing.fastBaselineMode) !== fastBaselineMode) {
@@ -7523,7 +7525,7 @@ async function runAnalysisWatchdogV2(env) {
   try {
     const rows = await sb(env, "rpc/two45_analysis_watchdog", {
       method: "POST",
-      body: JSON.stringify({p_model_version: MODEL_VERSION, p_timeout_minutes: 3})
+      body: JSON.stringify({p_model_version: MODEL_VERSION, p_timeout_minutes: 1})
     });
     const row = arr(rows)[0] || {};
     return {
@@ -7620,7 +7622,7 @@ async function scheduledAnalysisV2(event, env) {
   const acquired = await rpcRefresh(env, "two45_try_refresh_lock", {
     p_lock_key: "scheduled-analysis-v36",
     p_lock_token: cycleToken,
-    p_ttl_seconds: 90
+    p_ttl_seconds: 50
   }).catch(() => false);
 
   if (!acquired) {
