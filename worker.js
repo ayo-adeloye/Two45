@@ -4,8 +4,8 @@
  * Independent Model V1.5 — Broad Analysis
  */
 
-const WORKER_VERSION = 54;
-const PACING_REVISION = "2026-09-30.54-finish-staged-first";
+const WORKER_VERSION = 55;
+const PACING_REVISION = "2026-09-30.55-atomic-fresh-state-machine";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -2761,7 +2761,7 @@ async function cachedTeamStatsV56(env, job, side) {
     const cached = await sb(
       env,
       "two45_team_feature_snapshots?feature_key=eq." + encodeURIComponent(featureKey) + "&select=raw_features,as_of&limit=1",
-      {timeoutMs: 3500}
+      {timeoutMs: 2000}
     );
     const row = arr(cached)[0];
     if (row?.raw_features && typeof row.raw_features === "object" && Object.keys(row.raw_features).length) {
@@ -2774,7 +2774,8 @@ async function cachedTeamStatsV56(env, job, side) {
 async function teamStats(
   env,
   job,
-  side
+  side,
+  skipCache = false
 ) {
   const teamId =
     side === "home"
@@ -2790,20 +2791,23 @@ async function teamStats(
   const featureKey =
     `${teamId}:${job.provider_league_id}:${job.season}:${cutoffDate}`;
 
-  try {
-    const cached = await sb(
-      env,
-      `two45_team_feature_snapshots?feature_key=eq.${encodeURIComponent(featureKey)}&select=raw_features,as_of&limit=1`
-    );
-    const row = arr(cached)[0];
-    if (
-      row?.raw_features &&
-      typeof row.raw_features === "object" &&
-      Object.keys(row.raw_features).length
-    ) {
-      return row.raw_features;
-    }
-  } catch (_) {}
+  if (!skipCache) {
+    try {
+      const cached = await sb(
+        env,
+        `two45_team_feature_snapshots?feature_key=eq.${encodeURIComponent(featureKey)}&select=raw_features,as_of&limit=1`,
+        {timeoutMs: 2000}
+      );
+      const row = arr(cached)[0];
+      if (
+        row?.raw_features &&
+        typeof row.raw_features === "object" &&
+        Object.keys(row.raw_features).length
+      ) {
+        return row.raw_features;
+      }
+    } catch (_) {}
+  }
 
   const data =
     await football(
@@ -2834,6 +2838,7 @@ async function teamStats(
       {
         method: "POST",
         prefer: "resolution=merge-duplicates,return=minimal",
+        timeoutMs: 1500,
         body: JSON.stringify({
           feature_key: featureKey,
           provider_team_id: String(teamId),
@@ -4305,6 +4310,28 @@ async function jobForFixture(
   );
 }
 
+async function claimNextFreshJobV55(env) {
+  const rows = await sb(env, "rpc/two45_claim_next_fresh_job_v55", {
+    method: "POST",
+    timeoutMs: 2500,
+    body: JSON.stringify({p_model_version: MODEL_VERSION})
+  });
+  return arr(rows)[0] || null;
+}
+
+async function deferClaimedJobV55(env, job, message) {
+  return sb(env, "rpc/two45_defer_claimed_job_v55", {
+    method: "POST",
+    timeoutMs: 2000,
+    body: JSON.stringify({
+      p_job_id: job.id,
+      p_fixture_id: Number(job.fixture_id),
+      p_model_version: MODEL_VERSION,
+      p_message: message
+    })
+  });
+}
+
 async function claimSpecificJob(env, job) {
   if (!dateAllowedV19(dateOfV19(job.kickoff_at))) return null;
   if (!['PENDING', 'READY', 'FAILED'].includes(job.status)) return null;
@@ -4710,10 +4737,10 @@ async function processOne(
 
     let fetchedBaselineSide = null;
     if (missingHome) {
-      hs = await teamStats(env, job, "home");
+      hs = await teamStats(env, job, "home", true);
       fetchedBaselineSide = "home";
     } else if (missingAway) {
-      as = await teamStats(env, job, "away");
+      as = await teamStats(env, job, "away", true);
       fetchedBaselineSide = "away";
     }
 
@@ -4723,22 +4750,10 @@ async function processOne(
     // call in the same Worker event.
     if (fetchedBaselineSide) {
       const stillNeedsAway = missingHome && missingAway;
-      await patchJob(env, job.id, {
-        status: "PENDING",
-        attempts: 0,
-        started_at: null,
-        last_error: stillNeedsAway
-          ? "Baseline home input cached; waiting for away input"
-          : "Baseline inputs ready; continuing analysis next cycle"
-      }).catch(() => null);
-      await failCanonicalAnalysisV2(
-        env,
-        job,
-        stillNeedsAway
-          ? "Baseline input cached; continuing next cycle"
-          : "Baseline inputs ready; final analysis continuing next cycle",
-        true
-      ).catch(() => null);
+      const deferMessage = stillNeedsAway
+        ? "Baseline home input cached; waiting for away input"
+        : "Baseline inputs ready; continuing analysis next cycle";
+      await deferClaimedJobV55(env, job, deferMessage).catch(() => null);
       return {
         fixtureId: job.fixture_id,
         status: "DEFERRED",
@@ -4974,6 +4989,51 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
   if (providerQuietWindow()) {
     return {ok:true, skipped:true, reason:"Provider quiet window 00:00-05:00 America/New_York", claimed:0, processed:0, queue:null, results:[]};
   }
+
+  // V55: scheduled fresh coverage uses a single Postgres claim operation.
+  // This removes queue-load + rank + REST claim from the cron critical path.
+  if (skipRecovery) {
+    const freshOwned = await timedV2(
+      claimNextFreshJobV55(env),
+      3000,
+      "atomic fresh claim"
+    ).catch(() => null);
+
+    if (freshOwned) {
+      let result;
+      try {
+        result = await timedV2(
+          processOne(env, freshOwned),
+          11000,
+          "fresh fixture " + freshOwned.fixture_id + " analysis"
+        );
+      } catch (e) {
+        const msg = "V55 bounded fresh-cycle recovery: " + safeRefreshError(e);
+        await deferClaimedJobV55(env, freshOwned, msg).catch(() => null);
+        result = {
+          fixtureId: freshOwned.fixture_id,
+          status: "DEFERRED",
+          autoRecovered: true,
+          rateLimited: false,
+          error: msg
+        };
+      }
+
+      return {
+        ok: result.status === "READY" || result.status === "DEFERRED",
+        claimed: 1,
+        processed: 1,
+        claimStarved: false,
+        candidateCount: 1,
+        freshTomorrowBacklog: 0,
+        freshBaselineBacklog: result.status === "READY" ? 0 : 1,
+        adaptiveBatch: 1,
+        queue: {eligible:1, existing:1, inserted:0, excluded:0, source:"atomic-fresh-v55"},
+        results: [result]
+      };
+    }
+  }
+
   // V51: scheduledAnalysisV2 already runs the watchdog before entering this
   // function. Do not spend up to 12 seconds repeating stale recovery in the
   // same cron event; that was starving the actual analysis pass.
@@ -5712,7 +5772,7 @@ async function providerFetchReservedV18(
             params
           }),
 
-        signal: AbortSignal.timeout(6500)
+        signal: AbortSignal.timeout(4500)
       }
     );
 
