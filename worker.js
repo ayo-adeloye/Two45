@@ -1194,20 +1194,6 @@ function analyzeMatch(input) {
         1
       ),
 
-    competitionTier:
-      Math.max(
-        1,
-        Math.min(
-          5,
-          Math.round(
-            num(
-              ctx.competitionTier,
-              4
-            )
-          )
-        )
-      ),
-
     lineupCertainty:
       clamp(
         (
@@ -1270,8 +1256,16 @@ function flatten(probs) {
 
 function selectIndependent(
   analysis,
-  marketOdds = []
+  marketOdds = [],
+  competitionTier = 4
 ) {
+  const tier = Math.max(1, Math.min(4, Number(competitionTier) || 4));
+  const tierGate = {
+    1: { strongQ: 0.52, riskyQ: 0.46, convictionQ: 0.50, winFloor: 0.66, o25Floor: 0.61 },
+    2: { strongQ: 0.58, riskyQ: 0.50, convictionQ: 0.57, winFloor: 0.70, o25Floor: 0.64 },
+    3: { strongQ: 0.64, riskyQ: 0.54, convictionQ: 0.64, winFloor: 0.73, o25Floor: 0.67 },
+    4: { strongQ: 0.68, riskyQ: 0.56, convictionQ: 0.70, winFloor: 0.76, o25Floor: 0.70 }
+  }[tier];
   const modeled =
     flatten(
       analysis.probabilities
@@ -1279,17 +1273,6 @@ function selectIndependent(
 
   const strong = [];
   const risky = [];
-
-  // Five-tier qualification tolerance: Tier 1 gets the most analyst-like
-  // flexibility; each lower tier requires progressively cleaner evidence.
-  const competitionTier = Math.max(1, Math.min(5, Math.round(num(analysis.competitionTier, 4))));
-  const tierGate = {
-    1: { strongQuality: 0.50, riskyQuality: 0.44, strongProbability: 0.61, strongEdge: 0.025 },
-    2: { strongQuality: 0.56, riskyQuality: 0.48, strongProbability: 0.62, strongEdge: 0.030 },
-    3: { strongQuality: 0.62, riskyQuality: 0.52, strongProbability: 0.63, strongEdge: 0.032 },
-    4: { strongQuality: 0.68, riskyQuality: 0.56, strongProbability: 0.64, strongEdge: 0.035 },
-    5: { strongQuality: 0.72, riskyQuality: 0.60, strongProbability: 0.66, strongEdge: 0.040 }
-  }[competitionTier];
 
   for (
     const group
@@ -1393,11 +1376,11 @@ function selectIndependent(
 
       if (
         m.probability >=
-          tierGate.strongProbability &&
+          0.64 &&
         edge >=
-          tierGate.strongEdge &&
+          0.035 &&
         analysis.dataQuality >=
-          tierGate.strongQuality
+          tierGate.strongQ
       ) {
         strong.push(
           candidate
@@ -1406,7 +1389,7 @@ function selectIndependent(
         candidate.sportsbookOdds >=
           1.35 &&
         analysis.dataQuality >=
-          tierGate.riskyQuality
+          tierGate.riskyQ
       ) {
         const floor =
           candidate.sportsbookOdds >=
@@ -1463,11 +1446,11 @@ function selectIndependent(
     AWAY_PLAYER_SHOTS: 0.010,
     HOME_PLAYER_SHOTS_ON_TARGET: 0.012,
     AWAY_PLAYER_SHOTS_ON_TARGET: 0.012,
-    TOTAL_GOALS: 0.010,
+    TOTAL_GOALS: 0.008,
     HOME_TEAM_GOALS: 0.010,
     AWAY_TEAM_GOALS: 0.010,
     BTTS: 0.010,
-    MATCH_RESULT: 0.012
+    MATCH_RESULT: tier <= 2 ? 0.018 : -0.005
   }[market] || 0);
 
   const selectionAdjustment = x => {
@@ -1479,21 +1462,19 @@ function selectIndependent(
       const edge = num(x?.valueEdge, 0);
       return priced >= 1.45 && edge >= 0.035 ? -0.010 : -0.050;
     }
-    if (x?.market === "TOTAL_GOALS" && s === "OVER_2_5") return 0.018;
+    if (tier <= 2 && x?.market === "TOTAL_GOALS" && s === "OVER_2_5") return tier === 1 ? 0.030 : 0.018;
+    if (tier <= 2 && x?.market === "MATCH_RESULT" && (s === "HOME" || s === "AWAY")) return tier === 1 ? 0.028 : 0.015;
     return 0;
   };
 
   for (const m of modeled) {
     if (!["TOTAL_GOALS","DOUBLE_CHANCE","HANDICAP","HOME_TEAM_GOALS","AWAY_TEAM_GOALS","BTTS","MATCH_RESULT"].includes(m.market)) continue;
-    const floor = m.market === "MATCH_RESULT" ? (competitionTier === 1 ? 0.68 : competitionTier === 2 ? 0.71 : 0.74) :
+    const floor = m.market === "MATCH_RESULT" ? tierGate.winFloor :
+      (m.market === "TOTAL_GOALS" && m.selection === "OVER_2_5") ? tierGate.o25Floor :
       m.market === "HANDICAP" ? 0.70 :
       m.market === "BTTS" ? 0.73 :
-      m.market === "TOTAL_GOALS" && m.selection === "OVER_2_5" ? (competitionTier === 1 ? 0.66 : 0.69) :
       m.selection === "UNDER_4_5" ? 0.80 : 0.72;
-    const qualityGate = competitionTier === 1 ? 0.50 :
-      competitionTier === 2 ? 0.56 :
-      competitionTier === 3 ? 0.62 :
-      competitionTier === 4 ? 0.68 : 0.72;
+    const qualityGate = analysis.competitionReliability >= 0.86 ? Math.max(0.48, tierGate.convictionQ - 0.02) : tierGate.convictionQ;
     if (m.probability < floor || analysis.dataQuality < qualityGate) continue;
 
     const exists = strong.some(x => x.market === m.market && x.selection === m.selection);
@@ -1513,7 +1494,7 @@ function selectIndependent(
     };
 
     // Model-only picks need stronger conviction than priced picks.
-    if (m.probability >= floor + 0.03 || (competitionTier <= 2 && m.probability >= floor + 0.01)) {
+    if (m.probability >= floor + 0.03 || (analysis.competitionReliability >= 0.86 && m.probability >= floor + 0.01)) {
       for (let i = risky.length - 1; i >= 0; i--) {
         if (risky[i].market === m.market && risky[i].selection === m.selection) risky.splice(i, 1);
       }
@@ -4841,11 +4822,6 @@ async function processOne(
             competitionReliability(
               job.competition,
               job.provider_league_id
-            ),
-          competitionTier:
-            competitionTierV21(
-              job.competition,
-              job.provider_league_id
             )
         }
       });
@@ -4869,7 +4845,8 @@ async function processOne(
     const decision =
       selectIndependent(
         analysis,
-        marketOdds
+        marketOdds,
+        competitionTierV21(job.competition, job.provider_league_id)
       );
 
     const clientForecast = manualForecast(job, analysis, decision);
@@ -7123,9 +7100,8 @@ function competitionTierV21(value, leagueId) {
   const id = Number(leagueId);
   if (MAJOR_LEAGUES_V19.has(id) || /champions league|premier league|la liga|serie a|bundesliga|ligue 1|world cup|uefa nations league|nations league|copa america|africa cup of nations|afcon/.test(n)) return 1;
   if (/world cup qualif|world cup qualifiers|euro qualif|european championship qualif|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|asian cup|afc|caf|concacaf/.test(n)) return 2;
-  if (/scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league/.test(n)) return 3;
-  if (/international|friendl/.test(n)) return 4;
-  return 5;
+  if (/scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league|international|friendl/.test(n)) return 3;
+  return 4;
 }
 
 function priorityCompetitionV20(value, leagueId) {
