@@ -1704,7 +1704,24 @@ function selectIndependent(
     !(x.market === "TOTAL_GOALS" && String(x.selection) === "UNDER_4_5")
   );
 
+  // For top competitions, allow a genuinely convincing straight win or O2.5
+  // to become the headline selection instead of always losing to a safer market.
+  // This is not a quota: the candidate must already have qualified as STRONG.
+  const assertiveStrong = tier <= 2
+    ? strong.find(x => {
+        const s = String(x.selection || "");
+        const straightWin = x.market === "MATCH_RESULT" && (s === "HOME" || s === "AWAY");
+        const over25 = x.market === "TOTAL_GOALS" && s === "OVER_2_5";
+        if (!straightWin && !over25) return false;
+        const floor = straightWin
+          ? (tier === 1 ? 0.68 : 0.72)
+          : (tier === 1 ? 0.63 : 0.66);
+        return num(x.probability, 0) >= floor && score(x) >= score(nonU45Strong || x) - 0.045;
+      })
+    : null;
+
   const b =
+    assertiveStrong ||
     nonU45Strong ||
     strong[0] ||
     nonU45Risky ||
