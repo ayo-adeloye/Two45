@@ -7548,8 +7548,9 @@ async function evaluateBoardV19(env, date, light = false) {
     .sort((a,b) => b.rankScore - a.rankScore);
 
   const now = new Date().toISOString();
-  const strongPicks = picks.filter(f => f.pickType !== "RISKY_VALUE");
-  const riskyPlays = picks.filter(f => f.pickType === "RISKY_VALUE");
+  const eligiblePicks = picks.filter(f => f.pickType !== "RISKY_VALUE" || num(f.sportsbookOdds, 0) >= 1.35);
+  const strongPicks = eligiblePicks.filter(f => f.pickType !== "RISKY_VALUE");
+  const riskyPlays = eligiblePicks.filter(f => f.pickType === "RISKY_VALUE");
   const health = await analysisHealthV2(env, date).catch(() => null);
 
   const board = {
@@ -7559,7 +7560,7 @@ async function evaluateBoardV19(env, date, light = false) {
     service: "two45-live-worker",
     games: fixtures,
     fixtures,
-    picks,
+    picks: eligiblePicks,
     strongPicks,
     riskyPlays,
     independentForecasts,
@@ -7571,7 +7572,7 @@ async function evaluateBoardV19(env, date, light = false) {
       version: MODEL_VERSION,
       updatedAt: now,
       forecastCount: independentForecasts.length,
-      qualifiedValuePicks: picks.length,
+      qualifiedValuePicks: eligiblePicks.length,
       strongPicks: strongPicks.length,
       riskyPlays: riskyPlays.length,
       strongModelViews: independentForecasts.filter(
@@ -7593,7 +7594,7 @@ async function evaluateBoardV19(env, date, light = false) {
     ok: true,
     date,
     analyzed: independentForecasts.length,
-    picks: picks.length,
+    picks: eligiblePicks.length,
     analysisHealth: health,
     pagesEvaluationOk: external.ok,
     pagesEvaluationError: external.error || null
