@@ -32,7 +32,7 @@ var PRIORITY=/nations league|world cup|uefa|euro|africa cup|afcon|copa america|a
 function q(s){return document.querySelector(s)}function qa(s){return Array.from(document.querySelectorAll(s))}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(m){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]})}
 function pct(n){n=Number(n);if(!Number.isFinite(n))return null;return n<=1?Math.round(n*1000)/10:Math.round(n*10)/10}
-function nice(s){return String(s||"").replace(/_(\d+)_(\d+)(?=$|_)/g,"_$1.$2").replace(/\bPLUS\b/gi,"+").replace(/\bMINUS\b/gi,"-").replaceAll("_"," ").replace(/\s+([+-])\s*/g," $1").trim().toLowerCase().replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function nice(s){return String(s||"").replace(/_(\d+)_(\d+)(?=$|_)/g,"_$1.$2").replace(/\bPLUS\b/gi,"+").replace(/\bMINUS\b/gi,"-").replaceAll("_"," ").replace(/\bPlus\b/g,"+").replace(/\bMinus\b/g,"-").replace(/\s+([+-])\s*/g," $1").trim().toLowerCase().replace(/\b\w/g,function(c){return c.toUpperCase()})}
 function status(f){return f&&f.fixture&&f.fixture.status?f.fixture.status.short:""}
 function time(f){var d=new Date(f&&f.fixture?f.fixture.date:f.kickoff);return Number.isFinite(d.getTime())?d.toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):""}
 function easternHour(){return Number(new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour:"numeric",hour12:false}).format(new Date()))}
