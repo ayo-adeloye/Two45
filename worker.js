@@ -7351,7 +7351,11 @@ function jobDueV19(job) {
 }
 
 function rankedJobsV19(jobs) {
-  const candidates = jobs.filter(jobDueV19);
+  // V56: automatic queue processing must never claim Tier 4.
+  // Manual Ask Two45 analysis remains available through claimSpecificJob.
+  const candidates = jobs.filter(jobDueV19).filter(job =>
+    competitionTierV21(job.competition, job.provider_league_id) <= 3
+  );
   const rank = j => {
     const wait = Math.max(0, (Date.now() - Date.parse(j.requested_at)) / 60000);
     const tier = competitionTierV21(j.competition, j.provider_league_id);
