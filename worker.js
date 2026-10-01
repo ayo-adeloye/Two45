@@ -7530,13 +7530,21 @@ async function evaluateBoardV19(env, date, light = false) {
           Date.now() - Date.parse(f.generatedAt || 0) < 15 * 60000)
       );
     })
-    .map(f => ({
-      ...f,
-      fixtureId: String(f.fixtureId),
-      band: f.pickType === "RISKY_VALUE" ? "Risky Play" : "Top Pick",
-      score: num(f.probability),
-      rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3
-    }))
+    .map(f => {
+      const fixture = byId.get(Number(f.fixtureId));
+      const competitionTier = competitionTierV21(f.league || fixture?.league?.name, fixture?.league?.id);
+      const tierBonus = competitionTier === 1 ? 10 : competitionTier === 2 ? 4 : competitionTier === 3 ? 1 : 0;
+      const price = num(f.sportsbookOdds, 0);
+      const elitePriceBonus = price >= 1.18 && price <= 1.85 ? 3 : 0;
+      return {
+        ...f,
+        fixtureId: String(f.fixtureId),
+        competitionTier,
+        band: f.pickType === "RISKY_VALUE" ? "Risky Play" : "Top Pick",
+        score: num(f.probability),
+        rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3 + tierBonus + elitePriceBonus
+      };
+    })
     .sort((a,b) => b.rankScore - a.rankScore);
 
   const now = new Date().toISOString();
