@@ -1,0 +1,7 @@
+name = "two45-live-worker"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Existing secrets remain managed in Cloudflare and are not stored here.
+# Existing cron trigger is preserved on the live Worker and is intentionally
+# not declared here so source deployments do not change scheduling.
