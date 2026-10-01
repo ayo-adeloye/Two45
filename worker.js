@@ -7888,20 +7888,36 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
-  try {
-    result.model = await timedV2(
-      processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-      14000,
-      "analysis pass"
-    );
-  } catch (e) {
-    result.ok = false;
+  // V57: automatic analysis is an overnight pipeline. Before 8 PM ET,
+  // cron remains alive for health/watchdog/settlement work but must not claim
+  // queued fixtures. Manual Ask Two45 is intentionally unaffected because it
+  // reaches claimSpecificJob through the request path, not this scheduled pass.
+  if (!shouldPreloadTomorrow()) {
     result.model = {
-      ok: false,
+      ok: true,
+      skipped: true,
+      reason: "Automatic analysis window opens at 20:00 America/New_York",
       claimed: 0,
       processed: 0,
-      error: safeRefreshError(e)
+      queue: null,
+      results: []
     };
+  } else {
+    try {
+      result.model = await timedV2(
+        processJobs(env, DEFAULT_MODEL_BATCH, null, true),
+        14000,
+        "analysis pass"
+      );
+    } catch (e) {
+      result.ok = false;
+      result.model = {
+        ok: false,
+        claimed: 0,
+        processed: 0,
+        error: safeRefreshError(e)
+      };
+    }
   }
 
   // V51: persist the model-stage result immediately. If Cloudflare ends the
