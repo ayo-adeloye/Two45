@@ -1379,9 +1379,9 @@ function selectIndependent(
         );
       } else if (
         candidate.sportsbookOdds >=
-          2.0 &&
+          1.35 &&
         analysis.dataQuality >=
-          0.54
+          0.56
       ) {
         const floor =
           candidate.sportsbookOdds >=
@@ -1390,13 +1390,22 @@ function selectIndependent(
             : candidate.sportsbookOdds >=
                 2.75
               ? 0.30
-              : 0.34;
+              : candidate.sportsbookOdds >=
+                  2.0
+                ? 0.34
+                : candidate.sportsbookOdds >=
+                    1.60
+                  ? 0.48
+                  : 0.56;
 
         const edgeFloor =
           candidate.sportsbookOdds >=
           3.5
             ? 0.015
-            : 0.02;
+            : candidate.sportsbookOdds >=
+                2.0
+              ? 0.02
+              : 0.025;
 
         if (
           m.probability >=
