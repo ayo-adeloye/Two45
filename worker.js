@@ -373,23 +373,28 @@ function formatBoardSelectionsV20(payload) {
 }
 
 async function todayBoard(env) {
-  const d =
-    easternDate();
+  const d = easternDate();
+  let s = await snapshot(env, `model-board:${d}`);
 
-  const s =
-    await snapshot(
-      env,
-      `model-board:${d}`
-    );
+  // Midnight rollover safety: if the new day's board has not been
+  // materialized yet, build it only from stored fixtures + canonical analysis.
+  // lightweight=true prevents external/provider evaluation in this request.
+  if (!s) {
+    const fixtures = await snapshot(env, `fixtures:${d}`).catch(() => null);
+    const storedGames = Array.isArray(fixtures?.payload?.fixtures)
+      ? fixtures.payload.fixtures
+      : Array.isArray(fixtures?.payload?.response)
+        ? fixtures.payload.response
+        : [];
+    if (storedGames.length) {
+      await evaluateBoardV19(env, d, true).catch(() => null);
+      s = await snapshot(env, `model-board:${d}`).catch(() => null);
+    }
+  }
 
   return s
     ? formatBoardSelectionsV20(s.payload)
-    : {
-        ok: false,
-        date: d,
-        error:
-          "Today's model board is unavailable"
-      };
+    : {ok:false, date:d, games:[], fixtures:[], error:"Today\'s model board is unavailable"};
 }
 
 async function fixturesToday(env) {
