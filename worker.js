@@ -235,7 +235,26 @@ function easternWeekday() {
 function weekendModeV20() {
   const day = easternWeekday();
   const hour = easternHour();
-  return day === "Fri" || day === "Sat" || (day === "Thu" && hour >= 18);
+  return (day === "Fri" && hour >= 20) || day === "Sat" || day === "Sun";
+}
+
+function weekendLadderDatesV67() {
+  const today = easternDate();
+  const day = easternWeekday();
+  if (day === "Fri") return [datePlusDays(today, 1), datePlusDays(today, 2)];
+  if (day === "Sat") return [today, datePlusDays(today, 1)];
+  if (day === "Sun") return [today];
+  return [];
+}
+
+function weekendDeadlineRushV67() {
+  const day = easternWeekday();
+  const hour = easternHour();
+  return (day === "Fri" && hour >= 20) || (day === "Sat" && hour < 6);
+}
+
+function automaticAnalysisActiveV67() {
+  return shouldPreloadTomorrow() || weekendDeadlineRushV67();
 }
 
 function fourDayFixtureDatesV20() {
@@ -244,10 +263,8 @@ function fourDayFixtureDatesV20() {
 }
 
 function deepAnalysisDatesV20() {
+  if (weekendModeV20()) return weekendLadderDatesV67();
   const today = easternDate();
-  if (weekendModeV20()) {
-    return [today, datePlusDays(today, 1), datePlusDays(today, 2)];
-  }
   return [today, ...(shouldPreloadTomorrow() ? [datePlusDays(today, 1)] : [])];
 }
 
@@ -6872,6 +6889,23 @@ async function selectFeedJobV18(
     }
   }
 
+  // Friday 8 PM -> Saturday 6 AM is the Weekend Ladder deadline lane.
+  // Pull Saturday and Sunday fixtures/odds before spending maintenance on Friday.
+  if (weekendDeadlineRushV67()) {
+    for (const weekendDate of weekendLadderDatesV67()) {
+      const wf = await getFeedSnapshot(env, fixtureKey(weekendDate));
+      if (!wf || !fixtureRowsV58(wf).length) {
+        return {key:fixtureKey(weekendDate), ttl:1800,
+          run:() => refreshFixturesV18(env, weekendDate)};
+      }
+      const wo = await getFeedSnapshot(env, oddsKey(weekendDate));
+      if (!wo || !arr(wo?.payload?.response).length || num(wo?.payload?.total,0) <= 0) {
+        return {key:oddsKey(weekendDate), ttl:1800, savesItself:true,
+          run:() => refreshOddsPageV18(env, weekendDate)};
+      }
+    }
+  }
+
   const fixturesMissing =
     !(
       await getFeedSnapshot(
@@ -7768,8 +7802,16 @@ function rankedJobsV19(jobs) {
     return [...analysisReady, ...homeStaged, ...untouchedFresh, ...live, ...repeat];
   }
 
-  // V22 Cruise Control: after 8 PM, finish never-analyzed Tomorrow jobs
-  // before spending provider calls on repeat/deep-enrichment refreshes.
+  // Hard Weekend Ladder deadline lane: Friday 8 PM -> Saturday 6 AM ET.
+  // Fresh Saturday/Sunday coverage comes before all repeat/deep-enrichment work.
+  if (weekendDeadlineRushV67()) {
+    const weekendDates = new Set(weekendLadderDatesV67());
+    const weekendFresh = untouchedFresh.filter(j => weekendDates.has(dateOfV19(j.kickoff_at)));
+    const otherFresh = untouchedFresh.filter(j => !weekendDates.has(dateOfV19(j.kickoff_at)));
+    return [...weekendFresh, ...otherFresh, ...live, ...repeat];
+  }
+
+  // Normal overnight rule: tomorrow first.
   if (shouldPreloadTomorrow()) {
     const tomorrow = tomorrowEasternDate();
     const tomorrowFresh = untouchedFresh.filter(j => dateOfV19(j.kickoff_at) === tomorrow);
@@ -8272,11 +8314,11 @@ async function scheduledAnalysisV2(event, env) {
   // cron remains alive for health/watchdog/settlement work but must not claim
   // queued fixtures. Manual Ask Two45 is intentionally unaffected because it
   // reaches claimSpecificJob through the request path, not this scheduled pass.
-  if (!shouldPreloadTomorrow()) {
+  if (!automaticAnalysisActiveV67()) {
     result.model = {
       ok: true,
       skipped: true,
-      reason: "Automatic analysis window opens at 20:00 America/New_York",
+      reason: "Automatic analysis is idle outside the configured overnight/deadline lanes",
       claimed: 0,
       processed: 0,
       queue: null,
@@ -8666,6 +8708,19 @@ export default {
           )
         );
       }
+      if (url.pathname === "/api/model-board/date") {
+        const requestedDate = String(url.searchParams.get("date") || "");
+        const allowedDates = new Set(weekendLadderDatesV67());
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate) || !allowedDates.has(requestedDate)) {
+          return json({ok:false,error:"Date is not in the active Weekend Ladder pool."},400);
+        }
+        const snap = await snapshot(env, "model-board:" + requestedDate);
+        const board = snap ? formatBoardSelectionsV20(snap.payload) : {
+          ok:true,date:requestedDate,games:[],fixtures:[],picks:[],strongPicks:[],riskyPlays:[]
+        };
+        return json(await hydrateBoardFixturesV58(env, requestedDate, board, false));
+      }
+
 
       if (
         url.pathname ===
