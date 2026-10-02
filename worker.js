@@ -348,10 +348,14 @@ function formatBoardSelectionsV20(payload) {
   if (!payload || typeof payload !== "object") return payload;
   const formatItem = item => {
     if (!item || typeof item !== "object") return item;
+    const pricedV64 = num(item.sportsbookOdds, 0) > 0;
+    const bookV64 = String(item.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const bet365PriceV64 = !pricedV64 || bookV64 === "bet365";
     const qualified =
       item.decision === "PICK" &&
       item.selection &&
-      String(item.selection).toUpperCase() !== "NO_BET";
+      String(item.selection).toUpperCase() !== "NO_BET" &&
+      bet365PriceV64;
 
     return {
       ...item,
@@ -364,11 +368,17 @@ function formatBoardSelectionsV20(payload) {
       alternatives: displayAlternativesV20(item.alternatives)
     };
   };
+  const automaticVisibleV64 = item => {
+    if (!item || typeof item !== "object") return false;
+    const price = num(item.sportsbookOdds, 0);
+    const book = String(item.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return num(item.competitionTier, 4) <= 3 && (!price || book === "bet365");
+  };
   return {
     ...payload,
-    picks: Array.isArray(payload.picks) ? payload.picks.map(formatItem) : payload.picks,
-    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.map(formatItem) : payload.strongPicks,
-    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.map(formatItem) : payload.riskyPlays,
+    picks: Array.isArray(payload.picks) ? payload.picks.filter(automaticVisibleV64).map(formatItem) : payload.picks,
+    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.filter(automaticVisibleV64).map(formatItem) : payload.strongPicks,
+    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.filter(automaticVisibleV64).map(formatItem) : payload.riskyPlays,
     independentForecasts: Array.isArray(payload.independentForecasts) ? payload.independentForecasts.map(formatItem) : payload.independentForecasts
   };
 }
@@ -480,8 +490,6 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const riskyCandidateV62 = (parent, candidate) => {
     const price = num(candidate?.sportsbookOdds, 0);
-    const bookmakerV64 = String(candidate?.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (price > 0 && bookmakerV64 !== "bet365") return null;
     const probability = Number(candidate?.probability) > 1 ? Number(candidate.probability) / 100 : num(candidate?.probability, 0);
     const edgeRaw = candidate?.valueEdgePct ?? candidate?.valueEdge;
     const edgePct = edgeRaw == null ? num(parent?.valueEdgePct, 0) : (Math.abs(num(edgeRaw,0)) <= 1 ? num(edgeRaw,0) * 100 : num(edgeRaw,0));
@@ -505,10 +513,7 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
   };
 
   // Tier 4 remains manual-only: never surface it as an automatic board pick.
-  const automaticPicks = picks.filter(f =>
-    num(f.competitionTier, 4) <= 3 &&
-    (!num(f.sportsbookOdds, 0) || String(f.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "bet365")
-  );
+  const automaticPicks = picks.filter(f => num(f.competitionTier, 4) <= 3);
   const riskyByFixture = new Map();
   for (const parent of automaticPicks) {
     const candidates = [parent, ...arr(parent.alternatives)];
@@ -3497,12 +3502,6 @@ function oddsMarketsFromSnapshot(
     of row.bookmakers ||
       []
   ) {
-    // Two45 sportsbook policy: only Bet365 prices are allowed to qualify picks.
-    // If Bet365 does not price this fixture/market, keep the model view unpriced
-    // rather than substituting another bookmaker's line.
-    const bookNameV64 = String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (bookNameV64 !== "bet365") continue;
-
     for (
       const bet
       of book.bets ||
