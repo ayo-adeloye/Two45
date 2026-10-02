@@ -6532,6 +6532,104 @@ function mergeOddsV18(
   ];
 }
 
+function bet365RowsV68(rows) {
+  return arr(rows).filter(row =>
+    arr(row?.bookmakers).some(book =>
+      String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "bet365"
+    )
+  );
+}
+
+async function repairDailyOddsFromFixturesV68(env, date) {
+  const fixtureRow = await getFeedSnapshot(env, fixtureKey(date));
+  const fixtures = fixtureRowsV58(fixtureRow)
+    .filter(f => {
+      const status = f?.fixture?.status?.short;
+      return (UPCOMING_STATUSES.has(status) || LIVE_STATUSES.has(status)) &&
+        competitionTierV21(f?.league?.name, f?.league?.id) <= 3 &&
+        fixtureIdV19(f) > 0;
+    })
+    .sort((a,b) =>
+      competitionTierV21(a?.league?.name, a?.league?.id) - competitionTierV21(b?.league?.name, b?.league?.id) ||
+      Date.parse(a?.fixture?.date || 0) - Date.parse(b?.fixture?.date || 0)
+    );
+
+  const dailyRow = await getFeedSnapshot(env, oddsKey(date));
+  const previous = dailyRow?.payload || {};
+  let response = bet365RowsV68(previous.response);
+  const covered = new Set(response.map(row => String(row?.fixture?.id)));
+
+  for (const fixture of fixtures) {
+    const fixtureId = fixtureIdV19(fixture);
+    if (covered.has(String(fixtureId))) continue;
+
+    const directKey = "fixture-odds:" + fixtureId;
+    const cached = await getFeedSnapshot(env, directKey).catch(() => null);
+    const fresh = cached && Date.now() - Date.parse(cached.refreshed_at) < 30 * 60000;
+
+    if (fresh) {
+      const cachedRows = bet365RowsV68(cached?.payload?.response);
+      if (cachedRows.length) {
+        response = mergeOddsV18(response, cachedRows);
+        const payload = {
+          ok:true, service:"two45-live-worker", type:"odds", date,
+          updatedAt:new Date().toISOString(), total:response.length,
+          paging:{current:1,total:1,complete:true},
+          cacheSeconds:900, response, source:"fixture-repair-v68",
+          repairInProgress:true, repairedFixtureId:fixtureId
+        };
+        await saveFeedSnapshot(env, oddsKey(date), payload, 900);
+        return payload;
+      }
+      continue;
+    }
+
+    const direct = await providerFetchV18(env, "odds", {
+      fixture:String(fixtureId),
+      page:1
+    });
+    const directRows = bet365RowsV68(arr(direct?.response).map(slimOddsRowV18));
+    await saveFeedSnapshot(env, directKey, {
+      ok:true, service:"two45-live-worker", type:"fixture-odds",
+      fixtureId, updatedAt:new Date().toISOString(), response:directRows
+    }, 1800);
+
+    if (directRows.length) response = mergeOddsV18(response, directRows);
+
+    const payload = {
+      ok:true, service:"two45-live-worker", type:"odds", date,
+      updatedAt:new Date().toISOString(), total:response.length,
+      paging:{current:1,total:1,complete:true},
+      cacheSeconds:900, response, source:"fixture-repair-v68",
+      repairInProgress:true, repairedFixtureId:fixtureId,
+      repairedWithBet365:Boolean(directRows.length)
+    };
+    await saveFeedSnapshot(env, oddsKey(date), payload, 900);
+    return payload;
+  }
+
+  const payload = {
+    ok:true, service:"two45-live-worker", type:"odds", date,
+    updatedAt:new Date().toISOString(), total:response.length,
+    paging:{current:1,total:1,complete:true},
+    cacheSeconds:900, response, source:"fixture-repair-v68",
+    repairInProgress:false, repairExhaustedAt:new Date().toISOString()
+  };
+  await saveFeedSnapshot(env, oddsKey(date), payload, 900);
+  return payload;
+}
+
+async function oddsRepairActiveV68(env) {
+  const dates = weekendDeadlineRushV67()
+    ? weekendLadderDatesV67()
+    : [easternDate()];
+  for (const date of dates) {
+    const row = await getFeedSnapshot(env, oddsKey(date)).catch(() => null);
+    if (!row || !arr(row?.payload?.response).length || row?.payload?.repairInProgress) return true;
+  }
+  return false;
+}
+
 async function refreshOddsPageV18(
   env,
   date
@@ -6899,9 +6997,13 @@ async function selectFeedJobV18(
           run:() => refreshFixturesV18(env, weekendDate)};
       }
       const wo = await getFeedSnapshot(env, oddsKey(weekendDate));
-      if (!wo || !arr(wo?.payload?.response).length || num(wo?.payload?.total,0) <= 0) {
+      if (!wo) {
         return {key:oddsKey(weekendDate), ttl:1800, savesItself:true,
           run:() => refreshOddsPageV18(env, weekendDate)};
+      }
+      if (!arr(wo?.payload?.response).length || num(wo?.payload?.total,0) <= 0 || wo?.payload?.repairInProgress) {
+        return {key:oddsKey(weekendDate), ttl:1800, savesItself:true,
+          run:() => repairDailyOddsFromFixturesV68(env, weekendDate)};
       }
     }
   }
@@ -6952,27 +7054,14 @@ async function selectFeedJobV18(
     };
   }
 
-  if (
-    oddsMissing
-  ) {
+  if (oddsMissing || oddsSnapshot?.payload?.repairInProgress) {
     return {
-      key:
-        oddsKey(
-          date
-        ),
-
-      ttl:
-        900,
-
-      savesItself:
-        true,
-
-      run:
-        () =>
-          refreshOddsPageV18(
-            env,
-            date
-          )
+      key: oddsKey(date),
+      ttl: 900,
+      savesItself: true,
+      run: () => oddsSnapshot
+        ? repairDailyOddsFromFixturesV68(env, date)
+        : refreshOddsPageV18(env, date)
     };
   }
 
@@ -8039,7 +8128,10 @@ async function runCycleV19(event, env, force = false) {
   try {
     // V22 Cruise Control: after 8 PM, model work gets first use of
     // the pacing window so Tomorrow cannot remain stuck at zero.
-    const modelFirst = true;
+    const oddsRepairActive = await oddsRepairActiveV68(env).catch(() => false);
+    // While shared Bet365 coverage is being rebuilt, dedicate alternating cron
+    // minutes to odds repair so model baselines cannot monopolize provider calls.
+    const modelFirst = !(oddsRepairActive && (new Date().getUTCMinutes() % 2 === 0));
     if (modelFirst) {
       try {
         result.model = await processJobs(env, batchLimitV19(env.TWO45_MODEL_BATCH));
