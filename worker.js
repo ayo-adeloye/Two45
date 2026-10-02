@@ -390,6 +390,66 @@ function mergeFixtureRowsV58(baseRows, overlayRows) {
   );
 }
 
+
+// Read-time presentation hydration. Reuse saved canonical results without
+// claiming jobs, evaluating fixtures, calling providers, or writing snapshots.
+function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
+  // One source of truth: the canonical analysis state table.
+  // Prefer the current model version; use a legacy completed record only until
+  // the current version finishes for that fixture.
+  const chosenRows = new Map();
+  for (const row of canonicalRows) {
+    if (row.status !== "COMPLETE") continue;
+    const forecast = canonicalForecastV2(row);
+    if (!forecast) continue;
+    const id = Number(row.fixture_id);
+    const rank = row.model_version === MODEL_VERSION ? 2 : 1;
+    const completed = Date.parse(row.completed_at || row.updated_at || row.requested_at || 0);
+    const prev = chosenRows.get(id);
+    if (!prev || rank > prev.rank || (rank === prev.rank && completed > prev.completed)) {
+      chosenRows.set(id, {row, forecast, rank, completed});
+    }
+  }
+
+  const independentForecasts = fixtures.map(fixtureIdV19)
+    .map(id => chosenRows.get(Number(id))?.forecast)
+    .filter(Boolean);
+
+  const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
+  const picks = independentForecasts
+    .filter(f => {
+      const status = byId.get(Number(f.fixtureId))?.fixture?.status?.short;
+      return f.decision === "PICK" && (
+        UPCOMING_STATUSES.has(status) ||
+        (LIVE_STATUSES.has(status) && f.live === true &&
+          Date.now() - Date.parse(f.generatedAt || 0) < 15 * 60000)
+      );
+    })
+    .map(f => {
+      const fixture = byId.get(Number(f.fixtureId));
+      const competitionTier = competitionTierV21(f.league || fixture?.league?.name, fixture?.league?.id);
+      const tierBonus = competitionTier === 1 ? 10 : competitionTier === 2 ? 4 : competitionTier === 3 ? 1 : 0;
+      const price = num(f.sportsbookOdds, 0);
+      const elitePriceBonus = price >= 1.18 && price <= 1.85 ? 3 : 0;
+      return {
+        ...f,
+        fixtureId: String(f.fixtureId),
+        competitionTier,
+        band: f.pickType === "RISKY_VALUE" ? "Risky Play" : "Top Pick",
+        score: num(f.probability),
+        rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3 + tierBonus + elitePriceBonus
+      };
+    })
+    .sort((a,b) => b.rankScore - a.rankScore);
+
+
+  const eligiblePicks = picks.filter(f => f.pickType !== "RISKY_VALUE" || num(f.sportsbookOdds, 0) >= 1.35);
+  return formatBoardSelectionsV20({...base, independentForecasts,
+    analyzedCount: independentForecasts.length, picks: eligiblePicks,
+    strongPicks: eligiblePicks.filter(f => f.pickType !== "RISKY_VALUE"),
+    riskyPlays: eligiblePicks.filter(f => f.pickType === "RISKY_VALUE")});
+}
+
 async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
   const fixtureSnap = await snapshot(env, `fixtures:${date}`).catch(() => null);
   let games = fixtureRowsV58(fixtureSnap);
@@ -399,6 +459,13 @@ async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
     const liveSnap = await snapshot(env, "live").catch(() => null);
     const liveRows = fixtureRowsV58(liveSnap);
     games = mergeFixtureRowsV58(games, liveRows);
+  }
+
+  try {
+    const rows = await canonicalAnalysisRowsV2(env, games.map(fixtureIdV19));
+    board = presentCanonicalBoardV59(board || {}, games, rows);
+  } catch (_) {
+    // Preserve the last saved board if the display read is unavailable.
   }
 
   return {
