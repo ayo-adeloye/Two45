@@ -8078,20 +8078,36 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
-  if (!pendingBacklog && minute % 10 === 0) {
+  // Settlement is independent of analysis backlog. A completed game must not
+  // remain Pending simply because tomorrow's analysis queue is still draining.
+  // Every 10 minutes, refresh at most one stale recent date and then grade all
+  // finished forecasts available in stored fixture snapshots.
+  if (minute % 10 === 0) {
+    try {
+      const carryover = await timedV2(
+        refreshCarryoverV19(env),
+        10000,
+        "settlement carryover refresh"
+      );
+      if (carryover) result.maintenance.push(carryover);
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"settlement-carryover", error:safeRefreshError(e)});
+    }
     try {
       result.settled = await timedV2(settle(env), 10000, "settlement");
     } catch (e) {
       result.maintenance.push({ok:false, stage:"settlement", error:safeRefreshError(e)});
     }
-    try {
-      result.shadowBacktest = await timedV2(
-        settleShadowBacktestV44(env, 1),
-        12000,
-        "shadow backtest settlement"
-      );
-    } catch (e) {
-      result.maintenance.push({ok:false, stage:"shadow-backtest", error:safeRefreshError(e)});
+    if (!pendingBacklog) {
+      try {
+        result.shadowBacktest = await timedV2(
+          settleShadowBacktestV44(env, 1),
+          12000,
+          "shadow backtest settlement"
+        );
+      } catch (e) {
+        result.maintenance.push({ok:false, stage:"shadow-backtest", error:safeRefreshError(e)});
+      }
     }
   }
 
