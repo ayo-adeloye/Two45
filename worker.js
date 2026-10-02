@@ -8402,36 +8402,40 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
-  // V57: automatic analysis is an overnight pipeline. Before 8 PM ET,
-  // cron remains alive for health/watchdog/settlement work but must not claim
-  // queued fixtures. Manual Ask Two45 is intentionally unaffected because it
-  // reaches claimSpecificJob through the request path, not this scheduled pass.
-  if (!automaticAnalysisActiveV67()) {
+  // Automatic analysis runs 24/7. The 8 PM rule controls tomorrow/weekend
+  // discovery priority, not whether the model is allowed to work at all.
+  const minute = new Date().getUTCMinutes();
+  const oddsRepairActive = await oddsRepairActiveV68(env).catch(() => false);
+  const oddsRepairFirst = oddsRepairActive && minute % 2 === 0;
+
+  // While shared Bet365 coverage is unhealthy, reserve alternating cron minutes
+  // for fixture-level odds repair before model work so pricing cannot be starved.
+  if (oddsRepairFirst) {
+    try {
+      result.maintenance.push(await timedV2(
+        refreshOneFeed(env, false),
+        22000,
+        "priority odds repair"
+      ));
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"priority-odds-repair", error:safeRefreshError(e)});
+    }
+  }
+
+  try {
+    result.model = await timedV2(
+      processJobs(env, DEFAULT_MODEL_BATCH, null, true),
+      14000,
+      "analysis pass"
+    );
+  } catch (e) {
+    result.ok = false;
     result.model = {
-      ok: true,
-      skipped: true,
-      reason: "Automatic analysis is idle outside the configured overnight/deadline lanes",
+      ok: false,
       claimed: 0,
       processed: 0,
-      queue: null,
-      results: []
+      error: safeRefreshError(e)
     };
-  } else {
-    try {
-      result.model = await timedV2(
-        processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-        14000,
-        "analysis pass"
-      );
-    } catch (e) {
-      result.ok = false;
-      result.model = {
-        ok: false,
-        claimed: 0,
-        processed: 0,
-        error: safeRefreshError(e)
-      };
-    }
   }
 
   // V51: persist the model-stage result immediately. If Cloudflare ends the
@@ -8485,8 +8489,6 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
 
-  const minute = new Date().getUTCMinutes();
-
   const pendingBacklog = pendingBacklogNow;
 
   // Today behaves like a live-score board. Every five minutes during active
@@ -8519,9 +8521,10 @@ async function scheduledAnalysisV2(event, env) {
     !arr(currentOddsSnapshot?.payload?.response).length ||
     num(currentOddsSnapshot?.payload?.total, 0) <= 0;
 
-  // Repair a broken odds feed immediately. Once populated, fall back to the
-  // normal five-minute maintenance cadence to protect the provider budget.
-  if (!scoreStateRefreshed && (currentOddsEmpty || minute % 5 === 0)) {
+  // Repair unhealthy odds every minute, but on alternating minutes the repair
+  // already ran before model work. Healthy feeds use the normal five-minute lane.
+  const repairStillActive = await oddsRepairActiveV68(env).catch(() => currentOddsEmpty);
+  if (!oddsRepairFirst && !scoreStateRefreshed && (repairStillActive || minute % 5 === 0)) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
