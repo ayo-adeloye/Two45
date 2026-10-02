@@ -464,11 +464,46 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     .sort((a,b) => b.rankScore - a.rankScore);
 
 
-  const eligiblePicks = picks.filter(f => f.pickType !== "RISKY_VALUE" || num(f.sportsbookOdds, 0) >= 1.35);
+  const riskyMarketRankV61 = f => {
+    const market = String(f?.market || "").toUpperCase();
+    const selection = String(f?.selection || "").toUpperCase();
+    if (market === "MATCH_RESULT" && ["HOME","AWAY"].includes(selection)) return 6;
+    if (market === "TOTAL_GOALS" && selection === "OVER_3_5") return 6;
+    if (market === "TOTAL_GOALS" && selection === "OVER_2_5") return 5;
+    if (market === "BTTS" && selection === "YES") return 5;
+    if (["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) && /OVER_(1_5|2_5)/.test(selection)) return 5;
+    if (market === "HANDICAP" && /MINUS/.test(selection)) return 4;
+    if (market === "TOTAL_GOALS" && selection === "OVER_1_5") return 1;
+    if (market === "HANDICAP" && /PLUS_1_5/.test(selection)) return 0;
+    return 3;
+  };
+
+  const riskyQualifiedV61 = f => {
+    if (f.pickType !== "RISKY_VALUE") return true;
+    const price = num(f.sportsbookOdds, 0);
+    if (price < 1.35) return false;
+    const marketRank = riskyMarketRankV61(f);
+    const probability = num(f.probability, 0);
+    const edge = num(f.valueEdgePct, 0);
+    const preferredPrice = price >= 1.60;
+    const exceptionalLowPrice = price < 1.60 && marketRank >= 5 && edge >= 6 && probability >= 0.64;
+    return marketRank >= 3 && (preferredPrice || exceptionalLowPrice);
+  };
+
+  const eligiblePicks = picks.filter(riskyQualifiedV61);
+  const riskyPlays = eligiblePicks
+    .filter(f => f.pickType === "RISKY_VALUE")
+    .sort((a,b) => {
+      const ap = num(a.sportsbookOdds, 0), bp = num(b.sportsbookOdds, 0);
+      const aZone = ap >= 1.60 && ap <= 3.50 ? 2 : ap > 3.50 ? 1 : 0;
+      const bZone = bp >= 1.60 && bp <= 3.50 ? 2 : bp > 3.50 ? 1 : 0;
+      return bZone - aZone || riskyMarketRankV61(b) - riskyMarketRankV61(a) || b.rankScore - a.rankScore;
+    });
+
   return formatBoardSelectionsV20({...base, independentForecasts,
     analyzedCount: independentForecasts.length, picks: eligiblePicks,
     strongPicks: eligiblePicks.filter(f => f.pickType !== "RISKY_VALUE"),
-    riskyPlays: eligiblePicks.filter(f => f.pickType === "RISKY_VALUE")});
+    riskyPlays});
 }
 
 async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
