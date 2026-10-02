@@ -466,7 +466,7 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const riskyMarketRankV61 = f => {
     const market = String(f?.market || "").toUpperCase();
-    const selection = String(f?.selection || "").toUpperCase().replace(/\./g, "_");
+    const selection = String(f?.selection || "").toUpperCase();
     if (market === "MATCH_RESULT" && ["HOME","AWAY"].includes(selection)) return 6;
     if (market === "TOTAL_GOALS" && selection === "OVER_3_5") return 6;
     if (market === "TOTAL_GOALS" && selection === "OVER_2_5") return 5;
@@ -7792,71 +7792,27 @@ async function evaluateBoardV19(env, date, light = false) {
   const ids = fixtures.map(fixtureIdV19);
   const canonicalRows = await canonicalAnalysisRowsV2(env, ids);
 
-  // One source of truth: the canonical analysis state table.
-  // Prefer the current model version; use a legacy completed record only until
-  // the current version finishes for that fixture.
-  const chosenRows = new Map();
-  for (const row of canonicalRows) {
-    if (row.status !== "COMPLETE") continue;
-    const forecast = canonicalForecastV2(row);
-    if (!forecast) continue;
-    const id = Number(row.fixture_id);
-    const rank = row.model_version === MODEL_VERSION ? 2 : 1;
-    const completed = Date.parse(row.completed_at || row.updated_at || row.requested_at || 0);
-    const prev = chosenRows.get(id);
-    if (!prev || rank > prev.rank || (rank === prev.rank && completed > prev.completed)) {
-      chosenRows.set(id, {row, forecast, rank, completed});
-    }
-  }
-
-  const independentForecasts = ids
-    .map(id => chosenRows.get(Number(id))?.forecast)
-    .filter(Boolean);
-
-  const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
-  const picks = independentForecasts
-    .filter(f => {
-      const status = byId.get(Number(f.fixtureId))?.fixture?.status?.short;
-      return f.decision === "PICK" && (
-        UPCOMING_STATUSES.has(status) ||
-        (LIVE_STATUSES.has(status) && f.live === true &&
-          Date.now() - Date.parse(f.generatedAt || 0) < 15 * 60000)
-      );
-    })
-    .map(f => {
-      const fixture = byId.get(Number(f.fixtureId));
-      const competitionTier = competitionTierV21(f.league || fixture?.league?.name, fixture?.league?.id);
-      const tierBonus = competitionTier === 1 ? 10 : competitionTier === 2 ? 4 : competitionTier === 3 ? 1 : 0;
-      const price = num(f.sportsbookOdds, 0);
-      const elitePriceBonus = price >= 1.18 && price <= 1.85 ? 3 : 0;
-      return {
-        ...f,
-        fixtureId: String(f.fixtureId),
-        competitionTier,
-        band: f.pickType === "RISKY_VALUE" ? "Risky Play" : "Top Pick",
-        score: num(f.probability),
-        rankScore: num(f.probability) * 0.7 + num(f.valueEdgePct) * 0.3 + tierBonus + elitePriceBonus
-      };
-    })
-    .sort((a,b) => b.rankScore - a.rankScore);
-
-  const now = new Date().toISOString();
-  const eligiblePicks = picks.filter(f => f.pickType !== "RISKY_VALUE" || num(f.sportsbookOdds, 0) >= 1.35);
-  const strongPicks = eligiblePicks.filter(f => f.pickType !== "RISKY_VALUE");
-  const riskyPlays = eligiblePicks.filter(f => f.pickType === "RISKY_VALUE");
-  const health = await analysisHealthV2(env, date).catch(() => null);
-
-  const board = {
+  // Use the same canonical presentation path for persisted and read-time boards.
+  // This prevents the saved snapshot from reintroducing conservative Risky Value
+  // selections or Tier 4 automatic picks when endpoint hydration falls back.
+  const presented = presentCanonicalBoardV59({
     ...base,
     ok: true,
     date,
     service: "two45-live-worker",
     games: fixtures,
-    fixtures,
-    picks: eligiblePicks,
-    strongPicks,
-    riskyPlays,
-    independentForecasts,
+    fixtures
+  }, fixtures, canonicalRows);
+
+  const now = new Date().toISOString();
+  const health = await analysisHealthV2(env, date).catch(() => null);
+  const independentForecasts = arr(presented.independentForecasts);
+  const eligiblePicks = arr(presented.picks);
+  const strongPicks = arr(presented.strongPicks);
+  const riskyPlays = arr(presented.riskyPlays);
+
+  const board = {
+    ...presented,
     updatedAt: now,
     analyzedCount: independentForecasts.length,
     analysisHealth: health,
