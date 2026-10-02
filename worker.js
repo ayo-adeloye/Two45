@@ -415,6 +415,92 @@ function displayForecastV60(f) {
     reasons: ["Saved pick withheld: price coherence or independent handicap support could not be confirmed."]};
 }
 
+// Board-level Bet365 promotion for already-completed analyses.
+// Existing canonical rows can contain a strong model view with no sportsbook
+// price while a usable Bet365 option sits in alternatives. The public board
+// should publish only playable selections, never an unpriced model opinion.
+function pricedBoardPickV65(f) {
+  if (!f || typeof f !== "object") return null;
+  const normBook = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const p01 = value => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return n > 1 ? n / 100 : n;
+  };
+  const edgePct = x => {
+    if (x?.valueEdgePct != null) return num(x.valueEdgePct, 0);
+    const e = num(x?.valueEdge, 0);
+    return Math.abs(e) <= 1 ? e * 100 : e;
+  };
+  const dq = p01(f.dataQuality);
+  const choices = [f, ...arr(f.alternatives)]
+    .filter(x =>
+      normBook(x?.bookmaker) === "bet365" &&
+      num(x?.sportsbookOdds, 0) >= 1.10 &&
+      priceCoherentV60(p01(x?.probability), num(x?.sportsbookOdds, 0))
+    );
+
+  if (!choices.length) return null;
+
+  const score = x => {
+    const p = p01(x.probability);
+    const o = num(x.sportsbookOdds, 0);
+    const e = edgePct(x);
+    const market = String(x.market || "").toUpperCase();
+    const safety =
+      market === "DOUBLE_CHANCE" ? 0.055 :
+      market === "TOTAL_GOALS" ? 0.035 :
+      ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) ? 0.030 :
+      market === "BTTS" ? 0.018 :
+      market === "MATCH_RESULT" ? -0.020 : 0;
+    return p * 0.72 + clamp(dq, 0, 1) * 0.16 +
+      clamp(e / 100, -0.10, 0.40) * 0.08 + safety -
+      Math.max(0, o - 2.5) * 0.015;
+  };
+
+  const strong = choices.filter(x => {
+    const p = p01(x.probability);
+    const o = num(x.sportsbookOdds, 0);
+    const e = edgePct(x);
+    if (String(x.lane || "").toUpperCase() === "STRONG" && p >= 0.64 && dq >= 0.52) return true;
+    if (p >= 0.78 && dq >= 0.60 && o >= 1.10 && o <= 1.70 && e >= -5) return true;
+    if (p >= 0.74 && dq >= 0.60 && o > 1.70 && o <= 2.40 && e >= 8) return true;
+    return false;
+  }).sort((a,b) => score(b) - score(a));
+
+  const risky = choices.filter(x => {
+    const p = p01(x.probability);
+    const o = num(x.sportsbookOdds, 0);
+    const e = edgePct(x);
+    return String(x.lane || "").toUpperCase() === "RISKY_VALUE" &&
+      o >= 1.35 && p >= 0.42 && e >= 2;
+  }).sort((a,b) => score(b) - score(a));
+
+  const chosen = strong[0] || risky[0];
+  if (!chosen) return null;
+
+  const isRisky = !strong.length;
+  return {
+    ...f,
+    ...chosen,
+    decision: "PICK",
+    pickType: isRisky ? "RISKY_VALUE" : "STRONG_PICK",
+    band: isRisky ? "Risky Play" : "Top Pick",
+    bookmaker: "Bet365",
+    sportsbookOdds: num(chosen.sportsbookOdds, null),
+    probability: Number(chosen.probability) > 1
+      ? Number(chosen.probability)
+      : p01(chosen.probability) * 100,
+    valueEdgePct: edgePct(chosen),
+    reasons: [
+      isRisky
+        ? "Bet365-priced higher-variance option cleared the Two45 value gate."
+        : "Bet365-priced selection cleared the Two45 playable-pick gate."
+    ],
+    promotedFromAlternative: chosen !== f
+  };
+}
+
 // Read-time presentation hydration. Reuse saved canonical results without
 // claiming jobs, evaluating fixtures, calling providers, or writing snapshots.
 function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
@@ -441,7 +527,10 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     .map(displayForecastV60);
 
   const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
-  const picks = independentForecasts
+  const playableForecasts = independentForecasts
+    .map(pricedBoardPickV65)
+    .filter(Boolean);
+  const picks = playableForecasts
     .filter(f => {
       const status = byId.get(Number(f.fixtureId))?.fixture?.status?.short;
       return f.decision === "PICK" && (
@@ -1487,6 +1576,10 @@ function selectIndependent(
 
   const strong = [];
   const risky = [];
+  // Model-only convictions are useful analysis context, but a published pick
+  // must have a real Bet365 price. Keep unpriced convictions out of the final
+  // strong/risky lanes so the board never advertises a pick users cannot play.
+  const modelConvictionWatch = [];
 
   for (
     const group
@@ -1714,12 +1807,13 @@ function selectIndependent(
       analysisSource: "independent-model-conviction"
     };
 
-    // Model-only picks need stronger conviction than priced picks.
+    // Model-only picks need stronger conviction than priced picks, but remain
+    // analysis context until a real Bet365 price exists.
     if (m.probability >= floor + 0.03 || (analysis.competitionReliability >= 0.86 && m.probability >= floor + 0.01)) {
       for (let i = risky.length - 1; i >= 0; i--) {
         if (risky[i].market === m.market && risky[i].selection === m.selection) risky.splice(i, 1);
       }
-      strong.push(candidate);
+      modelConvictionWatch.push(candidate);
     }
   }
 
@@ -1734,7 +1828,7 @@ function selectIndependent(
    */
 
   const consensus = consensusCandidates(marketOdds);
-  const watch = [];
+  const watch = [...modelConvictionWatch];
 
   // Analysis options are allowed without a sportsbook price; final picks are not forced.
   for (const m of modeled) {
