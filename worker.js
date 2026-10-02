@@ -3078,12 +3078,22 @@ function providerMarketName(name) {
     return "DOUBLE_CHANCE";
   }
 
+  // Handicap Result is a separate 3-way market. Its displayed line is not
+  // interchangeable with Two45's binary Asian-handicap probabilities, so never
+  // attach those prices to HANDICAP model selections.
+  if (
+    n.includes(
+      "handicap result"
+    ) &&
+    !n.includes("corner") &&
+    !n.includes("card")
+  ) {
+    return null;
+  }
+
   if (
     n.includes(
       "asian handicap"
-    ) ||
-    n.includes(
-      "handicap result"
     )
   ) {
     if (
