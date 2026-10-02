@@ -457,7 +457,12 @@ async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
 
   if (includeLive) {
     const liveSnap = await snapshot(env, "live").catch(() => null);
-    const liveRows = fixtureRowsV58(liveSnap);
+    // Cached live snapshots may outlive their games. Keep genuine recent
+    // carryovers without importing days-old fixtures into today's display.
+    const liveRows = fixtureRowsV58(liveSnap).filter(f => {
+      const age = Date.now() - Date.parse(f?.fixture?.date);
+      return LIVE_STATUSES.has(f?.fixture?.status?.short) && age >= 0 && age < 6 * 60 * 60000;
+    });
     games = mergeFixtureRowsV58(games, liveRows);
   }
 

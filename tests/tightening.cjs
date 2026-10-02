@@ -6,7 +6,7 @@ script.forEach(s=>new vm.Script(s));
 const dom={value:'',style:{},classList:{toggle(){},remove(){},add(){},contains(){return false}},setAttribute(){}};
 const c=vm.createContext({console,Date,Intl,Set,Map,localStorage:{getItem(){return ''}},document:{querySelector(){return {...dom}},querySelectorAll(){return []}},setInterval(){},fetch:()=>new Promise(()=>{})});
 vm.runInContext(script[0],c);
-const f=(name,country='World',status='NS')=>({fixture:{id:1,status:{short:status}},league:{name,country},teams:{home:{name:'Alpha'},away:{name:'Beta'}}});
+const f=(name,country='World',status='NS')=>({fixture:{id:1,date:new Date(Date.now()+3600000).toISOString(),status:{short:status}},league:{name,country},teams:{home:{name:'Alpha'},away:{name:'Beta'}}});
 assert.equal(c.isIntl(f('UEFA Champions League Women')),false);
 assert.equal(c.isIntl(f('Friendlies Clubs')),false);
 assert.equal(c.isIntl(f('UEFA Nations League')),true);
@@ -24,6 +24,7 @@ assert.equal(c.ticketPriceCoherent({market:'HANDICAP',sportsbookOdds:3.1,probabi
 assert.equal(c.ticketPriceCoherent({market:'TOTAL_GOALS',sportsbookOdds:1.7,probability:.75}),true);
 c.state.today={strongPicks:[{...board.strongPicks[0],sportsbookOdds:4}]};assert.equal(c.ticketPool().length,0);
 c.state.today={independentForecasts:[{fixtureId:3,decision:'NO_BET',alternatives:[{}]}]};assert.equal(c.findForecast(3).decision,'NO_BET');
+const past=f('League');past.fixture.date=new Date(Date.now()-2*86400000).toISOString();past.fixture.status.short='1H';assert.equal(c.isLive(past),false);assert.equal(c.awaitingUpdate(past),true);past.fixture.status.short='NS';assert.equal(c.isUpcoming(past),false);assert.equal(c.ticketUpcoming({games:[past]},{fixtureId:1}),false);
 console.log('PASS: frontend syntax, national/club classification, status/search/pick filtering, ticket price guard and saved analysis lookup');
 
 const w=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout});
