@@ -1419,6 +1419,18 @@ function selectIndependent(
           "MODEL_PLUS_MARKET"
       };
 
+      // Price coherence guard: sportsbook odds must describe the same event
+      // represented by the model probability. Extreme probability/price
+      // disagreement is treated as a mapping mismatch, not artificial value.
+      const impliedProbability = candidate.sportsbookOdds > 1
+        ? 1 / candidate.sportsbookOdds
+        : null;
+      const incoherentPrice =
+        candidate.sportsbookOdds >= 3 && m.probability >= 0.70 ||
+        candidate.sportsbookOdds >= 4 && m.probability >= 0.80 ||
+        (impliedProbability && m.probability / impliedProbability > 3);
+      if (incoherentPrice) continue;
+
       if (
         m.probability >=
           0.64 &&
@@ -1751,36 +1763,35 @@ function selectIndependent(
     !(x.market === "TOTAL_GOALS" && String(x.selection) === "UNDER_4_5")
   );
 
-  // For top competitions, allow a genuinely convincing straight win or O2.5
-  // to become the headline selection instead of always losing to a safer market.
-  // This is not a quota: the candidate must already have qualified as STRONG.
-  // Bold-evidence lane: a higher goal line can headline only after it already qualifies STRONG.
-  const audaciousStrong = tier <= 2
-    ? strong.find(x =>
-        x.market === "TOTAL_GOALS" &&
-        String(x.selection || "") === "OVER_3_5" &&
-        num(x.probability, 0) >= (tier === 1 ? 0.60 : 0.64) &&
-        analysis.dataQuality >= (tier === 1 ? 0.58 : 0.64) &&
-        score(x) >= score(nonU45Strong || x) - 0.070
-      )
-    : null;
-
-  const assertiveStrong = tier <= 2
-    ? strong.find(x => {
-        const s = String(x.selection || "");
-        const straightWin = x.market === "MATCH_RESULT" && (s === "HOME" || s === "AWAY");
-        const over25 = x.market === "TOTAL_GOALS" && s === "OVER_2_5";
-        if (!straightWin && !over25) return false;
-        const floor = straightWin
-          ? (tier === 1 ? 0.68 : 0.72)
-          : (tier === 1 ? 0.63 : 0.66);
-        return num(x.probability, 0) >= floor && score(x) >= score(nonU45Strong || x) - 0.045;
-      })
+  // Calculated-audacity promotion: among already-STRONG candidates,
+  // prefer the deepest supported outcome when the confidence sacrifice is small.
+  // This does not lower qualification thresholds or manufacture picks.
+  const baseStrong = nonU45Strong || strong[0] || null;
+  const audacityRank = x => {
+    const s = String(x?.selection || "");
+    if (x?.market === "TOTAL_GOALS" && s === "OVER_3_5") return 5;
+    if (x?.market === "MATCH_RESULT" && (s === "HOME" || s === "AWAY")) return 4;
+    if (x?.market === "TOTAL_GOALS" && s === "OVER_2_5") return 4;
+    if (x?.market === "BTTS" && s === "YES") return 3;
+    if (x?.market === "HOME_TEAM_GOALS" || x?.market === "AWAY_TEAM_GOALS") return 3;
+    if (x?.market === "HANDICAP" && /MINUS/.test(s)) return 3;
+    if (x?.market === "TOTAL_GOALS" && s === "OVER_1_5") return 1;
+    if (x?.market === "HANDICAP" && /PLUS_1_5/.test(s)) return 0;
+    return 2;
+  };
+  const audaciousStrong = tier <= 2 && baseStrong
+    ? strong
+        .filter(x =>
+          audacityRank(x) > audacityRank(baseStrong) &&
+          num(x.probability, 0) >= Math.max(0.58, num(baseStrong.probability, 0) - (tier === 1 ? 0.16 : 0.12)) &&
+          analysis.dataQuality >= (tier === 1 ? 0.50 : 0.56) &&
+          score(x) >= score(baseStrong) - (tier === 1 ? 0.075 : 0.055)
+        )
+        .sort((a,b) => audacityRank(b) - audacityRank(a) || score(b) - score(a))[0]
     : null;
 
   const b =
     audaciousStrong ||
-    assertiveStrong ||
     nonU45Strong ||
     strong[0] ||
     nonU45Risky ||
@@ -7575,18 +7586,26 @@ async function oddsForJobV19(env, job) {
 
 async function refreshCarryoverV19(env) {
   if (providerQuietWindow()) return {ok:true, skipped:true, reason:"Provider quiet window"};
-  const yesterday = datePlusDays(easternDate(), -1);
-  const row = await getFeedSnapshot(env, fixtureKey(yesterday));
-  if (!row || Date.now() - Date.parse(row.refreshed_at) < 15 * 60000) return null;
-  const recentUnfinished = arr(row.payload?.fixtures).some(f => {
-    const age = Date.now() - Date.parse(f?.fixture?.date);
-    return age >= 0 && age < 6 * 60 * 60000 &&
-      (LIVE_STATUSES.has(f?.fixture?.status?.short) || UPCOMING_STATUSES.has(f?.fixture?.status?.short));
-  });
-  if (!recentUnfinished) return null;
-  const payload = await refreshFixturesV18(env, yesterday);
-  await saveFeedSnapshot(env, fixtureKey(yesterday), payload, 900);
-  return {ok: true, key: fixtureKey(yesterday), total: payload.total, settlementOnly: true};
+
+  // Settlement repair lane: refresh at most one recent past date per run.
+  // Stored pre-match snapshots otherwise strand forecasts after the date rolls over.
+  for (let daysBack = 1; daysBack <= 4; daysBack++) {
+    const date = datePlusDays(easternDate(), -daysBack);
+    const row = await getFeedSnapshot(env, fixtureKey(date));
+    if (!row || Date.now() - Date.parse(row.refreshed_at) < 15 * 60000) continue;
+
+    const fixtures = arr(row.payload?.fixtures);
+    const needsFinals = fixtures.some(f =>
+      LIVE_STATUSES.has(f?.fixture?.status?.short) ||
+      UPCOMING_STATUSES.has(f?.fixture?.status?.short)
+    );
+    if (!needsFinals) continue;
+
+    const payload = await refreshFixturesV18(env, date);
+    await saveFeedSnapshot(env, fixtureKey(date), payload, 900);
+    return {ok:true, key:fixtureKey(date), total:payload.total, settlementOnly:true, daysBack};
+  }
+  return null;
 }
 
 
