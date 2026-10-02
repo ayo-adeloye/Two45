@@ -419,7 +419,7 @@ function displayForecastV60(f) {
 // Existing canonical rows can contain a strong model view with no sportsbook
 // price while a usable Bet365 option sits in alternatives. The public board
 // should publish only playable selections, never an unpriced model opinion.
-function pricedBoardPickV65(f) {
+function pricedBoardPickV65(f, competitionTier = 3) {
   if (!f || typeof f !== "object") return null;
   const normBook = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   const p01 = value => {
@@ -432,6 +432,7 @@ function pricedBoardPickV65(f) {
     const e = num(x?.valueEdge, 0);
     return Math.abs(e) <= 1 ? e * 100 : e;
   };
+  const tier = Math.max(1, Math.min(4, Number(competitionTier) || 3));
   const dq = p01(f.dataQuality);
   const choices = [f, ...arr(f.alternatives)]
     .filter(x =>
@@ -440,31 +441,42 @@ function pricedBoardPickV65(f) {
       priceCoherentV60(p01(x?.probability), num(x?.sportsbookOdds, 0))
     );
 
-  if (!choices.length) return null;
+  if (!choices.length || tier > 3) return null;
 
   const score = x => {
     const p = p01(x.probability);
     const o = num(x.sportsbookOdds, 0);
     const e = edgePct(x);
     const market = String(x.market || "").toUpperCase();
+    const selection = String(x.selection || "").toUpperCase();
     const safety =
-      market === "DOUBLE_CHANCE" ? 0.055 :
-      market === "TOTAL_GOALS" ? 0.035 :
-      ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) ? 0.030 :
-      market === "BTTS" ? 0.018 :
-      market === "MATCH_RESULT" ? -0.020 : 0;
-    return p * 0.72 + clamp(dq, 0, 1) * 0.16 +
-      clamp(e / 100, -0.10, 0.40) * 0.08 + safety -
+      market === "DOUBLE_CHANCE" ? 0.060 :
+      market === "TOTAL_GOALS" && selection === "OVER_1_5" ? 0.045 :
+      market === "TOTAL_GOALS" ? 0.030 :
+      ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) ? 0.026 :
+      market === "BTTS" ? 0.012 :
+      market === "MATCH_RESULT" ? -0.010 : 0;
+    return p * 0.78 + clamp(dq, 0, 1) * 0.15 +
+      clamp(e / 100, -0.12, 0.35) * 0.04 + safety -
       Math.max(0, o - 2.5) * 0.015;
   };
+
+  // Elite is confidence-first. Risky Value remains edge-first.
+  const eliteGate = tier === 1
+    ? {p: 0.72, q: 0.52, maxOdds: 2.05, minEdge: -8}
+    : tier === 2
+      ? {p: 0.74, q: 0.56, maxOdds: 1.95, minEdge: -6}
+      : {p: 0.77, q: 0.62, maxOdds: 1.85, minEdge: -4};
 
   const strong = choices.filter(x => {
     const p = p01(x.probability);
     const o = num(x.sportsbookOdds, 0);
     const e = edgePct(x);
-    if (String(x.lane || "").toUpperCase() === "STRONG" && p >= 0.64 && dq >= 0.52) return true;
-    if (p >= 0.78 && dq >= 0.60 && o >= 1.10 && o <= 1.70 && e >= -5) return true;
-    if (p >= 0.74 && dq >= 0.60 && o > 1.70 && o <= 2.40 && e >= 8) return true;
+    const lane = String(x.lane || "").toUpperCase();
+
+    if (lane === "STRONG" && p >= Math.max(0.64, eliteGate.p - 0.06) && dq >= eliteGate.q) return true;
+    if (p >= eliteGate.p && dq >= eliteGate.q && o <= eliteGate.maxOdds && e >= eliteGate.minEdge) return true;
+    if (p >= eliteGate.p - 0.02 && dq >= eliteGate.q && o > eliteGate.maxOdds && o <= 2.40 && e >= 8) return true;
     return false;
   }).sort((a,b) => score(b) - score(a));
 
@@ -472,7 +484,8 @@ function pricedBoardPickV65(f) {
     const p = p01(x.probability);
     const o = num(x.sportsbookOdds, 0);
     const e = edgePct(x);
-    return String(x.lane || "").toUpperCase() === "RISKY_VALUE" &&
+    const lane = String(x.lane || "").toUpperCase();
+    return (lane === "RISKY_VALUE" || o >= 1.60) &&
       o >= 1.35 && p >= 0.42 && e >= 2;
   }).sort((a,b) => score(b) - score(a));
 
@@ -495,7 +508,7 @@ function pricedBoardPickV65(f) {
     reasons: [
       isRisky
         ? "Bet365-priced higher-variance option cleared the Two45 value gate."
-        : "Bet365-priced selection cleared the Two45 playable-pick gate."
+        : "Bet365-priced high-confidence selection cleared the Two45 Elite/Top Pick gate."
     ],
     promotedFromAlternative: chosen !== f
   };
@@ -528,7 +541,11 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
   const playableForecasts = independentForecasts
-    .map(pricedBoardPickV65)
+    .map(f => {
+      const fixture = byId.get(Number(f.fixtureId));
+      const tier = competitionTierV21(f.league || fixture?.league?.name, fixture?.league?.id);
+      return pricedBoardPickV65(f, tier);
+    })
     .filter(Boolean);
   const picks = playableForecasts
     .filter(f => {
@@ -2081,7 +2098,7 @@ function selectIndependent(
 
     riskLabel:
       isRisky
-        ? "Higher variance â model/market edge detected"
+        ? "Higher variance — model/market edge detected"
         : "Standard Two45 qualification",
 
     market:
