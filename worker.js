@@ -3428,8 +3428,12 @@ function providerMarketName(name) {
   }
 
   if (
-    (n.includes("goals over/under") || n === "total goals" || n.startsWith("total goals over/under")) &&
-    !/(odd|even|exact|range|interval|minute|half|team|asian)/.test(n)
+    n.includes(
+      "goals over/under"
+    ) ||
+    n.includes(
+      "total goals"
+    )
   ) {
     return "TOTAL_GOALS";
   }
@@ -3488,6 +3492,10 @@ function oddsMarketsFromSnapshot(
     of row.bookmakers ||
       []
   ) {
+    // Source-of-truth sportsbook policy: ingest Bet365 only.
+    const bookNameV64 = String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (bookNameV64 !== "bet365") continue;
+
     for (
       const bet
       of book.bets ||
@@ -7394,19 +7402,6 @@ function groupMarketLinesV19(groups) {
       if (outcomes.length < 2) continue;
       if (group.market === 'DOUBLE_CHANCE' && outcomes.length !== 3) continue;
       if (group.market === 'MATCH_RESULT' && outcomes.length !== 3) continue;
-      // Exact-line integrity for totals: a usable total must contain the
-      // matching OVER and UNDER for the same numeric line. Never infer an
-      // O1.5/O2.5 price from a neighboring or one-sided provider market.
-      if ([
-        'TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS','TOTAL_CORNERS',
-        'HOME_CORNERS','AWAY_CORNERS','TOTAL_CARDS','HOME_CARDS','AWAY_CARDS',
-        'TOTAL_SHOTS','TOTAL_SHOTS_ON_TARGET','TOTAL_SHOTS_OFF_TARGET'
-      ].includes(group.market)) {
-        const normalized = outcomes.map(x => String(x.selection || '').toUpperCase());
-        const hasOver = normalized.some(x => /(^|_)OVER_\d/.test(x));
-        const hasUnder = normalized.some(x => /(^|_)UNDER_\d/.test(x));
-        if (!hasOver || !hasUnder) continue;
-      }
       out.push({...group, groupKey, outcomes});
     }
   }
