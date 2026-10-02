@@ -373,29 +373,63 @@ function formatBoardSelectionsV20(payload) {
   };
 }
 
+function fixtureRowsV58(snapshotRow) {
+  const p = snapshotRow?.payload || {};
+  return Array.isArray(p.fixtures) ? p.fixtures :
+    Array.isArray(p.response) ? p.response : [];
+}
+
+function mergeFixtureRowsV58(baseRows, overlayRows) {
+  const map = new Map();
+  for (const f of [...arr(baseRows), ...arr(overlayRows)]) {
+    const id = f?.fixture?.id;
+    if (id != null) map.set(String(id), f);
+  }
+  return [...map.values()].sort((a,b) =>
+    Date.parse(a?.fixture?.date || 0) - Date.parse(b?.fixture?.date || 0)
+  );
+}
+
+async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
+  const fixtureSnap = await snapshot(env, `fixtures:${date}`).catch(() => null);
+  let games = fixtureRowsV58(fixtureSnap);
+  if (!games.length) games = arr(board?.games || board?.fixtures);
+
+  if (includeLive) {
+    const liveSnap = await snapshot(env, "live").catch(() => null);
+    const liveRows = fixtureRowsV58(liveSnap);
+    games = mergeFixtureRowsV58(games, liveRows);
+  }
+
+  return {
+    ...(board || {}),
+    ok: true,
+    date,
+    games,
+    fixtures: games,
+    fixtureFeedUpdatedAt: fixtureSnap?.refreshed_at || null
+  };
+}
+
 async function todayBoard(env) {
   const d = easternDate();
   let s = await snapshot(env, `model-board:${d}`);
 
-  // Midnight rollover safety: if the new day's board has not been
-  // materialized yet, build it only from stored fixtures + canonical analysis.
-  // lightweight=true prevents external/provider evaluation in this request.
   if (!s) {
     const fixtures = await snapshot(env, `fixtures:${d}`).catch(() => null);
-    const storedGames = Array.isArray(fixtures?.payload?.fixtures)
-      ? fixtures.payload.fixtures
-      : Array.isArray(fixtures?.payload?.response)
-        ? fixtures.payload.response
-        : [];
-    if (storedGames.length) {
+    if (fixtureRowsV58(fixtures).length) {
       await evaluateBoardV19(env, d, true).catch(() => null);
       s = await snapshot(env, `model-board:${d}`).catch(() => null);
     }
   }
 
-  return s
+  const board = s
     ? formatBoardSelectionsV20(s.payload)
-    : {ok:false, date:d, games:[], fixtures:[], error:"Today\'s model board is unavailable"};
+    : {ok:true, date:d, games:[], fixtures:[], picks:[], strongPicks:[], riskyPlays:[]};
+
+  // Display hydration only: use already-cached fixtures and live scores.
+  // This never calls API-Football and never changes analysis/queue behavior.
+  return hydrateBoardFixturesV58(env, d, board, true);
 }
 
 async function fixturesToday(env) {
@@ -537,14 +571,19 @@ async function tomorrowBoard(env) {
       `model-board:${d}`
     );
 
-  return s
+  const board = s
     ? formatBoardSelectionsV20(s.payload)
     : {
         ok: true,
         date: d,
         games: [],
-        picks: []
+        fixtures: [],
+        picks: [],
+        strongPicks: [],
+        riskyPlays: []
       };
+
+  return hydrateBoardFixturesV58(env, d, board, false);
 }
 
 async function liveOdds(env) {
