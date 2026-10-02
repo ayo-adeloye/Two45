@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 70;
-const PACING_REVISION = "2026-10-02.70-six-am-ticket-locks";
+const WORKER_VERSION = 71;
+const PACING_REVISION = "2026-10-02.71-elite-risky-model";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -454,83 +454,109 @@ function pricedBoardPickV65(f, competitionTier = 3) {
   };
   const tier = Math.max(1, Math.min(4, Number(competitionTier) || 3));
   const dq = p01(f.dataQuality);
-  const choices = [f, ...arr(f.alternatives)]
-    .filter(x =>
-      normBook(x?.bookmaker) === "bet365" &&
-      num(x?.sportsbookOdds, 0) >= 1.10 &&
-      priceCoherentV60(p01(x?.probability), num(x?.sportsbookOdds, 0))
-    );
-
+  const choices = [f, ...arr(f.alternatives)].filter(x =>
+    normBook(x?.bookmaker) === "bet365" &&
+    num(x?.sportsbookOdds, 0) >= 1.10 &&
+    priceCoherentV60(p01(x?.probability), num(x?.sportsbookOdds, 0))
+  );
   if (!choices.length || tier > 3) return null;
 
-  const score = x => {
-    const p = p01(x.probability);
-    const o = num(x.sportsbookOdds, 0);
-    const e = edgePct(x);
-    const market = String(x.market || "").toUpperCase();
-    const selection = String(x.selection || "").toUpperCase();
-    const safety =
-      market === "DOUBLE_CHANCE" ? 0.060 :
-      market === "TOTAL_GOALS" && selection === "OVER_1_5" ? 0.045 :
-      market === "TOTAL_GOALS" ? 0.030 :
-      ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) ? 0.026 :
-      market === "BTTS" ? 0.012 :
-      market === "MATCH_RESULT" ? -0.010 : 0;
-    return p * 0.78 + clamp(dq, 0, 1) * 0.15 +
-      clamp(e / 100, -0.12, 0.35) * 0.04 + safety -
-      Math.max(0, o - 2.5) * 0.015;
+  const marketBoldness = x => {
+    const market = String(x?.market || "").toUpperCase();
+    const selection = String(x?.selection || "").toUpperCase();
+    if (market === "MATCH_RESULT" && ["HOME","AWAY"].includes(selection)) return 6;
+    if (market === "TOTAL_GOALS" && selection === "OVER_3_5") return 6;
+    if (market === "TOTAL_GOALS" && selection === "OVER_2_5") return 5;
+    if (market === "BTTS" && selection === "YES") return 5;
+    if (["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) && /OVER_(1_5|2_5|3_5)/.test(selection)) return 5;
+    if (market === "HANDICAP" && /MINUS/.test(selection)) return 5;
+    if (market.includes("CORNERS") || market.includes("CARDS") || market.includes("SHOTS")) return 4;
+    if (market === "TOTAL_GOALS" && selection === "OVER_1_5") return 1;
+    if (market === "DOUBLE_CHANCE") return 1;
+    if (market === "HANDICAP" && /PLUS_1_5/.test(selection)) return 0;
+    return 3;
   };
 
-  // Elite is confidence-first. Risky Value remains edge-first.
+  // Elite is reliability-first. It can use any coherent Bet365 market, but
+  // confidence, data quality and competition quality dominate the score.
   const eliteGate = tier === 1
-    ? {p: 0.72, q: 0.52, maxOdds: 2.05, minEdge: -8}
+    ? {p:0.69,q:0.50,minEdge:-8}
     : tier === 2
-      ? {p: 0.74, q: 0.56, maxOdds: 1.95, minEdge: -6}
-      : {p: 0.77, q: 0.62, maxOdds: 1.85, minEdge: -4};
+      ? {p:0.72,q:0.54,minEdge:-6}
+      : {p:0.75,q:0.60,minEdge:-4};
 
-  const strong = choices.filter(x => {
-    const p = p01(x.probability);
-    const o = num(x.sportsbookOdds, 0);
-    const e = edgePct(x);
-    const lane = String(x.lane || "").toUpperCase();
+  const eliteScore = x => {
+    const p=p01(x.probability), e=edgePct(x), o=num(x.sportsbookOdds,0);
+    const market=String(x.market||"").toUpperCase();
+    const selection=String(x.selection||"").toUpperCase();
+    const safety =
+      market==="DOUBLE_CHANCE" ? .050 :
+      market==="TOTAL_GOALS" && selection==="OVER_1_5" ? .038 :
+      market==="TOTAL_GOALS" ? .025 :
+      ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market) ? .022 :
+      market==="BTTS" ? .010 :
+      market==="MATCH_RESULT" ? .004 : 0;
+    return p*.76 + clamp(dq,0,1)*.18 + clamp(e/100,-.12,.30)*.04 + safety -
+      Math.max(0,o-2.8)*.008;
+  };
 
-    if (lane === "STRONG" && p >= Math.max(0.64, eliteGate.p - 0.06) && dq >= eliteGate.q) return true;
-    if (p >= eliteGate.p && dq >= eliteGate.q && o <= eliteGate.maxOdds && e >= eliteGate.minEdge) return true;
-    if (p >= eliteGate.p - 0.02 && dq >= eliteGate.q && o > eliteGate.maxOdds && o <= 2.40 && e >= 8) return true;
-    return false;
-  }).sort((a,b) => score(b) - score(a));
+  const strong=choices.filter(x=>{
+    const p=p01(x.probability), e=edgePct(x), lane=String(x.lane||"").toUpperCase();
+    if(dq<eliteGate.q) return false;
+    if(lane==="STRONG" && p>=eliteGate.p-.05 && e>=eliteGate.minEdge) return true;
+    return p>=eliteGate.p && e>=eliteGate.minEdge;
+  }).sort((a,b)=>eliteScore(b)-eliteScore(a));
 
-  const risky = choices.filter(x => {
-    const p = p01(x.probability);
-    const o = num(x.sportsbookOdds, 0);
-    const e = edgePct(x);
-    const lane = String(x.lane || "").toUpperCase();
-    return (lane === "RISKY_VALUE" || o >= 1.60) &&
-      o >= 1.35 && p >= 0.42 && e >= 2;
-  }).sort((a,b) => score(b) - score(a));
+  // Risky Value has no arbitrary upper odds ceiling and no fixed count.
+  // The higher the price, the lower the raw probability can be, but every
+  // candidate still needs positive model value, coherent Bet365 mapping and
+  // enough data quality for the competition tier.
+  const riskyQ = tier===1 ? .46 : tier===2 ? .50 : .54;
+  const riskyFloor = o =>
+    o>=8 ? .10 :
+    o>=5 ? .14 :
+    o>=3.5 ? .20 :
+    o>=2.75 ? .25 :
+    o>=2 ? .32 :
+    o>=1.60 ? .44 : .56;
+  const riskyEdgeFloor = o =>
+    o>=5 ? 1 :
+    o>=2.75 ? 1.5 :
+    o>=2 ? 2 :
+    2.5;
 
-  const chosen = strong[0] || risky[0];
-  if (!chosen) return null;
+  const riskyScore=x=>{
+    const p=p01(x.probability), e=edgePct(x), o=num(x.sportsbookOdds,0), bold=marketBoldness(x);
+    return p*55 + clamp(dq,0,1)*18 + e*.65 + bold*2.5 + Math.log(Math.max(1.01,o))*7;
+  };
 
-  const isRisky = !strong.length;
+  const risky=choices.filter(x=>{
+    const p=p01(x.probability), o=num(x.sportsbookOdds,0), e=edgePct(x), bold=marketBoldness(x);
+    if(o<1.35 || dq<riskyQ || e<riskyEdgeFloor(o) || p<riskyFloor(o)) return false;
+    // At short Risky Value prices, insist on a genuinely aggressive market.
+    // Bigger prices are allowed without a market-type restriction when the
+    // probability/value evidence supports them.
+    if(o<1.60 && bold<5) return false;
+    return true;
+  }).sort((a,b)=>riskyScore(b)-riskyScore(a));
+
+  const chosen=strong[0]||risky[0];
+  if(!chosen) return null;
+  const isRisky=!strong.length;
   return {
     ...f,
     ...chosen,
-    decision: "PICK",
-    pickType: isRisky ? "RISKY_VALUE" : "STRONG_PICK",
-    band: isRisky ? "Risky Play" : "Top Pick",
-    bookmaker: "Bet365",
-    sportsbookOdds: num(chosen.sportsbookOdds, null),
-    probability: Number(chosen.probability) > 1
-      ? Number(chosen.probability)
-      : p01(chosen.probability) * 100,
-    valueEdgePct: edgePct(chosen),
-    reasons: [
-      isRisky
-        ? "Bet365-priced higher-variance option cleared the Two45 value gate."
-        : "Bet365-priced high-confidence selection cleared the Two45 Elite/Top Pick gate."
-    ],
-    promotedFromAlternative: chosen !== f
+    decision:"PICK",
+    pickType:isRisky?"RISKY_VALUE":"STRONG_PICK",
+    band:isRisky?"Risky Play":"Top Pick",
+    bookmaker:"Bet365",
+    sportsbookOdds:num(chosen.sportsbookOdds,null),
+    probability:Number(chosen.probability)>1?Number(chosen.probability):p01(chosen.probability)*100,
+    valueEdgePct:edgePct(chosen),
+    reasons:[isRisky
+      ?"Bold Bet365-priced opportunity cleared Two45 probability, data-quality and value checks."
+      :"Reliability-first Bet365 selection cleared Two45 Elite confidence and data-quality checks."],
+    promotedFromAlternative:chosen!==f
   };
 }
 
@@ -610,58 +636,65 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const riskyCandidateV62 = (parent, candidate) => {
     const price = num(candidate?.sportsbookOdds, 0);
-    const probability = Number(candidate?.probability) > 1 ? Number(candidate.probability) / 100 : num(candidate?.probability, 0);
+    const probability = Number(candidate?.probability) > 1
+      ? Number(candidate.probability) / 100
+      : num(candidate?.probability, 0);
     const edgeRaw = candidate?.valueEdgePct ?? candidate?.valueEdge;
-    const edgePct = edgeRaw == null ? num(parent?.valueEdgePct, 0) : (Math.abs(num(edgeRaw,0)) <= 1 ? num(edgeRaw,0) * 100 : num(edgeRaw,0));
+    const edgePct = edgeRaw == null
+      ? num(parent?.valueEdgePct, 0)
+      : (Math.abs(num(edgeRaw,0)) <= 1 ? num(edgeRaw,0) * 100 : num(edgeRaw,0));
+    const dqRaw = candidate?.dataQuality ?? parent?.dataQuality;
+    const dq = Number(dqRaw) > 1 ? Number(dqRaw)/100 : num(dqRaw,0);
+    const tier = num(parent?.competitionTier, 3);
+    const qFloor = tier === 1 ? .46 : tier === 2 ? .50 : .54;
+    const pFloor =
+      price >= 8 ? .10 :
+      price >= 5 ? .14 :
+      price >= 3.5 ? .20 :
+      price >= 2.75 ? .25 :
+      price >= 2 ? .32 :
+      price >= 1.60 ? .44 : .56;
+    const edgeFloor = price >= 5 ? 1 : price >= 2.75 ? 1.5 : price >= 2 ? 2 : 2.5;
     const marketRank = riskyMarketRankV61(candidate);
-    if (price < 1.35 || marketRank < 3 || !priceCoherentV60(probability, price)) return null;
-    // Risky Value is intentionally bolder, but still requires a meaningful model case.
-    if (probability < 0.54 && edgePct < 5) return null;
-    if (price < 1.60 && !(marketRank >= 5 && probability >= 0.62 && edgePct >= 4)) return null;
+
+    if (price < 1.35 || dq < qFloor || !priceCoherentV60(probability, price)) return null;
+    if (probability < pFloor || edgePct < edgeFloor) return null;
+    if (price < 1.60 && marketRank < 5) return null;
+
     return {
       ...parent,
       ...candidate,
-      fixtureId: String(parent.fixtureId),
-      pickType: "RISKY_VALUE",
-      band: "Risky Play",
-      probability: Number(candidate?.probability) > 1 ? Number(candidate.probability) : probability * 100,
-      valueEdgePct: edgePct,
-      competitionTier: parent.competitionTier,
-      rankScore: probability * 70 + edgePct * 0.30 + riskyMarketRankV61(candidate) * 2,
-      promotedFromAlternative: candidate !== parent
+      fixtureId:String(parent.fixtureId),
+      decision:"PICK",
+      pickType:"RISKY_VALUE",
+      band:"Risky Play",
+      probability:Number(candidate?.probability)>1?Number(candidate.probability):probability*100,
+      valueEdgePct:edgePct,
+      competitionTier:parent.competitionTier,
+      rankScore:probability*55 + dq*18 + edgePct*.65 + marketRank*2.5 +
+        Math.log(Math.max(1.01,price))*7,
+      promotedFromAlternative:candidate!==parent
     };
   };
 
-  // Tier 4 remains manual-only: never surface it as an automatic board pick.
-  const automaticPicks = picks.filter(f => num(f.competitionTier, 4) <= 3);
+  // Tier 4 remains manual-only. Risky Value has no artificial result-count
+  // ceiling and no maximum odds ceiling; evidence determines how many surface.
+  const automaticPicks = picks.filter(f => num(f.competitionTier,4) <= 3);
   const riskyByFixture = new Map();
   for (const parent of automaticPicks) {
-    const candidates = [parent, ...arr(parent.alternatives)];
-    for (const candidate of candidates) {
-      const promoted = riskyCandidateV62(parent, candidate);
+    for (const candidate of [parent, ...arr(parent.alternatives)]) {
+      const promoted = riskyCandidateV62(parent,candidate);
       if (!promoted) continue;
-      const id = String(parent.fixtureId);
-      const prev = riskyByFixture.get(id);
-      if (!prev || promoted.rankScore > prev.rankScore) riskyByFixture.set(id, promoted);
+      const id=String(parent.fixtureId), prev=riskyByFixture.get(id);
+      if (!prev || promoted.rankScore > prev.rankScore) riskyByFixture.set(id,promoted);
     }
   }
 
-  const allRiskyV63 = [...riskyByFixture.values()]
-    .filter(f => f.pickType === "RISKY_VALUE");
-  const boldRiskyV63 = allRiskyV63.filter(f => riskyMarketRankV61(f) >= 3);
-  const conservativeRiskyV63 = allRiskyV63.filter(f => riskyMarketRankV61(f) < 3);
-  // Risky Value should feel materially different from Top Picks. Use O1.5/+1.5
-  // only as a small fallback when there are not enough genuinely bold options.
-  const riskyPlays = [
-    ...boldRiskyV63,
-    ...conservativeRiskyV63
-      .sort((a,b) => b.rankScore - a.rankScore)
-      .slice(0, Math.max(0, 3 - boldRiskyV63.length))
-  ].sort((a,b) => {
-      const ap = num(a.sportsbookOdds, 0), bp = num(b.sportsbookOdds, 0);
-      const aZone = ap >= 1.60 && ap <= 3.50 ? 2 : ap > 3.50 ? 1 : 0;
-      const bZone = bp >= 1.60 && bp <= 3.50 ? 2 : bp > 3.50 ? 1 : 0;
-      return riskyMarketRankV61(b) - riskyMarketRankV61(a) || bZone - aZone || b.rankScore - a.rankScore;
+  const riskyPlays=[...riskyByFixture.values()]
+    .sort((a,b)=>{
+      const ap=num(a.sportsbookOdds,0), bp=num(b.sportsbookOdds,0);
+      const ab=riskyMarketRankV61(a), bb=riskyMarketRankV61(b);
+      return b.rankScore-a.rankScore || bb-ab || bp-ap;
     });
 
   const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
@@ -8368,7 +8401,7 @@ function ticketOptimizeV70(pool,target,low,high,minLegs,maxLegs){let best=null,f
 async function ticketBoardV70(env,date){const fs=await snapshot(env,fixtureKey(date)).catch(()=>null),games=fixtureRowsV58(fs);if(!games.length)return{ok:true,date,games:[],fixtures:[],strongPicks:[],riskyPlays:[]};const bs=await snapshot(env,modelBoardKey(date)).catch(()=>null),base=bs?.payload||{ok:true,date,games,fixtures:games};const rows=await canonicalAnalysisRowsV2(env,games.map(fixtureIdV19)).catch(()=>[]);return presentCanonicalBoardV59(base,games,rows)}
 async function ticketBaselineV70(env,legs){const out={},ids=[...new Set(arr(legs).map(x=>Number(x.fixtureId||x.providerMatchId)).filter(Boolean))];await Promise.all(ids.map(async id=>{const s=await getFeedSnapshot(env,"match-intelligence:"+id).catch(()=>null),p=s?.payload||{};out[String(id)]={generatedAt:p.generatedAt||s?.refreshed_at||null,homeAbsences:num(p.homeAbsences,0),awayAbsences:num(p.awayAbsences,0),lineupsConfirmed:Boolean(p.lineupsConfirmed)}}));return out}
 function lockTicketV70(t,at,b){if(!t)return null;return{...t,locked:true,lockedAt:at,legs:arr(t.legs).map(x=>({...x,locked:true,lockedAt:at,originalOdds:ticketPriceV70(x),originalProbability:num(x.probability,null),originalMarket:x.market||null,originalSelection:x.selection||null,lockIntel:b?.[String(x.fixtureId||x.providerMatchId)]||null}))}}
-async function buildDailyLockV70(env,date){const board=await ticketBoardV70(env,date),pool=ticketPoolBoardV70(board,"Today",true).slice(0,30),t=ticketOptimizeV70(pool,3.125,3,3.25,2,5),at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),payload={ok:true,type:"daily",date,status:"LOCKED",lockedAt:at,immutable:true,ticket:lockTicketV70(t,at,b),candidateCount:pool.length,rule:"Frozen after the 06:00 America/New_York publication lock."};await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200);return payload}
+async function buildDailyLockV70(env,date){const board=await ticketBoardV70(env,date),pool=ticketPoolBoardV70(board,"Today",true).slice(0,30),t=ticketOptimizeV70(pool,3.125,3,3.25,3,3),at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),payload={ok:true,type:"daily",date,status:"LOCKED",lockedAt:at,immutable:true,ticket:lockTicketV70(t,at,b),candidateCount:pool.length,rule:"Frozen after the 06:00 America/New_York publication lock."};await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200);return payload}
 function weekendAnchorV70(){const d=easternDate(),day=easternWeekday();if(day==="Fri")return datePlusDays(d,1);if(day==="Sat")return d;if(day==="Sun")return datePlusDays(d,-1);return null}
 async function buildWeekendLockV70(env,satDate){const sunDate=datePlusDays(satDate,1),boards=await Promise.all([ticketBoardV70(env,satDate),ticketBoardV70(env,sunDate)]),pool=[...ticketPoolBoardV70(boards[0],"Sat",false),...ticketPoolBoardV70(boards[1],"Sun",false)].sort((a,b)=>b._ticketScore-a._ticketScore).slice(0,24),five=ticketOptimizeV70(pool,5,4.75,5.5,2,5),ten=ticketOptimizeV70(pool,10,9,11,3,7),fifty=ticketOptimizeV70(pool,50,45,55,4,9),at=new Date().toISOString(),b=await ticketBaselineV70(env,[...arr(five?.legs),...arr(ten?.legs),...arr(fifty?.legs)]),payload={ok:true,type:"weekend",saturday:satDate,sunday:sunDate,status:"LOCKED",lockedAt:at,immutable:true,tickets:{five:lockTicketV70(five,at,b),ten:lockTicketV70(ten,at,b),fifty:lockTicketV70(fifty,at,b)},candidateCount:pool.length,rule:"Saturday and Sunday legs freeze together at Saturday 06:00 America/New_York."};await saveFeedSnapshot(env,"ticket-lock:weekend:"+satDate,payload,432000);return payload}
 async function ensureTicketLocksV70(env){const hour=easternHour(),date=easternDate();let d=await getFeedSnapshot(env,"ticket-lock:daily:"+date).catch(()=>null);if(!d&&hour>=6)d={payload:await buildDailyLockV70(env,date)};const sat=weekendAnchorV70(),day=easternWeekday();let w=sat?await getFeedSnapshot(env,"ticket-lock:weekend:"+sat).catch(()=>null):null;if(!w&&sat&&((day==="Sat"&&hour>=6)||day==="Sun"))w={payload:await buildWeekendLockV70(env,sat)};return{daily:d?.payload||null,weekend:w?.payload||null}}
