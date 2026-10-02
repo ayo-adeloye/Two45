@@ -6882,15 +6882,20 @@ async function selectFeedJobV18(
       )
     );
 
-  const oddsMissing =
-    !(
-      await getFeedSnapshot(
-        env,
-        oddsKey(
-          date
-        )
+  const oddsSnapshot =
+    await getFeedSnapshot(
+      env,
+      oddsKey(
+        date
       )
     );
+
+  // An empty odds snapshot is not a healthy feed. Treat it as missing so
+  // Bet365 coverage is repaired before lower-priority future discovery work.
+  const oddsMissing =
+    !oddsSnapshot ||
+    !arr(oddsSnapshot?.payload?.response).length ||
+    num(oddsSnapshot?.payload?.total, 0) <= 0;
 
   if (
     fixturesMissing
@@ -8311,7 +8316,10 @@ async function scheduledAnalysisV2(event, env) {
 
   const pendingBacklog = pendingBacklogNow;
 
-  if (!pendingBacklog && minute % 5 === 0) {
+  // Feed maintenance must not be starved by the analysis queue. The previous
+  // backlog gate left odds:DATE stuck at zero while hundreds of fixtures were
+  // pending, forcing one-off fallback calls and starving Elite of Bet365 prices.
+  if (minute % 5 === 0) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
