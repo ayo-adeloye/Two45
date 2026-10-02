@@ -54,3 +54,7 @@ assert.equal(w.displayForecastV60(saved).qualityHold,true);assert.equal(w.displa
 assert.equal(w.priceCoherentV60(.77556,3.14),false);
 assert.equal(w.priceCoherentV60(.75,1.8),true);
 console.log('PASS: reproduced consensus price bypass is blocked; handicaps require independent support; current promotion hides invalid saved picks without mutating the ledger');
+
+assert.equal(c.isIntl(f('U20 Elite League')),true);
+assert.equal(c.isIntl(f('CAF U23 Cup of Nations')),true);
+console.log('PASS: youth national competitions stay in International');
