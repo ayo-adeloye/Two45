@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 55;
-const PACING_REVISION = "2026-09-30.55-atomic-fresh-state-machine";
+const WORKER_VERSION = 69;
+const PACING_REVISION = "2026-10-02.69-progressive-data-pathway";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -22,6 +22,9 @@ const TOMORROW_PRELOAD_HOUR_ET = 20;
 const TARGET_DAILY_REQUESTS = 6000;
 const FAST_BASELINE_INTERVAL_MS = 2000;
 const SHADOW_V40_DEFAULT_DAILY_CAP = 650;
+const PROVIDER_BURST_MAX_CALLS_V69 = 4;
+const PROVIDER_BURST_GAP_MS_V69 = 850;
+let providerBurstV69 = null;
 
 
 const LIVE_STATUSES = new Set([
@@ -5415,43 +5418,33 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
   // V55: scheduled fresh coverage uses a single Postgres claim operation.
   // This removes queue-load + rank + REST claim from the cron critical path.
   if (skipRecovery) {
-    const freshOwned = await timedV2(
-      claimNextFreshJobV55(env),
-      3000,
-      "atomic fresh claim"
-    ).catch(() => null);
-
-    if (freshOwned) {
+    const freshResults = [];
+    const freshDeadline = Date.now() + 12500;
+    for (let step = 0; step < 3 && Date.now() < freshDeadline; step++) {
+      const freshOwned = await timedV2(claimNextFreshJobV55(env), 3000, "atomic fresh claim").catch(() => null);
+      if (!freshOwned) break;
       let result;
       try {
-        result = await timedV2(
-          processOne(env, freshOwned),
-          11000,
-          "fresh fixture " + freshOwned.fixture_id + " analysis"
-        );
+        result = await timedV2(processOne(env, freshOwned), 11000,
+          "fresh fixture " + freshOwned.fixture_id + " analysis");
       } catch (e) {
-        const msg = "V55 bounded fresh-cycle recovery: " + safeRefreshError(e);
+        const msg = "V69 bounded fresh-cycle recovery: " + safeRefreshError(e);
         await deferClaimedJobV55(env, freshOwned, msg).catch(() => null);
-        result = {
-          fixtureId: freshOwned.fixture_id,
-          status: "DEFERRED",
-          autoRecovered: true,
-          rateLimited: false,
-          error: msg
-        };
+        result = {fixtureId:freshOwned.fixture_id,status:"DEFERRED",autoRecovered:true,rateLimited:false,error:msg};
       }
-
+      freshResults.push(result);
+      if (result?.rateLimited || /bounded provider burst complete/i.test(String(result?.error || ""))) break;
+    }
+    if (freshResults.length) {
+      const ready = freshResults.filter(x => x.status === "READY").length;
       return {
-        ok: result.status === "READY" || result.status === "DEFERRED",
-        claimed: 1,
-        processed: 1,
-        claimStarved: false,
-        candidateCount: 1,
-        freshTomorrowBacklog: 0,
-        freshBaselineBacklog: result.status === "READY" ? 0 : 1,
-        adaptiveBatch: 1,
-        queue: {eligible:1, existing:1, inserted:0, excluded:0, source:"atomic-fresh-v55"},
-        results: [result]
+        ok:freshResults.every(x => x.status === "READY" || x.status === "DEFERRED"),
+        claimed:freshResults.length, processed:freshResults.length, claimStarved:false,
+        candidateCount:freshResults.length, freshTomorrowBacklog:0,
+        freshBaselineBacklog:Math.max(0,freshResults.length-ready),
+        adaptiveBatch:freshResults.length,
+        queue:{eligible:freshResults.length,existing:freshResults.length,inserted:0,excluded:0,source:"atomic-fresh-v69"},
+        results:freshResults
       };
     }
   }
@@ -6053,7 +6046,7 @@ async function providerFetchV18(env, path, params = {}) {
   // Cron is already serialized at the pipeline level; daily usage is still
   // protected by the atomic reservation RPC below.
   const lockKey = 'api-football-pacing';
-  const leaseDeadline = Date.now() + 12000;
+  const leaseDeadline = Date.now() + (providerBurstV69 ? 20000 : 12000);
   let pacing;
   try {
     pacing = (await getFeedSnapshot(env, lockKey))?.payload || {};
@@ -6068,19 +6061,31 @@ async function providerFetchV18(env, path, params = {}) {
       throw error;
     }
     const wait = Math.max(0, num(pacing.nextAt) - Date.now());
-    // V52: scheduled work never sleeps inside a Worker event. Cron runs every
-    // minute, so waiting here only increases the chance Cloudflare ends the
-    // event before Two45 can persist progress. Defer to the next cron instead.
-    if (wait > 0) {
-      const error = new Error('API-Football rate limit pacing not ready; retry on next cron');
-      error.retryAt = num(pacing.nextAt);
+    const burst = providerBurstV69;
+    if (burst && burst.calls >= burst.maxCalls) {
+      const error = new Error('Two45 bounded provider burst complete; continue next cron');
+      error.retryAt = Date.now() + 60000;
       throw error;
     }
+    if (wait > 0) {
+      if (!burst) {
+        const error = new Error('API-Football rate limit pacing not ready; retry on next cron');
+        error.retryAt = num(pacing.nextAt);
+        throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(PROVIDER_BURST_GAP_MS_V69, wait)));
+    }
     if (Date.now() >= leaseDeadline) throw new Error('API-Football rate limit pacing lease expired');
-    pacing = {...pacing, nextAt: Date.now() + adaptiveProviderIntervalV30(pacing)};
+    if (burst) burst.calls += 1;
+    const nextInterval = burst ? PROVIDER_BURST_GAP_MS_V69 : adaptiveProviderIntervalV30(pacing);
+    pacing = {...pacing, nextAt: Date.now() + nextInterval};
     await saveFeedSnapshot(env, lockKey, pacing, 172800);
     const payload = await providerFetchReservedV18(env, path, params, pacing, leaseDeadline);
-    await saveFeedSnapshot(env, lockKey, {...pacing, nextAt: Date.now() + adaptiveProviderIntervalV30(pacing)}, 172800);
+    await saveFeedSnapshot(env, lockKey, {...pacing,
+      nextAt: Date.now() + (burst ? PROVIDER_BURST_GAP_MS_V69 : adaptiveProviderIntervalV30(pacing)),
+      burstCallsThisCron: burst ? burst.calls : 0,
+      burstMaxCalls: burst ? burst.maxCalls : 0
+    }, 172800);
     return payload;
   } catch (error) {
     if (pacing && /Too many requests|HTTP 429|exceeded.*minute/i.test(safeRefreshError(error))) {
@@ -8356,6 +8361,7 @@ async function scheduledAnalysisV2(event, env) {
   // lock is unnecessary and was a single point of failure: if lock acquisition
   // failed, the entire minute was silently skipped.
   const startedAt = new Date().toISOString();
+  providerBurstV69 = {id:startedAt,calls:0,maxCalls:PROVIDER_BURST_MAX_CALLS_V69};
   const result = {
     ok: true,
     version: WORKER_VERSION,
@@ -8569,6 +8575,8 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
+  result.providerBurst = {calls:providerBurstV69?.calls || 0,maxCalls:PROVIDER_BURST_MAX_CALLS_V69};
+  providerBurstV69 = null;
   return result;
 }
 
