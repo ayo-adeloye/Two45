@@ -8080,9 +8080,9 @@ async function scheduledAnalysisV2(event, env) {
 
   // Settlement is independent of analysis backlog. A completed game must not
   // remain Pending simply because tomorrow's analysis queue is still draining.
-  // Every 10 minutes, refresh at most one stale recent date and then grade all
+  // Every 15 minutes, refresh at most one stale recent date and then grade all
   // finished forecasts available in stored fixture snapshots.
-  if (minute % 10 === 0) {
+  if (minute % 15 === 0) {
     try {
       const carryover = await timedV2(
         refreshCarryoverV19(env),
