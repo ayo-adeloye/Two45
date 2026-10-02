@@ -466,7 +466,7 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const riskyMarketRankV61 = f => {
     const market = String(f?.market || "").toUpperCase();
-    const selection = String(f?.selection || "").toUpperCase();
+    const selection = String(f?.selection || "").toUpperCase().replace(/\./g, "_");
     if (market === "MATCH_RESULT" && ["HOME","AWAY"].includes(selection)) return 6;
     if (market === "TOTAL_GOALS" && selection === "OVER_3_5") return 6;
     if (market === "TOTAL_GOALS" && selection === "OVER_2_5") return 5;
