@@ -9,6 +9,7 @@ const PACING_REVISION = "2026-09-30.55-atomic-fresh-state-machine";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
+const DECISION_REVISION = "2026-10-01-bold-evidence-v1";
 const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
 
 const API_BASE = "https://v3.football.api-sports.io";
@@ -914,6 +915,7 @@ function probabilities(
     TOTAL_GOALS: {
       OVER_1_5: 0,
       OVER_2_5: 0,
+      OVER_3_5: 0,
       UNDER_3_5: 0,
       UNDER_4_5: 0
     },
@@ -1018,6 +1020,10 @@ function probabilities(
 
     if (g > 2) {
       out.TOTAL_GOALS.OVER_2_5 += p;
+    }
+
+    if (g > 3) {
+      out.TOTAL_GOALS.OVER_3_5 += p;
     }
 
     if (g < 4) {
@@ -1462,6 +1468,7 @@ function selectIndependent(
       const edge = num(x?.valueEdge, 0);
       return priced >= 1.45 && edge >= 0.035 ? -0.010 : -0.050;
     }
+    if (tier <= 2 && x?.market === "TOTAL_GOALS" && s === "OVER_3_5") return tier === 1 ? 0.045 : 0.028;
     if (tier <= 2 && x?.market === "TOTAL_GOALS" && s === "OVER_2_5") return tier === 1 ? 0.030 : 0.018;
     if (tier <= 2 && x?.market === "MATCH_RESULT" && (s === "HOME" || s === "AWAY")) return tier === 1 ? 0.028 : 0.015;
     return 0;
@@ -1470,6 +1477,7 @@ function selectIndependent(
   for (const m of modeled) {
     if (!["TOTAL_GOALS","DOUBLE_CHANCE","HANDICAP","HOME_TEAM_GOALS","AWAY_TEAM_GOALS","BTTS","MATCH_RESULT"].includes(m.market)) continue;
     const floor = m.market === "MATCH_RESULT" ? tierGate.winFloor :
+      (m.market === "TOTAL_GOALS" && m.selection === "OVER_3_5") ? (tier === 1 ? 0.58 : tier === 2 ? 0.62 : 0.68) :
       (m.market === "TOTAL_GOALS" && m.selection === "OVER_2_5") ? tierGate.o25Floor :
       m.market === "HANDICAP" ? 0.70 :
       m.market === "BTTS" ? 0.73 :
@@ -1707,6 +1715,17 @@ function selectIndependent(
   // For top competitions, allow a genuinely convincing straight win or O2.5
   // to become the headline selection instead of always losing to a safer market.
   // This is not a quota: the candidate must already have qualified as STRONG.
+  // Bold-evidence lane: a higher goal line can headline only after it already qualifies STRONG.
+  const audaciousStrong = tier <= 2
+    ? strong.find(x =>
+        x.market === "TOTAL_GOALS" &&
+        String(x.selection || "") === "OVER_3_5" &&
+        num(x.probability, 0) >= (tier === 1 ? 0.60 : 0.64) &&
+        analysis.dataQuality >= (tier === 1 ? 0.58 : 0.64) &&
+        score(x) >= score(nonU45Strong || x) - 0.070
+      )
+    : null;
+
   const assertiveStrong = tier <= 2
     ? strong.find(x => {
         const s = String(x.selection || "");
@@ -1721,6 +1740,7 @@ function selectIndependent(
     : null;
 
   const b =
+    audaciousStrong ||
     assertiveStrong ||
     nonU45Strong ||
     strong[0] ||
@@ -3637,7 +3657,10 @@ async function writeForecast(
 
       topMarkets:
         decision.topMarkets ||
-        []
+        [],
+
+      decisionRevision:
+        DECISION_REVISION
     },
 
     probability_snapshot:
