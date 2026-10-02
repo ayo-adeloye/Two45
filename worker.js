@@ -516,13 +516,22 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     }
   }
 
-  const riskyPlays = [...riskyByFixture.values()]
-    .filter(f => f.pickType === "RISKY_VALUE")
-    .sort((a,b) => {
+  const allRiskyV63 = [...riskyByFixture.values()]
+    .filter(f => f.pickType === "RISKY_VALUE");
+  const boldRiskyV63 = allRiskyV63.filter(f => riskyMarketRankV61(f) >= 3);
+  const conservativeRiskyV63 = allRiskyV63.filter(f => riskyMarketRankV61(f) < 3);
+  // Risky Value should feel materially different from Top Picks. Use O1.5/+1.5
+  // only as a small fallback when there are not enough genuinely bold options.
+  const riskyPlays = [
+    ...boldRiskyV63,
+    ...conservativeRiskyV63
+      .sort((a,b) => b.rankScore - a.rankScore)
+      .slice(0, Math.max(0, 3 - boldRiskyV63.length))
+  ].sort((a,b) => {
       const ap = num(a.sportsbookOdds, 0), bp = num(b.sportsbookOdds, 0);
       const aZone = ap >= 1.60 && ap <= 3.50 ? 2 : ap > 3.50 ? 1 : 0;
       const bZone = bp >= 1.60 && bp <= 3.50 ? 2 : bp > 3.50 ? 1 : 0;
-      return bZone - aZone || riskyMarketRankV61(b) - riskyMarketRankV61(a) || b.rankScore - a.rankScore;
+      return riskyMarketRankV61(b) - riskyMarketRankV61(a) || bZone - aZone || b.rankScore - a.rankScore;
     });
 
   const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
