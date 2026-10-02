@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 69;
-const PACING_REVISION = "2026-10-02.69-progressive-data-pathway";
+const WORKER_VERSION = 70;
+const PACING_REVISION = "2026-10-02.70-six-am-ticket-locks";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -8355,6 +8355,26 @@ async function refreshTodayScoreStateV66(env) {
   };
 }
 
+/* =========================================================
+   V70 IMMUTABLE 6 AM TICKETS
+   ========================================================= */
+function ticketNormV70(v,d=0){v=Number(v);return Number.isFinite(v)?(v>1?v/100:v):d}
+function ticketPriceV70(x){const n=Number(x?.sportsbookOdds??x?.odds??x?.price);return Number.isFinite(n)&&n>=1.10?n:null}
+function ticketPriceCoherentV70(x){const o=ticketPriceV70(x),p=ticketNormV70(x?.probability,0);if(!o)return false;const implied=1/o;if(o>=3&&p>=.70)return false;if(p>=.80&&o>=4)return false;if(p>0&&implied>0&&p/implied>3)return false;return true}
+function ticketSafetyV70(x){const m=String(x?.market||"").toUpperCase();return m==="TOTAL_GOALS"?.05:m==="DOUBLE_CHANCE"?.045:(m==="HOME_TEAM_GOALS"||m==="AWAY_TEAM_GOALS")?.04:m==="BTTS"?.02:m==="MATCH_RESULT"?-.04:0}
+function ticketUpcomingV70(board,x){const id=String(x?.fixtureId??x?.providerMatchId??"");const f=arr(board?.games||board?.fixtures).find(g=>String(fixtureIdV19(g))===id);return !!f&&f?.fixture?.status?.short==="NS"&&Date.parse(f?.fixture?.date||0)>Date.now()}
+function ticketPoolBoardV70(board,day,alts=false){const rows=[];for(const p of arr(board?.strongPicks)){if(p?.decision!=="PICK"||!ticketUpcomingV70(board,p))continue;for(const c of (alts?[p,...arr(p.alternatives)]:[p])){const x={...p,...c},book=String(x.bookmaker||"").replace(/[^a-z0-9]/gi,"").toLowerCase();if(book!=="bet365"||!ticketPriceCoherentV70(x))continue;rows.push({...x,fixtureId:p.fixtureId,providerMatchId:p.providerMatchId,home:p.home,away:p.away,league:p.league,kickoff:p.kickoff,_ticketOdds:ticketPriceV70(x),_ticketDay:day,_ticketScore:ticketNormV70(x.probability,0)*.68+ticketNormV70(p.dataQuality,.7)*.18+ticketNormV70(p.competitionReliability,.75)*.09+ticketSafetyV70(x)})}}const seen=new Map();for(const x of rows){const id=String(x.fixtureId||x.providerMatchId||"");const prev=seen.get(id);if(id&&(!prev||x._ticketScore>prev._ticketScore))seen.set(id,x)}return[...seen.values()].sort((a,b)=>b._ticketScore-a._ticketScore)}
+function ticketOptimizeV70(pool,target,low,high,minLegs,maxLegs){let best=null,fallback=null;function visit(start,legs,combined,sum){if(legs.length>=minLegs){const avg=sum/legs.length,dist=Math.abs(combined-target)/target,c={legs:legs.slice(),combined,score:avg-dist*.08-Math.max(0,legs.length-minLegs)*.008,target,targetLow:low,targetHigh:high};if(combined>=low&&combined<=high&&(!best||c.score>best.score))best=c;c.fallbackScore=avg-dist*.16-Math.max(0,legs.length-minLegs)*.01;if(!fallback||c.fallbackScore>fallback.fallbackScore)fallback=c}if(legs.length>=maxLegs||combined>high*1.75)return;for(let i=start;i<pool.length;i++){const next=combined*pool[i]._ticketOdds;if(next>Math.max(high*1.75,target*1.75))continue;legs.push(pool[i]);visit(i+1,legs,next,sum+pool[i]._ticketScore);legs.pop()}}visit(0,[],1,0);const chosen=best||fallback;if(chosen)chosen.targetMet=!!best;return chosen}
+async function ticketBoardV70(env,date){const fs=await snapshot(env,fixtureKey(date)).catch(()=>null),games=fixtureRowsV58(fs);if(!games.length)return{ok:true,date,games:[],fixtures:[],strongPicks:[],riskyPlays:[]};const bs=await snapshot(env,modelBoardKey(date)).catch(()=>null),base=bs?.payload||{ok:true,date,games,fixtures:games};const rows=await canonicalAnalysisRowsV2(env,games.map(fixtureIdV19)).catch(()=>[]);return presentCanonicalBoardV59(base,games,rows)}
+async function ticketBaselineV70(env,legs){const out={},ids=[...new Set(arr(legs).map(x=>Number(x.fixtureId||x.providerMatchId)).filter(Boolean))];await Promise.all(ids.map(async id=>{const s=await getFeedSnapshot(env,"match-intelligence:"+id).catch(()=>null),p=s?.payload||{};out[String(id)]={generatedAt:p.generatedAt||s?.refreshed_at||null,homeAbsences:num(p.homeAbsences,0),awayAbsences:num(p.awayAbsences,0),lineupsConfirmed:Boolean(p.lineupsConfirmed)}}));return out}
+function lockTicketV70(t,at,b){if(!t)return null;return{...t,locked:true,lockedAt:at,legs:arr(t.legs).map(x=>({...x,locked:true,lockedAt:at,originalOdds:ticketPriceV70(x),originalProbability:num(x.probability,null),originalMarket:x.market||null,originalSelection:x.selection||null,lockIntel:b?.[String(x.fixtureId||x.providerMatchId)]||null}))}}
+async function buildDailyLockV70(env,date){const board=await ticketBoardV70(env,date),pool=ticketPoolBoardV70(board,"Today",true).slice(0,30),t=ticketOptimizeV70(pool,3.125,3,3.25,2,5),at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),payload={ok:true,type:"daily",date,status:"LOCKED",lockedAt:at,immutable:true,ticket:lockTicketV70(t,at,b),candidateCount:pool.length,rule:"Frozen after the 06:00 America/New_York publication lock."};await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200);return payload}
+function weekendAnchorV70(){const d=easternDate(),day=easternWeekday();if(day==="Fri")return datePlusDays(d,1);if(day==="Sat")return d;if(day==="Sun")return datePlusDays(d,-1);return null}
+async function buildWeekendLockV70(env,satDate){const sunDate=datePlusDays(satDate,1),boards=await Promise.all([ticketBoardV70(env,satDate),ticketBoardV70(env,sunDate)]),pool=[...ticketPoolBoardV70(boards[0],"Sat",false),...ticketPoolBoardV70(boards[1],"Sun",false)].sort((a,b)=>b._ticketScore-a._ticketScore).slice(0,24),five=ticketOptimizeV70(pool,5,4.75,5.5,2,5),ten=ticketOptimizeV70(pool,10,9,11,3,7),fifty=ticketOptimizeV70(pool,50,45,55,4,9),at=new Date().toISOString(),b=await ticketBaselineV70(env,[...arr(five?.legs),...arr(ten?.legs),...arr(fifty?.legs)]),payload={ok:true,type:"weekend",saturday:satDate,sunday:sunDate,status:"LOCKED",lockedAt:at,immutable:true,tickets:{five:lockTicketV70(five,at,b),ten:lockTicketV70(ten,at,b),fifty:lockTicketV70(fifty,at,b)},candidateCount:pool.length,rule:"Saturday and Sunday legs freeze together at Saturday 06:00 America/New_York."};await saveFeedSnapshot(env,"ticket-lock:weekend:"+satDate,payload,432000);return payload}
+async function ensureTicketLocksV70(env){const hour=easternHour(),date=easternDate();let d=await getFeedSnapshot(env,"ticket-lock:daily:"+date).catch(()=>null);if(!d&&hour>=6)d={payload:await buildDailyLockV70(env,date)};const sat=weekendAnchorV70(),day=easternWeekday();let w=sat?await getFeedSnapshot(env,"ticket-lock:weekend:"+sat).catch(()=>null):null;if(!w&&sat&&((day==="Sat"&&hour>=6)||day==="Sun"))w={payload:await buildWeekendLockV70(env,sat)};return{daily:d?.payload||null,weekend:w?.payload||null}}
+async function alertsForLockV70(env,lock){const tickets=[];if(lock?.ticket)tickets.push(lock.ticket);if(lock?.tickets)tickets.push(...Object.values(lock.tickets).filter(Boolean));const seen=new Set(),alerts=[];for(const t of tickets)for(const leg of arr(t?.legs)){const id=String(leg.fixtureId||leg.providerMatchId||"");if(!id||seen.has(id))continue;seen.add(id);const s=await getFeedSnapshot(env,"match-intelligence:"+id).catch(()=>null),p=s?.payload||{},base=leg.lockIntel||{};if(!p.generatedAt||Date.parse(p.generatedAt)<=Date.parse(leg.lockedAt||0))continue;const hd=num(p.homeAbsences,0)-num(base.homeAbsences,0),ad=num(p.awayAbsences,0)-num(base.awayAbsences,0);if(hd||ad)alerts.push({fixtureId:id,home:leg.home,away:leg.away,severity:(hd>0||ad>0)?"HIGH_IMPACT":"WATCH",type:"AVAILABILITY_CHANGE",message:"Player availability changed after lock. The original selection remains unchanged.",updatedAt:p.generatedAt});if(p.lineupsConfirmed&&!base.lineupsConfirmed)alerts.push({fixtureId:id,home:leg.home,away:leg.away,severity:"INFO",type:"LINEUP_CONFIRMED",message:"Confirmed lineups are available. The locked ticket remains unchanged.",updatedAt:p.generatedAt})}return alerts}
+async function ticketLocksResponseV70(env){const locks=await ensureTicketLocksV70(env),alerts=[...await alertsForLockV70(env,locks.daily),...await alertsForLockV70(env,locks.weekend)];return{ok:true,lockHour:"06:00 America/New_York",immutableAfterLock:true,daily:locks.daily||{status:"BUILDING",date:easternDate(),locksAt:"06:00 America/New_York"},weekend:locks.weekend||{status:"BUILDING",saturday:weekendAnchorV70(),locksAt:"Saturday 06:00 America/New_York"},alerts}}
+
 async function scheduledAnalysisV2(event, env) {
   // V53: scheduled cron is intentionally lock-free. Fixture ownership is
   // already protected by the atomic Postgres claim RPC, so a global refresh
@@ -8385,6 +8405,12 @@ async function scheduledAnalysisV2(event, env) {
   }, 1800).catch(() => null);
 
   result.watchdog = await runAnalysisWatchdogV2(env);
+
+  try {
+    result.ticketLocks = await ensureTicketLocksV70(env);
+  } catch (e) {
+    result.maintenance.push({ok:false,stage:"ticket-lock",error:safeRefreshError(e)});
+  }
 
   await saveFeedSnapshot(env, "cron-status", {
     status: "running",
@@ -8856,6 +8882,13 @@ export default {
             env
           )
         );
+      }
+
+      if (
+        url.pathname ===
+        "/api/tickets"
+      ) {
+        return json(await ticketLocksResponseV70(env));
       }
 
       if (
