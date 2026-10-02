@@ -8319,7 +8319,18 @@ async function scheduledAnalysisV2(event, env) {
   // Feed maintenance must not be starved by the analysis queue. The previous
   // backlog gate left odds:DATE stuck at zero while hundreds of fixtures were
   // pending, forcing one-off fallback calls and starving Elite of Bet365 prices.
-  if (minute % 5 === 0) {
+  const currentOddsSnapshot = await getFeedSnapshot(
+    env,
+    oddsKey(easternDate())
+  ).catch(() => null);
+  const currentOddsEmpty =
+    !currentOddsSnapshot ||
+    !arr(currentOddsSnapshot?.payload?.response).length ||
+    num(currentOddsSnapshot?.payload?.total, 0) <= 0;
+
+  // Repair a broken odds feed immediately. Once populated, fall back to the
+  // normal five-minute maintenance cadence to protect the provider budget.
+  if (currentOddsEmpty || minute % 5 === 0) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
