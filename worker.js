@@ -346,16 +346,13 @@ async function snapshot(
 
 function formatBoardSelectionsV20(payload) {
   if (!payload || typeof payload !== "object") return payload;
-  const cleanBookV64 = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-  const allowedPriceV64 = item => {
-    if (!item || typeof item !== "object") return false;
-    const price = num(item.sportsbookOdds, 0);
-    return !price || cleanBookV64(item.bookmaker) === "bet365";
-  };
   const formatItem = item => {
     if (!item || typeof item !== "object") return item;
-    const qualified = item.decision === "PICK" && item.selection && String(item.selection).toUpperCase() !== "NO_BET" && allowedPriceV64(item);
-    const alternatives = displayAlternativesV20(item.alternatives).filter(allowedPriceV64);
+    const qualified =
+      item.decision === "PICK" &&
+      item.selection &&
+      String(item.selection).toUpperCase() !== "NO_BET";
+
     return {
       ...item,
       market: qualified ? item.market : "NO_BET",
@@ -364,15 +361,14 @@ function formatBoardSelectionsV20(payload) {
       fairOdds: qualified ? (item.fairOdds ?? null) : null,
       sportsbookOdds: qualified ? (item.sportsbookOdds ?? null) : null,
       bookmaker: qualified ? (item.bookmaker ?? null) : null,
-      alternatives
+      alternatives: displayAlternativesV20(item.alternatives)
     };
   };
-  const visible = item => allowedPriceV64(item) && num(item?.competitionTier, 3) <= 3;
   return {
     ...payload,
-    picks: Array.isArray(payload.picks) ? payload.picks.filter(visible).map(formatItem) : payload.picks,
-    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.filter(visible).map(formatItem) : payload.strongPicks,
-    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.filter(visible).map(formatItem) : payload.riskyPlays,
+    picks: Array.isArray(payload.picks) ? payload.picks.map(formatItem) : payload.picks,
+    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.map(formatItem) : payload.strongPicks,
+    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.map(formatItem) : payload.riskyPlays,
     independentForecasts: Array.isArray(payload.independentForecasts) ? payload.independentForecasts.map(formatItem) : payload.independentForecasts
   };
 }
@@ -7406,6 +7402,16 @@ function groupMarketLinesV19(groups) {
       if (outcomes.length < 2) continue;
       if (group.market === 'DOUBLE_CHANCE' && outcomes.length !== 3) continue;
       if (group.market === 'MATCH_RESULT' && outcomes.length !== 3) continue;
+      if ([
+        'TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS','TOTAL_CORNERS',
+        'HOME_CORNERS','AWAY_CORNERS','TOTAL_CARDS','HOME_CARDS','AWAY_CARDS',
+        'TOTAL_SHOTS','TOTAL_SHOTS_ON_TARGET','TOTAL_SHOTS_OFF_TARGET'
+      ].includes(group.market)) {
+        const normalized = outcomes.map(x => String(x.selection || '').toUpperCase());
+        const hasOver = normalized.some(x => /(^|_)OVER_\d/.test(x));
+        const hasUnder = normalized.some(x => /(^|_)UNDER_\d/.test(x));
+        if (!hasOver || !hasUnder) continue;
+      }
       out.push({...group, groupKey, outcomes});
     }
   }
