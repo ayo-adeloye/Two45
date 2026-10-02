@@ -346,13 +346,16 @@ async function snapshot(
 
 function formatBoardSelectionsV20(payload) {
   if (!payload || typeof payload !== "object") return payload;
+  const cleanBookV64 = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const allowedPriceV64 = item => {
+    if (!item || typeof item !== "object") return false;
+    const price = num(item.sportsbookOdds, 0);
+    return !price || cleanBookV64(item.bookmaker) === "bet365";
+  };
   const formatItem = item => {
     if (!item || typeof item !== "object") return item;
-    const qualified =
-      item.decision === "PICK" &&
-      item.selection &&
-      String(item.selection).toUpperCase() !== "NO_BET";
-
+    const qualified = item.decision === "PICK" && item.selection && String(item.selection).toUpperCase() !== "NO_BET" && allowedPriceV64(item);
+    const alternatives = displayAlternativesV20(item.alternatives).filter(allowedPriceV64);
     return {
       ...item,
       market: qualified ? item.market : "NO_BET",
@@ -361,14 +364,15 @@ function formatBoardSelectionsV20(payload) {
       fairOdds: qualified ? (item.fairOdds ?? null) : null,
       sportsbookOdds: qualified ? (item.sportsbookOdds ?? null) : null,
       bookmaker: qualified ? (item.bookmaker ?? null) : null,
-      alternatives: displayAlternativesV20(item.alternatives)
+      alternatives
     };
   };
+  const visible = item => allowedPriceV64(item) && num(item?.competitionTier, 3) <= 3;
   return {
     ...payload,
-    picks: Array.isArray(payload.picks) ? payload.picks.map(formatItem) : payload.picks,
-    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.map(formatItem) : payload.strongPicks,
-    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.map(formatItem) : payload.riskyPlays,
+    picks: Array.isArray(payload.picks) ? payload.picks.filter(visible).map(formatItem) : payload.picks,
+    strongPicks: Array.isArray(payload.strongPicks) ? payload.strongPicks.filter(visible).map(formatItem) : payload.strongPicks,
+    riskyPlays: Array.isArray(payload.riskyPlays) ? payload.riskyPlays.filter(visible).map(formatItem) : payload.riskyPlays,
     independentForecasts: Array.isArray(payload.independentForecasts) ? payload.independentForecasts.map(formatItem) : payload.independentForecasts
   };
 }
