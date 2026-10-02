@@ -8177,6 +8177,45 @@ async function ensureTomorrowPreloadV49(env) {
   };
 }
 
+async function refreshTodayScoreStateV66(env) {
+  const date = easternDate();
+  const base = await getFeedSnapshot(env, fixtureKey(date)).catch(() => null);
+  const fixtures = fixtureRowsV58(base);
+  const now = Date.now();
+
+  const activeWindow = fixtures.some(f => {
+    const kickoff = Date.parse(f?.fixture?.date || 0);
+    const status = f?.fixture?.status?.short;
+    if (!Number.isFinite(kickoff)) return false;
+    if (FINISHED_STATUSES.has(status)) return false;
+    return now >= kickoff - 10 * 60000 && now <= kickoff + 3 * 60 * 60000;
+  });
+
+  if (!activeWindow) {
+    return {ok:true, skipped:true, reason:"No Today fixture is in an active match window"};
+  }
+
+  const fresh = await refreshFixturesV18(env, date);
+  await saveFeedSnapshot(env, fixtureKey(date), fresh, 900);
+
+  // Settlement reads this exact fixtures:DATE snapshot, so completed matches
+  // flow from Today into the Record without a second football-provider call.
+  let settled = null;
+  try {
+    settled = await settle(env);
+  } catch (e) {
+    settled = {error:safeRefreshError(e)};
+  }
+
+  return {
+    ok:true,
+    type:"today-fixtures",
+    total:fresh.total,
+    updatedAt:fresh.updatedAt,
+    settled
+  };
+}
+
 async function scheduledAnalysisV2(event, env) {
   // V53: scheduled cron is intentionally lock-free. Fixture ownership is
   // already protected by the atomic Postgres claim RPC, so a global refresh
@@ -8316,6 +8355,24 @@ async function scheduledAnalysisV2(event, env) {
 
   const pendingBacklog = pendingBacklogNow;
 
+  // Today behaves like a live-score board. Every five minutes during active
+  // match windows, refresh the full Today fixture state and immediately settle
+  // any completed published picks from that same snapshot.
+  let scoreStateRefreshed = false;
+  if (minute % 5 === 0) {
+    try {
+      const scoreState = await timedV2(
+        refreshTodayScoreStateV66(env),
+        12000,
+        "five-minute Today score refresh"
+      );
+      result.maintenance.push(scoreState);
+      scoreStateRefreshed = Boolean(scoreState && !scoreState.skipped);
+    } catch (e) {
+      result.maintenance.push({ok:false, stage:"today-score-refresh", error:safeRefreshError(e)});
+    }
+  }
+
   // Feed maintenance must not be starved by the analysis queue. The previous
   // backlog gate left odds:DATE stuck at zero while hundreds of fixtures were
   // pending, forcing one-off fallback calls and starving Elite of Bet365 prices.
@@ -8330,7 +8387,7 @@ async function scheduledAnalysisV2(event, env) {
 
   // Repair a broken odds feed immediately. Once populated, fall back to the
   // normal five-minute maintenance cadence to protect the provider budget.
-  if (currentOddsEmpty || minute % 5 === 0) {
+  if (!scoreStateRefreshed && (currentOddsEmpty || minute % 5 === 0)) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
