@@ -44,3 +44,13 @@ const hydrated=w.presentCanonicalBoardV59({},[game],rows);assert.equal(hydrated.
 game.fixture.status.short='FT';assert.equal(w.presentCanonicalBoardV59({},[game],rows).strongPicks.length,0);
 console.log('PASS: all six audacity families promote only when qualified in eligible tiers; weak alternative stays unpromoted; mismatched price is removed; saved forecasts hydrate and finished picks stay off promotion board');
 
+
+const consensusOdds=(market,odds,opposite)=>['Book A','Book B'].map(bookmaker=>({market,bookmaker,outcomes:[{selection:'HOME_MINUS_1',odds},{selection:'AWAY_PLUS_1',odds:opposite}]}));
+assert.equal(select({},1,consensusOdds('HANDICAP',3.14,12)).decision,'NO_BET');
+assert.equal(select({HANDICAP:{HOME_MINUS_1:.28}},1,consensusOdds('HANDICAP',2.74,10)).decision,'NO_BET');
+assert.equal(select({},1,consensusOdds('TOTAL_CORNERS',3.14,12)).decision,'NO_BET');
+const saved={decision:'PICK',market:'HANDICAP',selection:'HOME_MINUS_1',probability:77.556,sportsbookOdds:3.14,analysisSource:'cross-book-market-consensus',alternatives:[]};
+assert.equal(w.displayForecastV60(saved).qualityHold,true);assert.equal(w.displayForecastV60(saved).decision,'NO_BET');assert.equal(saved.decision,'PICK');
+assert.equal(w.priceCoherentV60(.77556,3.14),false);
+assert.equal(w.priceCoherentV60(.75,1.8),true);
+console.log('PASS: reproduced consensus price bypass is blocked; handicaps require independent support; current promotion hides invalid saved picks without mutating the ledger');

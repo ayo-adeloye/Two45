@@ -391,6 +391,26 @@ function mergeFixtureRowsV58(baseRows, overlayRows) {
 }
 
 
+// Apply the same price bound to modeled and supplemental candidates.
+function priceCoherentV60(probability, odds) {
+  const p = Number(probability), o = Number(odds);
+  if (!(o > 1)) return true; // An unpriced model view is not a priced offer.
+  return !(o >= 3 && p >= 0.70 || o >= 4 && p >= 0.80 || p * o > 3);
+}
+
+function displayForecastV60(f) {
+  const probability = Number(f.probability) > 1 ? Number(f.probability) / 100 : Number(f.probability);
+  const unsupportedHandicap = f.market === "HANDICAP" && f.analysisSource === "cross-book-market-consensus";
+  const blocked = f.decision === "PICK" && (!priceCoherentV60(probability, f.sportsbookOdds) || unsupportedHandicap);
+  const alternatives = arr(f.alternatives).filter(a =>
+    priceCoherentV60(Number(a.probability) > 1 ? Number(a.probability) / 100 : Number(a.probability), a.sportsbookOdds) &&
+    !(a.market === "HANDICAP" && a.analysisSource === "cross-book-market-consensus")
+  );
+  if (!blocked) return {...f, alternatives};
+  return {...f, decision: "NO_BET", selection: "NO_BET", qualityHold: true, alternatives,
+    reasons: ["Saved pick withheld: price coherence or independent handicap support could not be confirmed."]};
+}
+
 // Read-time presentation hydration. Reuse saved canonical results without
 // claiming jobs, evaluating fixtures, calling providers, or writing snapshots.
 function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
@@ -413,7 +433,8 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const independentForecasts = fixtures.map(fixtureIdV19)
     .map(id => chosenRows.get(Number(id))?.forecast)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(displayForecastV60);
 
   const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
   const picks = independentForecasts
@@ -1494,14 +1515,7 @@ function selectIndependent(
       // Price coherence guard: sportsbook odds must describe the same event
       // represented by the model probability. Extreme probability/price
       // disagreement is treated as a mapping mismatch, not artificial value.
-      const impliedProbability = candidate.sportsbookOdds > 1
-        ? 1 / candidate.sportsbookOdds
-        : null;
-      const incoherentPrice =
-        candidate.sportsbookOdds >= 3 && m.probability >= 0.70 ||
-        candidate.sportsbookOdds >= 4 && m.probability >= 0.80 ||
-        (impliedProbability && m.probability / impliedProbability > 3);
-      if (incoherentPrice) continue;
+      if (!priceCoherentV60(m.probability, candidate.sportsbookOdds)) continue;
 
       if (
         m.probability >=
@@ -1662,6 +1676,7 @@ function selectIndependent(
   }
 
   for (const c of consensus) {
+    if (!priceCoherentV60(c.probability, c.sportsbookOdds)) continue;
     if (
       c.probability >= 0.50 &&
       c.sportsbookOdds > 1
@@ -1682,6 +1697,7 @@ function selectIndependent(
       [
         "MATCH_RESULT",
         "DOUBLE_CHANCE",
+        "HANDICAP", // Core handicap picks require independent model support.
         "TOTAL_GOALS",
         "BTTS",
         "HOME_TEAM_GOALS",
