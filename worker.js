@@ -480,6 +480,8 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
 
   const riskyCandidateV62 = (parent, candidate) => {
     const price = num(candidate?.sportsbookOdds, 0);
+    const bookmakerV64 = String(candidate?.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (price > 0 && bookmakerV64 !== "bet365") return null;
     const probability = Number(candidate?.probability) > 1 ? Number(candidate.probability) / 100 : num(candidate?.probability, 0);
     const edgeRaw = candidate?.valueEdgePct ?? candidate?.valueEdge;
     const edgePct = edgeRaw == null ? num(parent?.valueEdgePct, 0) : (Math.abs(num(edgeRaw,0)) <= 1 ? num(edgeRaw,0) * 100 : num(edgeRaw,0));
@@ -503,7 +505,10 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
   };
 
   // Tier 4 remains manual-only: never surface it as an automatic board pick.
-  const automaticPicks = picks.filter(f => num(f.competitionTier, 4) <= 3);
+  const automaticPicks = picks.filter(f =>
+    num(f.competitionTier, 4) <= 3 &&
+    (!num(f.sportsbookOdds, 0) || String(f.bookmaker || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "bet365")
+  );
   const riskyByFixture = new Map();
   for (const parent of automaticPicks) {
     const candidates = [parent, ...arr(parent.alternatives)];
@@ -3492,6 +3497,12 @@ function oddsMarketsFromSnapshot(
     of row.bookmakers ||
       []
   ) {
+    // Two45 sportsbook policy: only Bet365 prices are allowed to qualify picks.
+    // If Bet365 does not price this fixture/market, keep the model view unpriced
+    // rather than substituting another bookmaker's line.
+    const bookNameV64 = String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (bookNameV64 !== "bet365") continue;
+
     for (
       const bet
       of book.bets ||
