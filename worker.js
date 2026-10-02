@@ -1,7 +1,7 @@
 /**
  * Two45 Cloudflare Worker
- * Version 20 — Priority Coverage and Market Expansion
- * Independent Model V1.5 — Broad Analysis
+ * Version 20 â Priority Coverage and Market Expansion
+ * Independent Model V1.5 â Broad Analysis
  */
 
 const WORKER_VERSION = 55;
@@ -478,20 +478,45 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     return 3;
   };
 
-  const riskyQualifiedV61 = f => {
-    if (f.pickType !== "RISKY_VALUE") return true;
-    const price = num(f.sportsbookOdds, 0);
-    if (price < 1.35) return false;
-    const marketRank = riskyMarketRankV61(f);
-    const probability = num(f.probability, 0);
-    const edge = num(f.valueEdgePct, 0);
-    const preferredPrice = price >= 1.60;
-    const exceptionalLowPrice = price < 1.60 && marketRank >= 5 && edge >= 6 && probability >= 0.64;
-    return marketRank >= 3 && (preferredPrice || exceptionalLowPrice);
+  const riskyCandidateV62 = (parent, candidate) => {
+    const price = num(candidate?.sportsbookOdds, 0);
+    const probability = Number(candidate?.probability) > 1 ? Number(candidate.probability) / 100 : num(candidate?.probability, 0);
+    const edgeRaw = candidate?.valueEdgePct ?? candidate?.valueEdge;
+    const edgePct = edgeRaw == null ? num(parent?.valueEdgePct, 0) : (Math.abs(num(edgeRaw,0)) <= 1 ? num(edgeRaw,0) * 100 : num(edgeRaw,0));
+    const marketRank = riskyMarketRankV61(candidate);
+    if (price < 1.35 || marketRank < 3 || !priceCoherentV60(probability, price)) return null;
+    // Risky Value is intentionally bolder, but still requires a meaningful model case.
+    if (probability < 0.54 && edgePct < 5) return null;
+    if (price < 1.60 && !(marketRank >= 5 && probability >= 0.62 && edgePct >= 4)) return null;
+    return {
+      ...parent,
+      ...candidate,
+      fixtureId: String(parent.fixtureId),
+      pickType: "RISKY_VALUE",
+      band: "Risky Play",
+      probability: Number(candidate?.probability) > 1 ? Number(candidate.probability) : probability * 100,
+      valueEdgePct: edgePct,
+      competitionTier: parent.competitionTier,
+      rankScore: probability * 70 + edgePct * 0.30 + riskyMarketRankV61(candidate) * 2,
+      promotedFromAlternative: candidate !== parent
+    };
   };
 
-  const eligiblePicks = picks.filter(riskyQualifiedV61);
-  const riskyPlays = eligiblePicks
+  // Tier 4 remains manual-only: never surface it as an automatic board pick.
+  const automaticPicks = picks.filter(f => num(f.competitionTier, 4) <= 3);
+  const riskyByFixture = new Map();
+  for (const parent of automaticPicks) {
+    const candidates = [parent, ...arr(parent.alternatives)];
+    for (const candidate of candidates) {
+      const promoted = riskyCandidateV62(parent, candidate);
+      if (!promoted) continue;
+      const id = String(parent.fixtureId);
+      const prev = riskyByFixture.get(id);
+      if (!prev || promoted.rankScore > prev.rankScore) riskyByFixture.set(id, promoted);
+    }
+  }
+
+  const riskyPlays = [...riskyByFixture.values()]
     .filter(f => f.pickType === "RISKY_VALUE")
     .sort((a,b) => {
       const ap = num(a.sportsbookOdds, 0), bp = num(b.sportsbookOdds, 0);
@@ -500,9 +525,12 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
       return bZone - aZone || riskyMarketRankV61(b) - riskyMarketRankV61(a) || b.rankScore - a.rankScore;
     });
 
+  const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
+  const eligiblePicks = [...strongPicks, ...riskyPlays];
+
   return formatBoardSelectionsV20({...base, independentForecasts,
     analyzedCount: independentForecasts.length, picks: eligiblePicks,
-    strongPicks: eligiblePicks.filter(f => f.pickType !== "RISKY_VALUE"),
+    strongPicks,
     riskyPlays});
 }
 
@@ -1946,7 +1974,7 @@ function selectIndependent(
 
     riskLabel:
       isRisky
-        ? "Higher variance — model/market edge detected"
+        ? "Higher variance â model/market edge detected"
         : "Standard Two45 qualification",
 
     market:
@@ -5692,7 +5720,7 @@ async function modelStatus(env) {
       providerQuietWindow(),
 
     providerQuietHours:
-      "Disabled — provider operates 24/7",
+      "Disabled â provider operates 24/7",
 
     supportedAnalysisFamilies: [
       "match-result",
@@ -7298,7 +7326,7 @@ async function runFeedRefresh(
    ========================================================= */
 
 /* =========================================================
-   V19 INTEGRATION — no new tables, SQL migrations or bindings.
+   V19 INTEGRATION â no new tables, SQL migrations or bindings.
    Keep the existing five-minute Cloudflare cron trigger.
    ========================================================= */
 /*
