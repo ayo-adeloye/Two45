@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 75;
-const PACING_REVISION = "2026-10-02.75-top15-strong-picks";
+const WORKER_VERSION = 76;
+const PACING_REVISION = "2026-10-02.76-risky-diversity-elite-ready";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -692,9 +692,24 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
   // Keep the public lanes distinct. A fixture that already earned a Strong Pick
   // may still retain bold alternatives inside its analysis detail, but it must
   // not also appear as a separate Risky Value card.
-  const riskyPlays=[...riskyByFixture.values()]
+  const rankedRisky=[...riskyByFixture.values()]
     .filter(f => !strongFixtureIds.has(String(f.fixtureId || f.providerMatchId || "")))
     .sort((a,b)=>b.rankScore-a.rankScore || num(b.valueEdgePct,0)-num(a.valueEdgePct,0));
+
+  const riskyBuckets = new Map();
+  for (const x of rankedRisky) {
+    const sig = String(x.market||"")+"|"+String(x.selection||"");
+    if (!riskyBuckets.has(sig)) riskyBuckets.set(sig,[]);
+    riskyBuckets.get(sig).push(x);
+  }
+  const riskyPlays=[];
+  while (riskyPlays.length < rankedRisky.length) {
+    let added=false;
+    for (const bucket of riskyBuckets.values()) {
+      if (bucket.length) { riskyPlays.push(bucket.shift()); added=true; }
+    }
+    if (!added) break;
+  }
 
   const eligiblePicks = [...strongPicks, ...riskyPlays];
 
