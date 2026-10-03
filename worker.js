@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 72;
-const PACING_REVISION = "2026-10-02.72-flexible-elite3-legs";
+const WORKER_VERSION = 73;
+const PACING_REVISION = "2026-10-02.73-distinct-strong-risky-fixtures";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -690,14 +690,22 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     }
   }
 
+  const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
+  const strongFixtureIds = new Set(
+    strongPicks.map(f => String(f.fixtureId || f.providerMatchId || "")).filter(Boolean)
+  );
+
+  // Keep the public lanes distinct. A fixture that already earned a Strong Pick
+  // may still retain bold alternatives inside its analysis detail, but it must
+  // not also appear as a separate Risky Value card.
   const riskyPlays=[...riskyByFixture.values()]
+    .filter(f => !strongFixtureIds.has(String(f.fixtureId || f.providerMatchId || "")))
     .sort((a,b)=>{
       const ap=num(a.sportsbookOdds,0), bp=num(b.sportsbookOdds,0);
       const ab=riskyMarketRankV61(a), bb=riskyMarketRankV61(b);
       return b.rankScore-a.rankScore || bb-ab || bp-ap;
     });
 
-  const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
   const eligiblePicks = [...strongPicks, ...riskyPlays];
 
   return formatBoardSelectionsV20({...base, independentForecasts,
