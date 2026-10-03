@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 76;
-const PACING_REVISION = "2026-10-02.76-risky-diversity-elite-ready";
+const WORKER_VERSION = 77;
+const PACING_REVISION = "2026-10-02.77-conservative-duplicate-bet365-pricing";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -3875,6 +3875,10 @@ function consensusCandidates(
       ) /
       b.probabilities.length;
 
+    // Bet365-only policy: duplicate normalized lines can occasionally map
+    // to the same market/selection. Never cherry-pick the highest duplicate
+    // price because that can overstate value. Use the most conservative price
+    // until the raw provider line is uniquely identified.
     const best =
       b.offers
         .sort(
@@ -3882,8 +3886,8 @@ function consensusCandidates(
             a,
             b
           ) =>
-            b.odds -
-            a.odds
+            a.odds -
+            b.odds
         )[0];
 
     const bestImplied =
