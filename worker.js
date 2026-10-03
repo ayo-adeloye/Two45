@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 74;
-const PACING_REVISION = "2026-10-02.74-3d-risky-data-first";
+const WORKER_VERSION = 75;
+const PACING_REVISION = "2026-10-02.75-top15-strong-picks";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -678,7 +678,13 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     }
   }
 
-  const strongPicks = automaticPicks.filter(f => f.pickType !== "RISKY_VALUE");
+  // Public Strong/Super Picks are intentionally scarce: show only the best 15
+  // data-backed selections for the day. This is a presentation/qualification
+  // cap, not a reason to stop analyzing the wider fixture pool.
+  const strongPicks = automaticPicks
+    .filter(f => f.pickType !== "RISKY_VALUE")
+    .sort((a,b) => b.rankScore - a.rankScore)
+    .slice(0,15);
   const strongFixtureIds = new Set(
     strongPicks.map(f => String(f.fixtureId || f.providerMatchId || "")).filter(Boolean)
   );
