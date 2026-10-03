@@ -4,8 +4,8 @@
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 73;
-const PACING_REVISION = "2026-10-02.73-distinct-strong-risky-fixtures";
+const WORKER_VERSION = 74;
+const PACING_REVISION = "2026-10-02.74-3d-risky-data-first";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -512,31 +512,26 @@ function pricedBoardPickV65(f, competitionTier = 3) {
   // candidate still needs positive model value, coherent Bet365 mapping and
   // enough data quality for the competition tier.
   const riskyQ = tier===1 ? .46 : tier===2 ? .50 : .54;
-  const riskyFloor = o =>
-    o>=8 ? .10 :
-    o>=5 ? .14 :
-    o>=3.5 ? .20 :
-    o>=2.75 ? .25 :
-    o>=2 ? .32 :
-    o>=1.60 ? .44 : .56;
-  const riskyEdgeFloor = o =>
-    o>=5 ? 1 :
-    o>=2.75 ? 1.5 :
-    o>=2 ? 2 :
-    2.5;
 
+  // 3D principle: Risky Value is determined by the model evidence, not by
+  // assuming a market is bold/safe because of its label or price band.
+  // Bet365 price is still required to measure value, but it does not decide
+  // which football outcome is "risky".
   const riskyScore=x=>{
-    const p=p01(x.probability), e=edgePct(x), o=num(x.sportsbookOdds,0), bold=marketBoldness(x);
-    return p*55 + clamp(dq,0,1)*18 + e*.65 + bold*2.5 + Math.log(Math.max(1.01,o))*7;
+    const p=p01(x.probability);
+    const e=Math.max(0,edgePct(x));
+    const uncertainty=1-clamp(p,0,1);
+    const evidence=clamp(dq,0,1);
+    return uncertainty*42 + evidence*28 + Math.min(e,30)*1.0 +
+      Math.log(Math.max(1.01,num(x.sportsbookOdds,0)))*2;
   };
 
   const risky=choices.filter(x=>{
-    const p=p01(x.probability), o=num(x.sportsbookOdds,0), e=edgePct(x), bold=marketBoldness(x);
-    if(o<1.35 || dq<riskyQ || e<riskyEdgeFloor(o) || p<riskyFloor(o)) return false;
-    // At short Risky Value prices, insist on a genuinely aggressive market.
-    // Bigger prices are allowed without a market-type restriction when the
-    // probability/value evidence supports them.
-    if(o<1.60 && bold<5) return false;
+    const p=p01(x.probability), o=num(x.sportsbookOdds,0), e=edgePct(x);
+    if(o<1.35 || dq<riskyQ || !priceCoherentV60(p,o)) return false;
+    // Require a real positive value case and a non-trivial modeled chance.
+    // No market-name exclusions and no odds-band probability assumptions.
+    if(e<2 || p<0.18) return false;
     return true;
   }).sort((a,b)=>riskyScore(b)-riskyScore(a));
 
@@ -647,20 +642,11 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     const dq = Number(dqRaw) > 1 ? Number(dqRaw)/100 : num(dqRaw,0);
     const tier = num(parent?.competitionTier, 3);
     const qFloor = tier === 1 ? .46 : tier === 2 ? .50 : .54;
-    const pFloor =
-      price >= 8 ? .10 :
-      price >= 5 ? .14 :
-      price >= 3.5 ? .20 :
-      price >= 2.75 ? .25 :
-      price >= 2 ? .32 :
-      price >= 1.60 ? .44 : .56;
-    const edgeFloor = price >= 5 ? 1 : price >= 2.75 ? 1.5 : price >= 2 ? 2 : 2.5;
-    const marketRank = riskyMarketRankV61(candidate);
 
     if (price < 1.35 || dq < qFloor || !priceCoherentV60(probability, price)) return null;
-    if (probability < pFloor || edgePct < edgeFloor) return null;
-    if (price < 1.60 && marketRank < 5) return null;
+    if (edgePct < 2 || probability < 0.18) return null;
 
+    const uncertainty = 1 - clamp(probability,0,1);
     return {
       ...parent,
       ...candidate,
@@ -671,8 +657,10 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
       probability:Number(candidate?.probability)>1?Number(candidate.probability):probability*100,
       valueEdgePct:edgePct,
       competitionTier:parent.competitionTier,
-      rankScore:probability*55 + dq*18 + edgePct*.65 + marketRank*2.5 +
-        Math.log(Math.max(1.01,price))*7,
+      // Data first: higher-variance model outcomes with stronger evidence/value
+      // rise naturally. Market name and odds band do not define risk.
+      rankScore:uncertainty*42 + dq*28 + Math.min(Math.max(edgePct,0),30) +
+        Math.log(Math.max(1.01,price))*2,
       promotedFromAlternative:candidate!==parent
     };
   };
@@ -700,11 +688,7 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
   // not also appear as a separate Risky Value card.
   const riskyPlays=[...riskyByFixture.values()]
     .filter(f => !strongFixtureIds.has(String(f.fixtureId || f.providerMatchId || "")))
-    .sort((a,b)=>{
-      const ap=num(a.sportsbookOdds,0), bp=num(b.sportsbookOdds,0);
-      const ab=riskyMarketRankV61(a), bb=riskyMarketRankV61(b);
-      return b.rankScore-a.rankScore || bb-ab || bp-ap;
-    });
+    .sort((a,b)=>b.rankScore-a.rankScore || num(b.valueEdgePct,0)-num(a.valueEdgePct,0));
 
   const eligiblePicks = [...strongPicks, ...riskyPlays];
 
