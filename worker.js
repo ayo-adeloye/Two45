@@ -3608,15 +3608,25 @@ function providerMarketName(name) {
     return "TOTAL_SHOTS";
   }
 
+  // Team totals must be resolved before the generic total-goals rule.
+  // Otherwise "Home Team Total Goals" / "Away Team Total Goals" are
+  // incorrectly published as full-match TOTAL_GOALS with the wrong price.
   if (
-    n.includes(
-      "goals over/under"
-    ) ||
-    n.includes(
-      "total goals"
-    )
+    n.includes("home team total goals") ||
+    n.includes("home total goals") ||
+    n.includes("home team goals over/under") ||
+    n.includes("home goals over/under")
   ) {
-    return "TOTAL_GOALS";
+    return "HOME_TEAM_GOALS";
+  }
+
+  if (
+    n.includes("away team total goals") ||
+    n.includes("away total goals") ||
+    n.includes("away team goals over/under") ||
+    n.includes("away goals over/under")
+  ) {
+    return "AWAY_TEAM_GOALS";
   }
 
   if (
@@ -3633,6 +3643,17 @@ function providerMarketName(name) {
     )
   ) {
     return "AWAY_TEAM_GOALS";
+  }
+
+  if (
+    n.includes(
+      "goals over/under"
+    ) ||
+    n.includes(
+      "total goals"
+    )
+  ) {
+    return "TOTAL_GOALS";
   }
 
   return null;
@@ -8420,7 +8441,7 @@ async function ticketBaselineV70(env,legs){const out={},ids=[...new Set(arr(legs
 function lockTicketV70(t,at,b){if(!t)return null;return{...t,locked:true,lockedAt:at,legs:arr(t.legs).map(x=>({...x,locked:true,lockedAt:at,originalOdds:ticketPriceV70(x),originalProbability:num(x.probability,null),originalMarket:x.market||null,originalSelection:x.selection||null,lockIntel:b?.[String(x.fixtureId||x.providerMatchId)]||null}))}}
 async function buildDailyLockV70(env,date){const board=await ticketBoardV70(env,date),pool=ticketPoolBoardV70(board,"Today",true).slice(0,30),t=ticketOptimizeV70(pool,3.125,3,3.25,2,6),at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),payload={ok:true,type:"daily",date,status:"LOCKED",lockedAt:at,immutable:true,ticket:lockTicketV70(t,at,b),candidateCount:pool.length,rule:"Frozen after the 06:00 America/New_York publication lock."};await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200);return payload}
 function weekendAnchorV70(){const d=easternDate(),day=easternWeekday();if(day==="Fri")return datePlusDays(d,1);if(day==="Sat")return d;if(day==="Sun")return datePlusDays(d,-1);return null}
-async function buildWeekendLockV70(env,satDate){const sunDate=datePlusDays(satDate,1),boards=await Promise.all([ticketBoardV70(env,satDate),ticketBoardV70(env,sunDate)]),ranked=[...ticketPoolBoardV70(boards[0],"Sat",false),...ticketPoolBoardV70(boards[1],"Sun",false)].sort((a,b)=>b._ticketScore-a._ticketScore).slice(0,24),dailySnap=await getFeedSnapshot(env,"ticket-lock:daily:"+satDate).catch(()=>null),reserved=new Set(arr(dailySnap?.payload?.ticket?.legs).map(x=>String(x.fixtureId||x.providerMatchId||"")).filter(Boolean)),distinct=reserved.size?ranked.filter(x=>!reserved.has(String(x.fixtureId||x.providerMatchId||""))):ranked,pool=distinct.length>=4?distinct:ranked,five=ticketOptimizeV70(pool,5,4.75,5.5,2,5),ten=ticketOptimizeV70(pool,10,9,11,3,7),fifty=ticketOptimizeV70(pool,50,45,55,4,9),at=new Date().toISOString(),b=await ticketBaselineV70(env,[...arr(five?.legs),...arr(ten?.legs),...arr(fifty?.legs)]),payload={ok:true,type:"weekend",saturday:satDate,sunday:sunDate,status:"LOCKED",lockedAt:at,immutable:true,tickets:{five:lockTicketV70(five,at,b),ten:lockTicketV70(ten,at,b),fifty:lockTicketV70(fifty,at,b)},candidateCount:pool.length,eliteReservedCount:reserved.size,rule:"Saturday and Sunday legs freeze together at Saturday 06:00 America/New_York. Elite fixtures are reserved first when enough distinct weekend candidates remain."};await saveFeedSnapshot(env,"ticket-lock:weekend:"+satDate,payload,432000);return payload}
+async function buildWeekendLockV70(env,satDate){const sunDate=datePlusDays(satDate,1),boards=await Promise.all([ticketBoardV70(env,satDate),ticketBoardV70(env,sunDate)]),ranked=[...ticketPoolBoardV70(boards[0],"Sat",false),...ticketPoolBoardV70(boards[1],"Sun",false)].sort((a,b)=>b._ticketScore-a._ticketScore).slice(0,24),dailySnap=await getFeedSnapshot(env,"ticket-lock:daily:"+satDate).catch(()=>null),reserved=new Set(arr(dailySnap?.payload?.ticket?.legs).map(x=>String(x.fixtureId||x.providerMatchId||"")).filter(Boolean)),pool=reserved.size?ranked.filter(x=>!reserved.has(String(x.fixtureId||x.providerMatchId||""))):ranked,five=ticketOptimizeV70(pool,5,4.75,5.5,2,5),ten=ticketOptimizeV70(pool,10,9,11,3,7),fifty=ticketOptimizeV70(pool,50,45,55,4,9),at=new Date().toISOString(),b=await ticketBaselineV70(env,[...arr(five?.legs),...arr(ten?.legs),...arr(fifty?.legs)]),payload={ok:true,type:"weekend",saturday:satDate,sunday:sunDate,status:"LOCKED",lockedAt:at,immutable:true,tickets:{five:lockTicketV70(five,at,b),ten:lockTicketV70(ten,at,b),fifty:lockTicketV70(fifty,at,b)},candidateCount:pool.length,eliteReservedCount:reserved.size,rule:"Saturday and Sunday legs freeze together at Saturday 06:00 America/New_York. Elite fixtures are never reused by Weekend Ladder; a thin pool stays building instead of forcing duplicates."};await saveFeedSnapshot(env,"ticket-lock:weekend:"+satDate,payload,432000);return payload}
 async function ensureTicketLocksV70(env){const hour=easternHour(),date=easternDate();let d=await getFeedSnapshot(env,"ticket-lock:daily:"+date).catch(()=>null);if(!d&&hour>=6)d={payload:await buildDailyLockV70(env,date)};const sat=weekendAnchorV70(),day=easternWeekday();let w=sat?await getFeedSnapshot(env,"ticket-lock:weekend:"+sat).catch(()=>null):null;if(!w&&sat&&((day==="Sat"&&hour>=6)||day==="Sun"))w={payload:await buildWeekendLockV70(env,sat)};return{daily:d?.payload||null,weekend:w?.payload||null}}
 async function alertsForLockV70(env,lock){const tickets=[];if(lock?.ticket)tickets.push(lock.ticket);if(lock?.tickets)tickets.push(...Object.values(lock.tickets).filter(Boolean));const seen=new Set(),alerts=[];for(const t of tickets)for(const leg of arr(t?.legs)){const id=String(leg.fixtureId||leg.providerMatchId||"");if(!id||seen.has(id))continue;seen.add(id);const s=await getFeedSnapshot(env,"match-intelligence:"+id).catch(()=>null),p=s?.payload||{},base=leg.lockIntel||{};if(!p.generatedAt||Date.parse(p.generatedAt)<=Date.parse(leg.lockedAt||0))continue;const hd=num(p.homeAbsences,0)-num(base.homeAbsences,0),ad=num(p.awayAbsences,0)-num(base.awayAbsences,0);if(hd||ad)alerts.push({fixtureId:id,home:leg.home,away:leg.away,severity:(hd>0||ad>0)?"HIGH_IMPACT":"WATCH",type:"AVAILABILITY_CHANGE",message:"Player availability changed after lock. The original selection remains unchanged.",updatedAt:p.generatedAt});if(p.lineupsConfirmed&&!base.lineupsConfirmed)alerts.push({fixtureId:id,home:leg.home,away:leg.away,severity:"INFO",type:"LINEUP_CONFIRMED",message:"Confirmed lineups are available. The locked ticket remains unchanged.",updatedAt:p.generatedAt})}return alerts}
 async function ticketLocksResponseV70(env){const locks=await ensureTicketLocksV70(env),alerts=[...await alertsForLockV70(env,locks.daily),...await alertsForLockV70(env,locks.weekend)];return{ok:true,lockHour:"06:00 America/New_York",immutableAfterLock:true,daily:locks.daily||{status:"BUILDING",date:easternDate(),locksAt:"06:00 America/New_York"},weekend:locks.weekend||{status:"BUILDING",saturday:weekendAnchorV70(),locksAt:"Saturday 06:00 America/New_York"},alerts}}
