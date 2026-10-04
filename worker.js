@@ -5,7 +5,7 @@
  */
 
 const WORKER_VERSION = 77;
-const PACING_REVISION = "2026-10-02.77-conservative-duplicate-bet365-pricing";
+const PACING_REVISION = "2026-10-04.77-elite-odds-priority-v83";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -6776,6 +6776,43 @@ function bet365RowsV68(rows) {
   );
 }
 
+const ELITE_ODDS_MAX_AGE_MS_V83 = 15 * 60 * 1000;
+const ELITE_ODDS_REPAIR_TARGETS_V83 = 12;
+
+function oddsSnapshotStaleV83(row, maxAgeMs = ELITE_ODDS_MAX_AGE_MS_V83) {
+  if (!row?.refreshed_at) return true;
+  const age = Date.now() - Date.parse(row.refreshed_at);
+  return !Number.isFinite(age) || age >= maxAgeMs;
+}
+
+async function eliteOddsRepairTargetsV83(env, date, fixtures) {
+  const boardRow = await getFeedSnapshot(env, modelBoardKey(date)).catch(() => null);
+  const upcoming = new Set(
+    arr(fixtures)
+      .filter(f => UPCOMING_STATUSES.has(f?.fixture?.status?.short))
+      .map(f => String(fixtureIdV19(f)))
+      .filter(Boolean)
+  );
+
+  return arr(boardRow?.payload?.strongPicks)
+    .filter(p => {
+      const id = String(p?.fixtureId ?? p?.providerMatchId ?? "");
+      return id &&
+        upcoming.has(id) &&
+        p?.decision === "PICK" &&
+        num(p?.competitionTier, 4) <= 2;
+    })
+    .sort((a,b) =>
+      num(a?.competitionTier,4) - num(b?.competitionTier,4) ||
+      num(b?.dataQuality,0) - num(a?.dataQuality,0) ||
+      num(b?.probability,0) - num(a?.probability,0)
+    )
+    .map(p => String(p?.fixtureId ?? p?.providerMatchId ?? ""))
+    .filter(Boolean)
+    .filter((id, index, rows) => rows.indexOf(id) === index)
+    .slice(0, ELITE_ODDS_REPAIR_TARGETS_V83);
+}
+
 async function repairDailyOddsFromFixturesV68(env, date) {
   const fixtureRow = await getFeedSnapshot(env, fixtureKey(date));
   const fixtures = fixtureRowsV58(fixtureRow)
@@ -6784,60 +6821,79 @@ async function repairDailyOddsFromFixturesV68(env, date) {
       return (UPCOMING_STATUSES.has(status) || LIVE_STATUSES.has(status)) &&
         competitionTierV21(f?.league?.name, f?.league?.id) <= 3 &&
         fixtureIdV19(f) > 0;
-    })
-    .sort((a,b) =>
-      competitionTierV21(a?.league?.name, a?.league?.id) - competitionTierV21(b?.league?.name, b?.league?.id) ||
-      Date.parse(a?.fixture?.date || 0) - Date.parse(b?.fixture?.date || 0)
-    );
+    });
 
   const dailyRow = await getFeedSnapshot(env, oddsKey(date));
   const previous = dailyRow?.payload || {};
   let response = bet365RowsV68(previous.response);
   const covered = new Set(response.map(row => String(row?.fixture?.id)));
 
+  const eliteTargets = await eliteOddsRepairTargetsV83(env, date, fixtures);
+  const repairTargets = arr(previous?.repairTargets).length
+    ? arr(previous.repairTargets).map(String)
+    : eliteTargets;
+  const repairedTargets = new Set(arr(previous?.repairedTargets).map(String));
+  const staleDaily = oddsSnapshotStaleV83(dailyRow);
+  const targetedRepairActive =
+    Boolean(previous?.repairInProgress && repairTargets.length) ||
+    (staleDaily && repairTargets.length > 0);
+
+  const targetRank = new Map(repairTargets.map((id, index) => [String(id), index]));
+  fixtures.sort((a,b) => {
+    const aid=String(fixtureIdV19(a)), bid=String(fixtureIdV19(b));
+    const ar=targetRank.has(aid) ? targetRank.get(aid) : 9999;
+    const br=targetRank.has(bid) ? targetRank.get(bid) : 9999;
+    return ar - br ||
+      competitionTierV21(a?.league?.name, a?.league?.id) - competitionTierV21(b?.league?.name, b?.league?.id) ||
+      Date.parse(a?.fixture?.date || 0) - Date.parse(b?.fixture?.date || 0);
+  });
+
   for (const fixture of fixtures) {
     const fixtureId = fixtureIdV19(fixture);
-    if (covered.has(String(fixtureId))) continue;
+    const fixtureKeyString = String(fixtureId);
+    const isEliteTarget = targetRank.has(fixtureKeyString);
 
-    const directKey = "fixture-odds:" + fixtureId;
-    const cached = await getFeedSnapshot(env, directKey).catch(() => null);
-    const fresh = cached && Date.now() - Date.parse(cached.refreshed_at) < 30 * 60000;
-
-    if (fresh) {
-      const cachedRows = bet365RowsV68(cached?.payload?.response);
-      if (cachedRows.length) {
-        response = mergeOddsV18(response, cachedRows);
-        const payload = {
-          ok:true, service:"two45-live-worker", type:"odds", date,
-          updatedAt:new Date().toISOString(), total:response.length,
-          paging:{current:1,total:1,complete:true},
-          cacheSeconds:900, response, source:"fixture-repair-v68",
-          repairInProgress:true, repairedFixtureId:fixtureId
-        };
-        await saveFeedSnapshot(env, oddsKey(date), payload, 900);
-        return payload;
-      }
+    if (targetedRepairActive) {
+      if (!isEliteTarget || repairedTargets.has(fixtureKeyString)) continue;
+    } else if (covered.has(fixtureKeyString)) {
       continue;
     }
 
-    const direct = await providerFetchV18(env, "odds", {
-      fixture:String(fixtureId),
-      page:1
-    });
-    const directRows = bet365RowsV68(arr(direct?.response).map(slimOddsRowV18));
-    await saveFeedSnapshot(env, directKey, {
-      ok:true, service:"two45-live-worker", type:"fixture-odds",
-      fixtureId, updatedAt:new Date().toISOString(), response:directRows
-    }, 1800);
+    const directKey = "fixture-odds:" + fixtureId;
+    const cached = await getFeedSnapshot(env, directKey).catch(() => null);
+    const fresh = cached && Date.now() - Date.parse(cached.refreshed_at) < 10 * 60000;
+    let directRows = [];
+
+    if (fresh) {
+      directRows = bet365RowsV68(cached?.payload?.response);
+    } else {
+      const direct = await providerFetchV18(env, "odds", {
+        fixture:String(fixtureId),
+        page:1
+      });
+      directRows = bet365RowsV68(arr(direct?.response).map(slimOddsRowV18));
+      await saveFeedSnapshot(env, directKey, {
+        ok:true, service:"two45-live-worker", type:"fixture-odds",
+        fixtureId, updatedAt:new Date().toISOString(), response:directRows
+      }, 1800);
+    }
 
     if (directRows.length) response = mergeOddsV18(response, directRows);
+    if (isEliteTarget) repairedTargets.add(fixtureKeyString);
 
+    const remainingEliteTargets = repairTargets.filter(id => !repairedTargets.has(String(id)));
     const payload = {
       ok:true, service:"two45-live-worker", type:"odds", date,
       updatedAt:new Date().toISOString(), total:response.length,
       paging:{current:1,total:1,complete:true},
-      cacheSeconds:900, response, source:"fixture-repair-v68",
-      repairInProgress:true, repairedFixtureId:fixtureId,
+      cacheSeconds:900, response, source:"fixture-repair-v83",
+      repairInProgress: targetedRepairActive
+        ? remainingEliteTargets.length > 0
+        : true,
+      repairReason: targetedRepairActive ? "elite-odds-freshness" : "missing-bet365-coverage",
+      repairTargets,
+      repairedTargets:[...repairedTargets],
+      repairedFixtureId:fixtureId,
       repairedWithBet365:Boolean(directRows.length)
     };
     await saveFeedSnapshot(env, oddsKey(date), payload, 900);
@@ -6848,8 +6904,12 @@ async function repairDailyOddsFromFixturesV68(env, date) {
     ok:true, service:"two45-live-worker", type:"odds", date,
     updatedAt:new Date().toISOString(), total:response.length,
     paging:{current:1,total:1,complete:true},
-    cacheSeconds:900, response, source:"fixture-repair-v68",
-    repairInProgress:false, repairExhaustedAt:new Date().toISOString()
+    cacheSeconds:900, response, source:"fixture-repair-v83",
+    repairInProgress:false,
+    repairReason:null,
+    repairTargets:[],
+    repairedTargets:[],
+    repairExhaustedAt:new Date().toISOString()
   };
   await saveFeedSnapshot(env, oddsKey(date), payload, 900);
   return payload;
@@ -6861,7 +6921,12 @@ async function oddsRepairActiveV68(env) {
     : [easternDate()];
   for (const date of dates) {
     const row = await getFeedSnapshot(env, oddsKey(date)).catch(() => null);
-    if (!row || !arr(row?.payload?.response).length || row?.payload?.repairInProgress) return true;
+    if (
+      !row ||
+      !arr(row?.payload?.response).length ||
+      row?.payload?.repairInProgress ||
+      oddsSnapshotStaleV83(row)
+    ) return true;
   }
   return false;
 }
