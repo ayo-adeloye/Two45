@@ -1,0 +1,25 @@
+name: Validate Elite Intelligence
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'elite-intelligence-v86.js'
+      - 'elite-intelligence-v86.test.mjs'
+      - '.github/workflows/validate-elite-intelligence.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate Elite intelligence
+        run: node elite-intelligence-v86.test.mjs
