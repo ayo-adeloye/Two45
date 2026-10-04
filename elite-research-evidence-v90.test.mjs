@@ -70,7 +70,7 @@ console.log(JSON.stringify({ok:true,attachmentTests:2}));
 
 
 const oneContradiction=summarizeExternalResearch([
-  {...news,direction:"CONTRADICTS",confidence:0.78,summary:"Recent form pushes against the model view."},
+  {...news,sourceType:"STATS_PROVIDER",direction:"CONTRADICTS",confidence:0.78,summary:"Recent form pushes against the model view."},
   {...official,direction:"NEUTRAL",confidence:0.72,summary:"Lineup context is uncertain."}
 ],now);
 if(oneContradiction.status!=="MIXED")throw new Error("single moderate contradiction plus neutral context should remain MIXED");
