@@ -14,7 +14,7 @@ on:
       - 'elite-research-evidence-v90.js'
       - 'elite-research-evidence-v90.test.mjs'
       - 'elite-final-review-v91.js'
-      - 'elite-final-review-v91.test.mjs'
+      - 'elite-final-review-v91.test.mjs'\n      - 'elite-selection-explanation-v92.js'\n      - 'elite-selection-explanation-v92.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:

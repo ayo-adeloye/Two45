@@ -1,0 +1,11 @@
+import {explainEliteSelection} from "./elite-selection-explanation-v92.js";
+const assert=(x,m)=>{if(!x)throw new Error(m)};
+const review={fixtureId:11,evidenceScore:86,dataQuality:86,strongestModelView:{market:"TOTAL_GOALS",selection:"UNDER_3_5",probability:81.5},researchStatus:"SUPPORTED",externalResearch:{credibleSourceCount:2,freshSourceCount:2,contradictionShare:0,evidence:[{direction:"SUPPORTS",weight:.72,sourceName:"Stats",sourceType:"STATS_PROVIDER",claimType:"FORM",summary:"Recent scoring and concession profile supports a lower-total match."},{direction:"NEUTRAL",weight:.6,sourceName:"News",summary:"Lineup context adds no material contradiction."}]}};
+const final={approved:true,finalConfidence:84.2};
+const x=explainEliteSelection(review,final);
+assert(x?.title==="Why Two45 Picked This","approved selection should get explanation");
+assert(x.market==="TOTAL_GOALS"&&x.selection==="UNDER_3_5","must explain exact chosen market");
+assert(x.reasons.some(r=>r.includes("81.5%")),"must include model confidence");
+assert(x.supportingEvidence.length===1,"only supporting evidence should be quoted as support");
+assert(explainEliteSelection(review,{approved:false})===null,"held candidate must not get selection explanation");
+console.log(JSON.stringify({ok:true,revision:x.revision}));
