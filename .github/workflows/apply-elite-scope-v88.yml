@@ -1,0 +1,46 @@
+name: Apply Elite Future Slate Scope
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to patch
+        required: true
+        default: elite-future-scope-integration
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 0
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Load integration script from main
+        run: git show origin/main:scripts/apply-elite-scope-v88.mjs > /tmp/apply-elite-scope-v88.mjs
+      - name: Apply future-only slate scope
+        run: node /tmp/apply-elite-scope-v88.mjs
+      - name: Validate Worker syntax
+        run: node --check worker.js
+      - name: Validate Elite intelligence
+        run: node elite-intelligence-v86.test.mjs
+      - name: Validate competition tiers
+        run: node competition-tier-v87.test.mjs
+      - name: Validate slate scope
+        run: node elite-slate-scope-v88.test.mjs
+      - name: Commit integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add worker.js
+          if git diff --cached --quiet; then
+            echo "No Worker changes to commit."
+          else
+            git commit -m "Integrate future-only Elite research scope"
+            git push origin HEAD:${{ inputs.target_branch }}
+          fi
