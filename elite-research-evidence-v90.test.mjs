@@ -1,4 +1,4 @@
-import { normalizeResearchEvidence, summarizeExternalResearch } from "./elite-research-evidence-v90.js";
+import { normalizeResearchEvidence, summarizeExternalResearch, applyExternalResearch } from "./elite-research-evidence-v90.js";
 
 const now=Date.parse("2026-10-04T22:00:00Z");
 const official={
@@ -53,3 +53,17 @@ const weak=summarizeExternalResearch([{
 if(weak.status!=="INSUFFICIENT")throw new Error("single weak stale source is insufficient");
 
 console.log(JSON.stringify({ok:true,tests:5,revision:supported.revision}));
+
+
+const attached=applyExternalResearch({researchEligible:true,fixtureId:99},[official,news],now);
+if(attached.researchStatus!=="SUPPORTED")throw new Error("supported evidence should update research status");
+if(attached.finalReviewEligible!==true)throw new Error("supported researched fixture should be final-review eligible");
+
+const held=applyExternalResearch({researchEligible:true,fixtureId:100},[
+  {...official,direction:"CONTRADICTS",confidence:0.95},
+  news
+],now);
+if(held.finalReviewEligible!==false)throw new Error("contradicted fixture must not be final-review eligible");
+if(!["HOLD","MORE_RESEARCH"].includes(held.reviewRecommendation))throw new Error("conflict must block automatic final review");
+
+console.log(JSON.stringify({ok:true,attachmentTests:2}));

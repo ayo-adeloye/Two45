@@ -103,3 +103,26 @@ export function summarizeExternalResearch(items=[],nowMs=Date.now()){
     evidence
   };
 }
+
+
+export function applyExternalResearch(review={}, items=[], nowMs=Date.now()) {
+  const summary=summarizeExternalResearch(items,nowMs);
+  const baseEligible=Boolean(review?.researchEligible);
+  const finalReviewEligible=baseEligible && summary.status==="SUPPORTED";
+  const researchStatus=
+    !baseEligible ? "NOT_QUEUED" :
+    summary.status==="INSUFFICIENT" ? "PENDING_EXTERNAL_CONTEXT" :
+    summary.status;
+
+  return {
+    ...review,
+    researchStatus,
+    externalResearch:summary,
+    finalReviewEligible,
+    reviewRecommendation:
+      !baseEligible ? "NOT_QUEUED" :
+      summary.status==="SUPPORTED" ? "PROCEED_REVIEW" :
+      summary.status==="CONTRADICTED" ? "HOLD" :
+      "MORE_RESEARCH"
+  };
+}
