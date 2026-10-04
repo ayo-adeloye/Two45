@@ -2,6 +2,8 @@ import { buildEliteSlateReview } from "./elite-intelligence-v86.js";
 import { competitionTierV87 } from "./competition-tier-v87.js";
 import { isEliteResearchFixture } from "./elite-slate-scope-v88.js";
 import { applyExternalResearch, summarizeExternalResearch } from "./elite-research-evidence-v90.js";
+import { evaluateEliteFinalReview } from "./elite-final-review-v91.js";
+import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
 /**
  * Two45 Cloudflare Worker
  * Version 20 â Priority Coverage and Market Expansion
@@ -2664,12 +2666,24 @@ async function eliteIntelligenceSnapshotV86(env, date = easternDate(), persist =
     return applyExternalResearch(item, evidence);
   }));
 
+  const reviewed = hydratedReviews.map(item => {
+    if (!item.finalReviewEligible) {
+      return {...item, finalReview:null, selectionExplanation:null};
+    }
+    const finalReview = evaluateEliteFinalReview(item);
+    const selectionExplanation = explainEliteSelection(item, finalReview);
+    return {...item, finalReview, selectionExplanation};
+  });
+
   const finalReviewQueue = review.slateComplete
-    ? hydratedReviews.filter(x => x.finalReviewEligible).sort((a,b) => b.evidenceScore - a.evidenceScore)
+    ? reviewed
+        .filter(x => x.finalReview?.approved)
+        .sort((a,b) => b.finalReview.finalConfidence - a.finalReview.finalConfidence)
     : [];
-  const contradicted = hydratedReviews.filter(x => x.researchStatus === "CONTRADICTED");
+  const heldFinalReviews = reviewed.filter(x => x.finalReview && !x.finalReview.approved);
+  const contradicted = reviewed.filter(x => x.researchStatus === "CONTRADICTED");
   const researchQueue = review.slateComplete
-    ? hydratedReviews
+    ? reviewed
         .filter(x => x.researchEligible && !x.finalReviewEligible && x.researchStatus !== "CONTRADICTED")
         .sort((a,b) => b.evidenceScore - a.evidenceScore)
     : [];
@@ -2680,11 +2694,14 @@ async function eliteIntelligenceSnapshotV86(env, date = easternDate(), persist =
     modelVersion: MODEL_VERSION,
     generatedAt: new Date().toISOString(),
     ...review,
-    reviews: hydratedReviews,
+    reviews: reviewed,
     researchQueue,
-    researchEligible: hydratedReviews.filter(x => x.researchEligible).length,
+    researchEligible: reviewed.filter(x => x.researchEligible).length,
     finalReviewReady: finalReviewQueue.length,
     finalReviewQueue,
+    finalReviewHeld: heldFinalReviews.length,
+    heldFinalReviews,
+    explanationRevision: "2026-10-04-evidence-grounded-explanation-v92",
     contradictedCount: contradicted.length,
     contradicted
   };
