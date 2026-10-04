@@ -10,7 +10,7 @@ on:
       - 'competition-tier-v87.js'
       - 'competition-tier-v87.test.mjs'
       - 'elite-slate-scope-v88.js'
-      - 'elite-slate-scope-v88.test.mjs'
+      - 'elite-slate-scope-v88.test.mjs'\n      - 'elite-research-evidence-v90.js'\n      - 'elite-research-evidence-v90.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
