@@ -1,4 +1,5 @@
 import { buildEliteSlateReview } from "./elite-intelligence-v86.js";
+import { competitionTierV87 } from "./competition-tier-v87.js";
 /**
  * Two45 Cloudflare Worker
  * Version 20 â Priority Coverage and Market Expansion
@@ -7952,12 +7953,7 @@ const MAJOR_LEAGUES_V19 = new Set([1, 2, 3, 4, 5, 9, 10, 11, 13, 15,
 const PRIORITY_COMPETITION_RE_V20 = /uefa nations league|nations league|world cup|world cup qualif|world cup qualifiers|european championship qualif|euro qualif|uefa|euro|copa america|africa cup of nations|afcon|caf|asian cup|afc|concacaf|champions league|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|la liga|serie a|bundesliga|ligue 1|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league/i;
 
 function competitionTierV21(value, leagueId) {
-  const n = String(value || "").toLowerCase();
-  const id = Number(leagueId);
-  if (MAJOR_LEAGUES_V19.has(id) || /champions league|la liga|serie a|bundesliga|ligue 1|world cup|uefa nations league|nations league|copa america|africa cup of nations|afcon/.test(n)) return 1;
-  if (/world cup qualif|world cup qualifiers|euro qualif|european championship qualif|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|asian cup|afc|caf|concacaf/.test(n)) return 2;
-  if (/scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league|international|friendl/.test(n)) return 3;
-  return 4;
+  return competitionTierV87(value, leagueId);
 }
 
 function priorityCompetitionV20(value, leagueId) {
