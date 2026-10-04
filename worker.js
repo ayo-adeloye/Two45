@@ -1,5 +1,6 @@
 import { buildEliteSlateReview } from "./elite-intelligence-v86.js";
 import { competitionTierV87 } from "./competition-tier-v87.js";
+import { isEliteResearchFixture } from "./elite-slate-scope-v88.js";
 /**
  * Two45 Cloudflare Worker
  * Version 20 â Priority Coverage and Market Expansion
@@ -2625,7 +2626,7 @@ async function eliteIntelligenceSnapshotV86(env, date = easternDate(), persist =
   const fixtureSnap = await fixtureSnapshotV19(env, date);
   const fixtures = arr(fixtureSnap?.fixtures)
     .filter(f => competitionTierV21(f?.league?.name, f?.league?.id) <= 2)
-    .filter(f => !["CANC","PST","ABD","AWD","WO"].includes(String(f?.fixture?.status?.short || "").toUpperCase()));
+    .filter(f => isEliteResearchFixture(f));
 
   const ids = fixtures.map(fixtureIdV19).filter(Number.isFinite);
   const rows = ids.length ? await canonicalAnalysisRowsV2(env, ids) : [];
