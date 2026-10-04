@@ -12,7 +12,7 @@ on:
       - 'elite-slate-scope-v88.js'
       - 'elite-slate-scope-v88.test.mjs'
       - 'elite-research-evidence-v90.js'
-      - 'elite-research-evidence-v90.test.mjs'
+      - 'elite-research-evidence-v90.test.mjs'\n      - 'elite-final-review-v91.js'\n      - 'elite-final-review-v91.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
