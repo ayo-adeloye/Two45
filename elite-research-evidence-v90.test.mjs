@@ -67,3 +67,18 @@ if(held.finalReviewEligible!==false)throw new Error("contradicted fixture must n
 if(!["HOLD","MORE_RESEARCH"].includes(held.reviewRecommendation))throw new Error("conflict must block automatic final review");
 
 console.log(JSON.stringify({ok:true,attachmentTests:2}));
+
+
+const oneContradiction=summarizeExternalResearch([
+  {...news,direction:"CONTRADICTS",confidence:0.78,summary:"Recent form pushes against the model view."},
+  {...official,direction:"NEUTRAL",confidence:0.72,summary:"Lineup context is uncertain."}
+],now);
+if(oneContradiction.status!=="MIXED")throw new Error("single moderate contradiction plus neutral context should remain MIXED");
+
+const twoContradictions=summarizeExternalResearch([
+  {...news,direction:"CONTRADICTS",confidence:0.90,summary:"Recent form contradicts."},
+  {...official,direction:"CONTRADICTS",confidence:0.90,summary:"Official context also contradicts."}
+],now);
+if(twoContradictions.status!=="CONTRADICTED")throw new Error("multiple strong independent contradictions should be CONTRADICTED");
+
+console.log(JSON.stringify({ok:true,thresholdTests:2}));

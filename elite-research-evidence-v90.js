@@ -48,6 +48,8 @@ export function normalizeResearchEvidence(item={},nowMs=Date.now()){
   };
 }
 
+function contradictionWeightSafe(value){ return Math.max(0,num(value,0)); }
+
 export function summarizeExternalResearch(items=[],nowMs=Date.now()){
   const evidence=items.map(x=>normalizeResearchEvidence(x,nowMs));
   let support=0,contradict=0,neutral=0;
@@ -70,7 +72,8 @@ export function summarizeExternalResearch(items=[],nowMs=Date.now()){
 
   let status="INSUFFICIENT";
   if(evidence.length>=2 && credible.length>=1){
-    if(criticalContradiction || contradictionShare>=0.58) status="CONTRADICTED";
+    const contradictionCount=evidence.filter(x=>x.direction==="CONTRADICTS" && x.weight>=0.45).length;
+    if(criticalContradiction || (contradictionCount>=2 && contradictionWeightSafe(contradict)>=0.95)) status="CONTRADICTED";
     else if(contradictionShare>=0.30) status="MIXED";
     else if(supportShare>=0.62) status="SUPPORTED";
     else status="MIXED";
