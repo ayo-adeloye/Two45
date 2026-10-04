@@ -9,6 +9,8 @@ on:
       - 'elite-intelligence-v86.test.mjs'
       - 'competition-tier-v87.js'
       - 'competition-tier-v87.test.mjs'
+      - 'elite-slate-scope-v88.js'
+      - 'elite-slate-scope-v88.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
@@ -27,3 +29,5 @@ jobs:
         run: node elite-intelligence-v86.test.mjs
       - name: Validate competition tiers
         run: node competition-tier-v87.test.mjs
+      - name: Validate Elite slate scope
+        run: node elite-slate-scope-v88.test.mjs
