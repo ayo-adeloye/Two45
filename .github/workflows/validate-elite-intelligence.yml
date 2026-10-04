@@ -10,7 +10,9 @@ on:
       - 'competition-tier-v87.js'
       - 'competition-tier-v87.test.mjs'
       - 'elite-slate-scope-v88.js'
-      - 'elite-slate-scope-v88.test.mjs'\n      - 'elite-research-evidence-v90.js'\n      - 'elite-research-evidence-v90.test.mjs'
+      - 'elite-slate-scope-v88.test.mjs'
+      - 'elite-research-evidence-v90.js'
+      - 'elite-research-evidence-v90.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
@@ -31,3 +33,5 @@ jobs:
         run: node competition-tier-v87.test.mjs
       - name: Validate Elite slate scope
         run: node elite-slate-scope-v88.test.mjs
+      - name: Validate external research evidence
+        run: node elite-research-evidence-v90.test.mjs
