@@ -588,12 +588,18 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     }
   }
 
-  const independentForecasts = fixtures.map(fixtureIdV19)
+  let independentForecasts = fixtures.map(fixtureIdV19)
     .map(id => chosenRows.get(Number(id))?.forecast)
     .filter(Boolean)
     .map(displayForecastV60);
 
   const byId = new Map(fixtures.map(f => [fixtureIdV19(f), f]));
+  // Tier 4 remains browseable but automatic analysis is never surfaced on the board.
+  // Ask Two45 can still analyze a Tier 4 fixture explicitly on demand.
+  independentForecasts = independentForecasts.filter(f => {
+    const fixture = byId.get(Number(f.fixtureId));
+    return competitionTierV21(fixture?.league?.name || f.league, fixture?.league?.id) <= 3;
+  });
   const playableForecasts = independentForecasts
     .map(f => {
       const fixture = byId.get(Number(f.fixtureId));
