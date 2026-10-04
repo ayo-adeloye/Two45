@@ -1,3 +1,4 @@
+import { buildEliteSlateReview } from "./elite-intelligence-v86.js";
 /**
  * Two45 Cloudflare Worker
  * Version 20 â Priority Coverage and Market Expansion
@@ -2616,6 +2617,53 @@ async function analysisHealthV2(env, date = easternDate()) {
     automationActive,
     pipelineStatus: cronRow?.payload?.status || null
   };
+}
+
+
+async function eliteIntelligenceSnapshotV86(env, date = easternDate(), persist = false) {
+  const fixtureSnap = await fixtureSnapshotV19(env, date);
+  const fixtures = arr(fixtureSnap?.fixtures)
+    .filter(f => competitionTierV21(f?.league?.name, f?.league?.id) <= 2)
+    .filter(f => !["CANC","PST","ABD","AWD","WO"].includes(String(f?.fixture?.status?.short || "").toUpperCase()));
+
+  const ids = fixtures.map(fixtureIdV19).filter(Number.isFinite);
+  const rows = ids.length ? await canonicalAnalysisRowsV2(env, ids) : [];
+  const current = new Map(
+    rows
+      .filter(r => r?.model_version === MODEL_VERSION)
+      .map(r => [Number(r.fixture_id), r])
+  );
+
+  const input = fixtures.map(f => {
+    const row = current.get(fixtureIdV19(f));
+    const result = row?.result || {};
+    return {
+      fixtureId: fixtureIdV19(f),
+      kickoff: f?.fixture?.date || row?.kickoff_at || null,
+      competition: f?.league?.name || row?.competition || null,
+      competitionTier: competitionTierV21(f?.league?.name || row?.competition, f?.league?.id),
+      home: f?.teams?.home?.name || row?.home_team || null,
+      away: f?.teams?.away?.name || row?.away_team || null,
+      analysisStatus: row?.status || "MISSING",
+      dataQuality: row?.data_quality ?? null,
+      probabilityBoard: result?.probabilityBoard || {},
+      intelligence: result?.intelligence || null
+    };
+  });
+
+  const review = buildEliteSlateReview(input);
+  const payload = {
+    ok: true,
+    date,
+    modelVersion: MODEL_VERSION,
+    generatedAt: new Date().toISOString(),
+    ...review
+  };
+
+  if (persist) {
+    await saveFeedSnapshot(env, "elite-intelligence:" + date, payload, 172800).catch(() => null);
+  }
+  return payload;
 }
 
 /* =========================================================
@@ -8826,6 +8874,33 @@ async function scheduledAnalysisV2(event, env) {
     }
   }
 
+  if (!pendingBacklogNow) {
+    try {
+      const eliteDates = shouldPreloadTomorrow()
+        ? [tomorrowEasternDate(), easternDate()]
+        : [easternDate()];
+      for (const eliteDate of eliteDates) {
+        const summary = await timedV2(
+          eliteIntelligenceSnapshotV86(env, eliteDate, true),
+          5000,
+          "Elite intelligence review " + eliteDate
+        );
+        result.maintenance.push({
+          ok: true,
+          stage: "elite-intelligence",
+          date: eliteDate,
+          slateComplete: Boolean(summary?.slateComplete),
+          fixturesTotal: num(summary?.fixturesTotal),
+          analyzed: num(summary?.analyzed),
+          remaining: num(summary?.remaining),
+          researchEligible: num(summary?.researchEligible)
+        });
+      }
+    } catch (e) {
+      result.maintenance.push({ok:false,stage:"elite-intelligence",error:safeRefreshError(e)});
+    }
+  }
+
   const modelCompletedAt = new Date().toISOString();
   await saveFeedSnapshot(env, "cron-status", {
     status: result.ok ? "analysis-complete" : "analysis-partial",
@@ -8987,6 +9062,17 @@ export default {
           pacingRevision: PACING_REVISION,
           ...health
         });
+      }
+
+      if (
+        url.pathname ===
+        "/api/elite-intelligence"
+      ) {
+        const requestedDate = String(url.searchParams.get("date") || easternDate());
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+          return json({ok:false,error:"Invalid date."},400);
+        }
+        return json(await eliteIntelligenceSnapshotV86(env, requestedDate, false));
       }
 
       if (
