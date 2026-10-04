@@ -5409,12 +5409,63 @@ async function processOne(
         job.fixture_id
       );
 
-    const decision =
+    let decision =
       selectIndependent(
         analysis,
         marketOdds,
         competitionTierV21(job.competition, job.provider_league_id)
       );
+
+    // V85 source-of-truth pricing gate: a canonical PICK is not allowed to
+    // exist unless its exact full-match market + selection has a verified
+    // Bet365 quote. This prevents unverified stored prices from influencing
+    // public/premium qualification before read-time ticket verification.
+    const verifyCandidateV85 = candidate => {
+      if (!candidate || typeof candidate !== "object") return null;
+      const quote = exactBet365QuoteV78(
+        odds,
+        job.fixture_id,
+        candidate.market,
+        candidate.selection
+      );
+      if (!quote) return null;
+      const probability = Number(candidate.probability);
+      const p = Number.isFinite(probability) ? (probability > 1 ? probability / 100 : probability) : 0;
+      const edge = p > 0 ? p - (1 / quote.odds) : null;
+      return {
+        ...candidate,
+        bookmaker: quote.bookmaker || "Bet365",
+        sportsbookOdds: quote.odds,
+        rawMarket: quote.rawMarket || null,
+        rawSelection: quote.rawSelection || null,
+        oddsVerification: quote.oddsVerification || null,
+        priceVerified: true,
+        priceVerificationRevision: TICKET_LOCK_REVISION_V78,
+        valueEdge: edge
+      };
+    };
+    const verifiedTopMarketsV85 = arr(decision?.topMarkets)
+      .map(verifyCandidateV85)
+      .filter(Boolean);
+    if (decision?.decision === "PICK") {
+      const verifiedMainV85 = verifyCandidateV85(decision);
+      decision = verifiedMainV85
+        ? {...decision, ...verifiedMainV85, topMarkets: verifiedTopMarketsV85}
+        : {
+            ...decision,
+            decision: "NO_BET",
+            pickType: "NO_BET",
+            sportsbookOdds: null,
+            bookmaker: null,
+            valueEdge: null,
+            priceVerified: false,
+            oddsVerification: null,
+            topMarkets: verifiedTopMarketsV85,
+            reason: "Pick withheld until the exact full-match Bet365 market and selection are verified."
+          };
+    } else {
+      decision = {...decision, topMarkets: verifiedTopMarketsV85};
+    }
 
     const clientForecast = manualForecast(job, analysis, decision);
 
@@ -5629,9 +5680,10 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
   const freshTomorrowBacklog = candidates.filter(j => !j.canonicalComplete && dateOfV19(j.kickoff_at) === tomorrowEasternDate()).length;
   const adaptive = adaptiveBatchV30(candidates, limit);
   const freshBaselineBacklog = adaptive.freshBaselineBacklog;
-  // Cruise-control soak mode: while fresh baselines remain, finish one fixture lease
-  // cleanly per cron execution rather than risking a second claim late in the cycle.
-  const cycleLimit = freshBaselineBacklog > 0 ? 1 : adaptive.limit;
+  // V85 backlog recovery: incremental processOne already caps each fixture lease
+  // to at most one provider request, so use the adaptive batch instead of
+  // artificially limiting a large fresh backlog to one fixture per cron.
+  const cycleLimit = adaptive.limit;
   const pacing = (await getFeedSnapshot(env, 'api-football-pacing').catch(() => null))?.payload || {};
   const fastBaselineMode = freshBaselineBacklog > 0;
   if (Boolean(pacing.fastBaselineMode) !== fastBaselineMode) {
