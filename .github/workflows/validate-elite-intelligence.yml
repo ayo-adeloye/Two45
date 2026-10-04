@@ -12,7 +12,9 @@ on:
       - 'elite-slate-scope-v88.js'
       - 'elite-slate-scope-v88.test.mjs'
       - 'elite-research-evidence-v90.js'
-      - 'elite-research-evidence-v90.test.mjs'\n      - 'elite-final-review-v91.js'\n      - 'elite-final-review-v91.test.mjs'
+      - 'elite-research-evidence-v90.test.mjs'
+      - 'elite-final-review-v91.js'
+      - 'elite-final-review-v91.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
@@ -35,3 +37,5 @@ jobs:
         run: node elite-slate-scope-v88.test.mjs
       - name: Validate external research evidence
         run: node elite-research-evidence-v90.test.mjs
+      - name: Validate calibrated final review
+        run: node elite-final-review-v91.test.mjs
