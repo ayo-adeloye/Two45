@@ -7,6 +7,8 @@ on:
     paths:
       - 'elite-intelligence-v86.js'
       - 'elite-intelligence-v86.test.mjs'
+      - 'competition-tier-v87.js'
+      - 'competition-tier-v87.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
@@ -23,3 +25,5 @@ jobs:
           node-version: '22'
       - name: Validate Elite intelligence
         run: node elite-intelligence-v86.test.mjs
+      - name: Validate competition tiers
+        run: node competition-tier-v87.test.mjs
