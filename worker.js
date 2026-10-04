@@ -1,6 +1,7 @@
 import { buildEliteSlateReview } from "./elite-intelligence-v86.js";
 import { competitionTierV87 } from "./competition-tier-v87.js";
 import { isEliteResearchFixture } from "./elite-slate-scope-v88.js";
+import { applyExternalResearch, summarizeExternalResearch } from "./elite-research-evidence-v90.js";
 /**
  * Two45 Cloudflare Worker
  * Version 20 â Priority Coverage and Market Expansion
@@ -2654,12 +2655,38 @@ async function eliteIntelligenceSnapshotV86(env, date = easternDate(), persist =
   });
 
   const review = buildEliteSlateReview(input);
+  const hydratedReviews = await Promise.all(review.reviews.map(async item => {
+    if (!item.researchEligible) {
+      return {...item, externalResearch:null, finalReviewEligible:false, reviewRecommendation:"NOT_QUEUED"};
+    }
+    const researchRow = await getFeedSnapshot(env, "elite-research:" + item.fixtureId).catch(() => null);
+    const evidence = arr(researchRow?.payload?.evidence);
+    return applyExternalResearch(item, evidence);
+  }));
+
+  const finalReviewQueue = review.slateComplete
+    ? hydratedReviews.filter(x => x.finalReviewEligible).sort((a,b) => b.evidenceScore - a.evidenceScore)
+    : [];
+  const contradicted = hydratedReviews.filter(x => x.researchStatus === "CONTRADICTED");
+  const researchQueue = review.slateComplete
+    ? hydratedReviews
+        .filter(x => x.researchEligible && !x.finalReviewEligible && x.researchStatus !== "CONTRADICTED")
+        .sort((a,b) => b.evidenceScore - a.evidenceScore)
+    : [];
+
   const payload = {
     ok: true,
     date,
     modelVersion: MODEL_VERSION,
     generatedAt: new Date().toISOString(),
-    ...review
+    ...review,
+    reviews: hydratedReviews,
+    researchQueue,
+    researchEligible: hydratedReviews.filter(x => x.researchEligible).length,
+    finalReviewReady: finalReviewQueue.length,
+    finalReviewQueue,
+    contradictedCount: contradicted.length,
+    contradicted
   };
 
   if (persist) {
@@ -9070,6 +9097,38 @@ export default {
           return json({ok:false,error:"Invalid date."},400);
         }
         return json(await eliteIntelligenceSnapshotV86(env, requestedDate, false));
+      }
+
+      if (
+        url.pathname ===
+          "/api/internal/elite-research" &&
+        request.method ===
+          "POST"
+      ) {
+        if (!internalRequestAuthorized(request, env)) {
+          return json({ok:false,error:"Protected Two45 research endpoint."},403);
+        }
+        const body = await request.json().catch(() => ({}));
+        const fixtureId = Number(body?.fixtureId);
+        const evidence = arr(body?.evidence).slice(0,20);
+        if (!Number.isFinite(fixtureId) || fixtureId <= 0) {
+          return json({ok:false,error:"Valid fixtureId required."},400);
+        }
+        if (!evidence.length) {
+          return json({ok:false,error:"At least one research evidence item is required."},400);
+        }
+        const summary = summarizeExternalResearch(evidence);
+        const normalizedEvidence = arr(summary?.evidence);
+        const researchPayload = {
+          fixtureId,
+          date: String(body?.date || easternDate()),
+          submittedAt: new Date().toISOString(),
+          submittedBy: String(body?.submittedBy || "authorized-research-process").slice(0,100),
+          evidence: normalizedEvidence,
+          summary
+        };
+        await saveFeedSnapshot(env, "elite-research:" + fixtureId, researchPayload, 7 * 86400);
+        return json({ok:true,fixtureId,summary});
       }
 
       if (
