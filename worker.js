@@ -770,6 +770,67 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     riskyPlays});
 }
 
+function repricePublicCandidateV84(oddsPayload, fixtureId, candidate) {
+  if (!candidate || typeof candidate !== "object") return candidate;
+  const quote = exactBet365QuoteV78(oddsPayload, fixtureId, candidate.market, candidate.selection);
+  if (!quote) {
+    return {
+      ...candidate,
+      bookmaker: null,
+      sportsbookOdds: null,
+      valueEdge: null,
+      valueEdgePct: null,
+      priceVerified: false,
+      oddsVerification: null
+    };
+  }
+  const rawP = Number(candidate.probability);
+  const probability = Number.isFinite(rawP) ? (rawP > 1 ? rawP / 100 : rawP) : 0;
+  const edge = probability > 0 ? probability - (1 / quote.odds) : null;
+  return {
+    ...candidate,
+    bookmaker: quote.bookmaker || "Bet365",
+    sportsbookOdds: quote.odds,
+    rawMarket: quote.rawMarket || null,
+    rawSelection: quote.rawSelection || null,
+    priceVerified: true,
+    oddsVerification: quote.oddsVerification || null,
+    valueEdge: edge,
+    valueEdgePct: edge == null ? null : edge * 100
+  };
+}
+
+async function repriceCanonicalRowsV84(env, date, rows) {
+  const oddsRow = await getFeedSnapshot(env, oddsKey(date)).catch(() => null);
+  const oddsPayload = oddsRow?.payload || {};
+  return arr(rows).map(row => {
+    const result = row?.result;
+    const stored = result?.forecast;
+    if (!stored || typeof stored !== "object") return row;
+    const fixtureId = row.fixture_id || stored.fixtureId || stored.providerMatchId;
+    const main = repricePublicCandidateV84(oddsPayload, fixtureId, stored);
+    const alternatives = arr(stored.alternatives).map(x => repricePublicCandidateV84(oddsPayload, fixtureId, x));
+    const verifiedMain = Boolean(main?.priceVerified);
+    const forecast = {
+      ...main,
+      alternatives,
+      decision: verifiedMain ? stored.decision : "NO_BET",
+      qualityHold: !verifiedMain && stored.decision === "PICK",
+      reasons: !verifiedMain && stored.decision === "PICK"
+        ? ["Two45 is holding this pick until the exact full-match Bet365 line is verified."]
+        : stored.reasons
+    };
+    return {
+      ...row,
+      result: {
+        ...result,
+        forecast,
+        marketOptions: arr(result.marketOptions).map(x => repricePublicCandidateV84(oddsPayload, fixtureId, x))
+      }
+    };
+  });
+}
+
 async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
   const fixtureSnap = await snapshot(env, `fixtures:${date}`).catch(() => null);
   let games = fixtureRowsV58(fixtureSnap);
@@ -787,7 +848,8 @@ async function hydrateBoardFixturesV58(env, date, board, includeLive = false) {
   }
 
   try {
-    const rows = await canonicalAnalysisRowsV2(env, games.map(fixtureIdV19));
+    let rows = await canonicalAnalysisRowsV2(env, games.map(fixtureIdV19));
+    rows = await repriceCanonicalRowsV84(env, date, rows);
     board = presentCanonicalBoardV59(board || {}, games, rows);
     board = await verifyPublicStrongPicksV83(env, date, board);
   } catch (_) {
@@ -3458,26 +3520,20 @@ function providerMarketName(name) {
     ).toLowerCase();
 
   if (
-    n.includes(
-      "match winner"
-    ) ||
+    n === "match winner" ||
     n === "1x2"
   ) {
     return "MATCH_RESULT";
   }
 
   if (
-    n.includes(
-      "both teams"
-    )
+    (n === "both teams score" || n === "both teams to score")
   ) {
     return "BTTS";
   }
 
   if (
-    n.includes(
-      "double chance"
-    )
+    n === "double chance"
   ) {
     return "DOUBLE_CHANCE";
   }
@@ -3496,9 +3552,7 @@ function providerMarketName(name) {
   }
 
   if (
-    n.includes(
-      "asian handicap"
-    )
+    (n === "asian handicap" || n === "cards asian handicap" || n === "corners asian handicap")
   ) {
     if (
       n.includes(
@@ -3538,11 +3592,7 @@ function providerMarketName(name) {
     return "AWAY_CORNERS";
   }
 
-  if (
-    n.includes(
-      "corner"
-    )
-  ) {
+  if (n === "corners over under" || n === "corners over/under" || n === "total corners") {
     return "TOTAL_CORNERS";
   }
 
@@ -3568,11 +3618,7 @@ function providerMarketName(name) {
     return "AWAY_CARDS";
   }
 
-  if (
-    n.includes(
-      "card"
-    )
-  ) {
+  if (n === "cards over/under" || n === "total cards") {
     return "TOTAL_CARDS";
   }
 
@@ -3697,14 +3743,7 @@ function providerMarketName(name) {
     return "AWAY_TEAM_GOALS";
   }
 
-  if (
-    n.includes(
-      "goals over/under"
-    ) ||
-    n.includes(
-      "total goals"
-    )
-  ) {
+  if (n === "goals over/under" || n === "total goals") {
     return "TOTAL_GOALS";
   }
 
@@ -7739,12 +7778,12 @@ const MAJOR_LEAGUES_V19 = new Set([1, 2, 3, 4, 5, 9, 10, 11, 13, 15,
   144, 179, 203, 253, 262, 71, 73]);
 
 // V20: prioritize important competitions by name as well as provider ID.
-const PRIORITY_COMPETITION_RE_V20 = /uefa nations league|nations league|world cup|world cup qualif|world cup qualifiers|european championship qualif|euro qualif|uefa|euro|copa america|africa cup of nations|afcon|caf|asian cup|afc|concacaf|champions league|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|premier league|la liga|serie a|bundesliga|ligue 1|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league/i;
+const PRIORITY_COMPETITION_RE_V20 = /uefa nations league|nations league|world cup|world cup qualif|world cup qualifiers|european championship qualif|euro qualif|uefa|euro|copa america|africa cup of nations|afcon|caf|asian cup|afc|concacaf|champions league|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|la liga|serie a|bundesliga|ligue 1|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league/i;
 
 function competitionTierV21(value, leagueId) {
   const n = String(value || "").toLowerCase();
   const id = Number(leagueId);
-  if (MAJOR_LEAGUES_V19.has(id) || /champions league|premier league|la liga|serie a|bundesliga|ligue 1|world cup|uefa nations league|nations league|copa america|africa cup of nations|afcon/.test(n)) return 1;
+  if (MAJOR_LEAGUES_V19.has(id) || /champions league|la liga|serie a|bundesliga|ligue 1|world cup|uefa nations league|nations league|copa america|africa cup of nations|afcon/.test(n)) return 1;
   if (/world cup qualif|world cup qualifiers|euro qualif|european championship qualif|europa league|conference league|copa libertadores|libertadores|copa sudamericana|sudamericana|eredivisie|primeira liga|brasileir|liga profesional|argentina|mls|asian cup|afc|caf|concacaf/.test(n)) return 2;
   if (/scottish premiership|belgian pro league|swiss super league|austrian bundesliga|super lig|liga mx|saudi pro league|international|friendl/.test(n)) return 3;
   return 4;
@@ -8492,7 +8531,7 @@ async function refreshTodayScoreStateV66(env) {
 /* =========================================================
    V70 IMMUTABLE 6 AM TICKETS
    ========================================================= */
-const TICKET_LOCK_REVISION_V78 = "2026-10-03-trust-ux-v9";
+const TICKET_LOCK_REVISION_V78 = "2026-10-03-exact-market-tiers-v10";
 function ticketNormV70(v,d=0){v=Number(v);return Number.isFinite(v)?(v>1?v/100:v):d}
 function ticketPriceV70(x){const n=Number(x?.sportsbookOdds??x?.odds??x?.price);return Number.isFinite(n)&&n>=1.15?n:null}
 function ticketPriceCoherentV70(x){const o=ticketPriceV70(x),p=ticketNormV70(x?.probability,0);if(!o)return false;const implied=1/o;if(o>=3&&p>=.70)return false;if(p>=.80&&o>=4)return false;if(p>0&&implied>0&&p/implied>3)return false;return true}
