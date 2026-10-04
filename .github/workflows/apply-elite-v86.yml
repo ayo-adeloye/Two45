@@ -23,8 +23,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Load integration script from main
+        run: git show origin/main:scripts/apply-elite-v86.mjs > /tmp/apply-elite-v86.mjs
       - name: Apply integration
-        run: node scripts/apply-elite-v86.mjs
+        run: node /tmp/apply-elite-v86.mjs
       - name: Validate Worker syntax
         run: node --check worker.js
       - name: Validate Elite intelligence
