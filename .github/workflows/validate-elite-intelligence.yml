@@ -14,7 +14,9 @@ on:
       - 'elite-research-evidence-v90.js'
       - 'elite-research-evidence-v90.test.mjs'
       - 'elite-final-review-v91.js'
-      - 'elite-final-review-v91.test.mjs'\n      - 'elite-selection-explanation-v92.js'\n      - 'elite-selection-explanation-v92.test.mjs'
+      - 'elite-final-review-v91.test.mjs'
+      - 'elite-selection-explanation-v92.js'
+      - 'elite-selection-explanation-v92.test.mjs'
       - '.github/workflows/validate-elite-intelligence.yml'
 
 jobs:
@@ -39,3 +41,5 @@ jobs:
         run: node elite-research-evidence-v90.test.mjs
       - name: Validate calibrated final review
         run: node elite-final-review-v91.test.mjs
+      - name: Validate evidence-grounded explanations
+        run: node elite-selection-explanation-v92.test.mjs
