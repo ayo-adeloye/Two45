@@ -8646,7 +8646,9 @@ async function ensureTomorrowPreloadV49(env) {
   // fixture refresh in front of the analysis queue. Feed maintenance can
   // happen later; analysis must keep moving continuously.
   const stagedHasTomorrow = arr(staged?.payload?.queue?.dates).some(x => x?.date === tomorrow);
-  if (snap && staged?.payload?.staged && stagedHasTomorrow) {
+  const stagedQueueCount = Number(staged?.payload?.queue?.eligible || 0);
+  const stagedHasQueuedJobs = stagedQueueCount > 0 || Number(staged?.payload?.queue?.existing || 0) > 0 || Number(staged?.payload?.queue?.inserted || 0) > 0;
+  if (snap && staged?.payload?.staged && stagedHasTomorrow && stagedHasQueuedJobs) {
     const fixtureCount =
       arr(snap?.payload?.fixtures).length ||
       arr(snap?.payload?.response).length ||
