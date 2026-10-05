@@ -10,8 +10,8 @@ import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 79;
-const PACING_REVISION = "2026-10-05.79-founder-elite-scout-v95";
+const WORKER_VERSION = 80;
+const PACING_REVISION = "2026-10-05.80-founder-daily-pick-v96";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4680,6 +4680,57 @@ async function founderSuggestEliteV95(request,env){
       :status==="STRONG_ONLY"?"Founder suggestion is strong, but did not clear Elite."
       :status==="REJECTED"?"Two45 reviewed the suggestion and rejected it for Elite."
       :"Founder suggestion is under deeper review.",review}};
+}
+
+function founderAgreementV96(founderMarket,founderSelection,forecast){
+  const fm=String(founderMarket||"").toUpperCase(),fs=ticketSelectionKeyV78(founderSelection),
+    mm=String(forecast?.market||"").toUpperCase(),ms=ticketSelectionKeyV78(forecast?.selection);
+  if(!mm||!ms||forecast?.decision!=="PICK")return "DISAGREES";
+  if(fm===mm&&fs===ms)return "AGREES";
+  return "PARTIAL";
+}
+async function founderPickPublicV96(env,date=easternDate()){
+  const rows=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(date)}&select=*&limit=1`).catch(()=>[]);
+  const pick=arr(rows)[0]||null;
+  const history=await sb(env,"two45_founder_picks?status=eq.SETTLED&select=result,profit_units,agreement&limit=500").catch(()=>[]);
+  const settled=arr(history),wins=settled.filter(x=>x.result==="WIN").length,losses=settled.filter(x=>x.result==="LOSS").length,
+    pushes=settled.filter(x=>x.result==="PUSH"||x.result==="VOID").length,
+    profit=settled.reduce((s,x)=>s+num(x.profit_units,0),0);
+  return{ok:true,date,pick,record:{settled:settled.length,wins,losses,pushes,hitRate:wins+losses?Math.round(wins/(wins+losses)*1000)/10:null,profitUnits:Math.round(profit*100)/100}};
+}
+async function founderPublishPickV96(request,env){
+  const user=await authenticatedUser(request,env);
+  if(!user?.id)return{httpStatus:401,body:{ok:false,code:"SIGN_IN_REQUIRED",message:"Sign in with the founder account."}};
+  if(!(await founderAuthorizedV95(env,user)))return{httpStatus:403,body:{ok:false,code:"FOUNDER_ONLY",message:"Founder Pick publishing is restricted to the founder account."}};
+  const body=await request.json().catch(()=>({})),fixtureId=Math.trunc(num(body.fixtureId,0)),
+    market=String(body.market||"").trim().toUpperCase(),selection=ticketSelectionKeyV78(body.selection),
+    confidence=["STANDARD","HIGH","VERY_HIGH"].includes(String(body.confidence||"").toUpperCase())?String(body.confidence).toUpperCase():"HIGH",
+    note=String(body.note||"").trim().slice(0,500);
+  if(!fixtureId||!market||!selection)return{httpStatus:400,body:{ok:false,code:"INVALID_PICK",message:"Choose a fixture, market and selection."}};
+  const job=await jobForFixture(env,fixtureId).catch(()=>null);
+  if(!job)return{httpStatus:404,body:{ok:false,code:"NOT_AVAILABLE",message:"This fixture is not available."}};
+  if(Date.parse(job.kickoff_at)<=Date.now())return{httpStatus:400,body:{ok:false,code:"KICKOFF_PASSED",message:"Founder Pick must be published before kickoff."}};
+  const pickDate=dateOfV19(job.kickoff_at);
+  const existing=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(pickDate)}&select=id&limit=1`).catch(()=>[]);
+  if(arr(existing).length)return{httpStatus:409,body:{ok:false,code:"DAILY_PICK_LOCKED",message:"The official Founder Pick for this date is already published and locked."}};
+  const oddsRow=await getFeedSnapshot(env,oddsKey(pickDate)).catch(()=>null),
+    quote=exactBet365QuoteV78(oddsRow?.payload||{},fixtureId,market,selection);
+  if(!quote)return{httpStatus:400,body:{ok:false,code:"BET365_PRICE_REQUIRED",message:"Two45 could not verify this exact selection at Bet365, so it cannot be published yet."}};
+  let forecast=await existingForecast(env,fixtureId).catch(()=>null),publicForecast=forecast?canonicalForecastV2(forecast):null;
+  if(!publicForecast){
+    const auth=request.headers.get("Authorization")||"",deepReq=new Request("https://two45.internal/api/model/analyze",{method:"POST",
+      headers:{"Authorization":auth,"Content-Type":"application/json"},body:JSON.stringify({fixtureId,force:true})}),
+      analysis=await analyzeFixtureOnDemand(deepReq,env);
+    publicForecast=analysis?.body?.forecast||null;
+  }
+  const agreement=founderAgreementV96(market,selection,publicForecast);
+  const row={user_id:user.id,pick_date:pickDate,fixture_id:fixtureId,kickoff_at:job.kickoff_at,competition:job.competition,
+    home_team:job.home_team,away_team:job.away_team,market,selection,founder_confidence:confidence,founder_note:note||null,
+    sportsbook:"Bet365",published_odds:quote.odds,model_market:publicForecast?.market||null,model_selection:publicForecast?.selection||null,
+    model_probability:publicForecast?.probability??null,model_odds:publicForecast?.sportsbookOdds??null,
+    model_decision:publicForecast?.decision||null,model_reason:arr(publicForecast?.reasons)[0]||null,agreement,status:"PUBLISHED"};
+  const saved=await sb(env,"two45_founder_picks",{method:"POST",body:JSON.stringify(row)});
+  return{httpStatus:200,body:{ok:true,pick:arr(saved)[0]||row,message:"Founder Pick published and locked."}};
 }
 
 async function existingForecast(
@@ -9580,6 +9631,13 @@ export default {
             ? selectIndependent(testAnalysis, testBody.marketOdds)
             : null
         });
+      }
+
+      if (url.pathname === "/api/founder-pick" && request.method === "GET") {
+        return json(await founderPickPublicV96(env,url.searchParams.get("date")||easternDate()));
+      }
+      if (url.pathname === "/api/founder/pick" && request.method === "POST") {
+        const result=await founderPublishPickV96(request,env); return json(result.body,result.httpStatus);
       }
 
       if (url.pathname === "/api/founder/status" && request.method === "GET") {
