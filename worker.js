@@ -10,8 +10,8 @@ import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 81;
-const PACING_REVISION = "2026-10-05.81-founder-bet365-market-board-v97";
+const WORKER_VERSION = 82;
+const PACING_REVISION = "2026-10-05.82-founder-five-picks-v98";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4718,13 +4718,13 @@ async function founderMarketsV97(request,env,fixtureId){
   return{httpStatus:200,body:{ok:true,fixtureId,date,bookmaker:"Bet365",markets,count:markets.reduce((n,x)=>n+x.outcomes.length,0)}};
 }
 async function founderPickPublicV96(env,date=easternDate()){
-  const rows=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(date)}&select=*&limit=1`).catch(()=>[]);
-  const pick=arr(rows)[0]||null;
+  const rows=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(date)}&select=*&order=created_at.asc&limit=5`).catch(()=>[]);
+  const picks=arr(rows),pick=picks[0]||null;
   const history=await sb(env,"two45_founder_picks?status=eq.SETTLED&select=result,profit_units,agreement&limit=500").catch(()=>[]);
   const settled=arr(history),wins=settled.filter(x=>x.result==="WIN").length,losses=settled.filter(x=>x.result==="LOSS").length,
     pushes=settled.filter(x=>x.result==="PUSH"||x.result==="VOID").length,
     profit=settled.reduce((s,x)=>s+num(x.profit_units,0),0);
-  return{ok:true,date,pick,record:{settled:settled.length,wins,losses,pushes,hitRate:wins+losses?Math.round(wins/(wins+losses)*1000)/10:null,profitUnits:Math.round(profit*100)/100}};
+  return{ok:true,date,pick,picks,pickCount:picks.length,remaining:Math.max(0,5-picks.length),combinedOdds:picks.length?Math.round(picks.reduce((n,x)=>n*num(x.published_odds,1),1)*100)/100:null,record:{settled:settled.length,wins,losses,pushes,hitRate:wins+losses?Math.round(wins/(wins+losses)*1000)/10:null,profitUnits:Math.round(profit*100)/100}};
 }
 async function founderPublishPickV96(request,env){
   const user=await authenticatedUser(request,env);
@@ -4739,8 +4739,9 @@ async function founderPublishPickV96(request,env){
   if(!job)return{httpStatus:404,body:{ok:false,code:"NOT_AVAILABLE",message:"This fixture is not available."}};
   if(Date.parse(job.kickoff_at)<=Date.now())return{httpStatus:400,body:{ok:false,code:"KICKOFF_PASSED",message:"Founder Pick must be published before kickoff."}};
   const pickDate=dateOfV19(job.kickoff_at);
-  const existing=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(pickDate)}&select=id&limit=1`).catch(()=>[]);
-  if(arr(existing).length)return{httpStatus:409,body:{ok:false,code:"DAILY_PICK_LOCKED",message:"The official Founder Pick for this date is already published and locked."}};
+  const existing=await sb(env,`two45_founder_picks?user_id=eq.${encodeURIComponent(user.id)}&pick_date=eq.${encodeURIComponent(pickDate)}&select=id,fixture_id,market,selection&limit=5`).catch(()=>[]);
+  if(arr(existing).length>=5)return{httpStatus:409,body:{ok:false,code:"DAILY_PICK_LIMIT",message:"You already published the maximum 5 Founder Picks for this date."}};
+  if(arr(existing).some(x=>String(x.fixture_id)===String(fixtureId)&&String(x.market)===market&&ticketSelectionKeyV78(x.selection)===selection))return{httpStatus:409,body:{ok:false,code:"DUPLICATE_PICK",message:"That exact Founder Pick is already published and locked."}};
   const oddsRow=await getFeedSnapshot(env,oddsKey(pickDate)).catch(()=>null),
     quote=exactBet365QuoteV78(oddsRow?.payload||{},fixtureId,market,selection);
   if(!quote)return{httpStatus:400,body:{ok:false,code:"BET365_PRICE_REQUIRED",message:"Two45 could not verify this exact selection at Bet365, so it cannot be published yet."}};
@@ -4758,7 +4759,7 @@ async function founderPublishPickV96(request,env){
     model_probability:publicForecast?.probability??null,model_odds:publicForecast?.sportsbookOdds??null,
     model_decision:publicForecast?.decision||null,model_reason:arr(publicForecast?.reasons)[0]||null,agreement,status:"PUBLISHED"};
   const saved=await sb(env,"two45_founder_picks",{method:"POST",body:JSON.stringify(row)});
-  return{httpStatus:200,body:{ok:true,pick:arr(saved)[0]||row,message:"Founder Pick published and locked."}};
+  return{httpStatus:200,body:{ok:true,pick:arr(saved)[0]||row,pickNumber:arr(existing).length+1,remaining:Math.max(0,4-arr(existing).length),message:"Founder Pick #"+(arr(existing).length+1)+" published and locked."}};
 }
 
 async function existingForecast(
