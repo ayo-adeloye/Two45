@@ -10,8 +10,8 @@ import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 80;
-const PACING_REVISION = "2026-10-05.80-founder-daily-pick-v96";
+const WORKER_VERSION = 81;
+const PACING_REVISION = "2026-10-05.81-founder-bet365-market-board-v97";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4688,6 +4688,34 @@ function founderAgreementV96(founderMarket,founderSelection,forecast){
   if(!mm||!ms||forecast?.decision!=="PICK")return "DISAGREES";
   if(fm===mm&&fs===ms)return "AGREES";
   return "PARTIAL";
+}
+function founderMarketCategoryV97(market){
+  const m=String(market||"").toUpperCase();
+  if(m.includes("CORNER"))return "Corners";
+  if(m.includes("CARD"))return "Cards";
+  if(m.includes("SHOT"))return "Shots";
+  if(m.includes("GOAL")||m==="BTTS")return "Goals";
+  if(m.includes("HANDICAP"))return "Handicaps";
+  return "Result";
+}
+async function founderMarketsV97(request,env,fixtureId){
+  const user=await authenticatedUser(request,env);
+  if(!user?.id)return{httpStatus:401,body:{ok:false,code:"SIGN_IN_REQUIRED"}};
+  if(!(await founderAuthorizedV95(env,user)))return{httpStatus:403,body:{ok:false,code:"FOUNDER_ONLY"}};
+  const job=await jobForFixture(env,fixtureId).catch(()=>null);
+  if(!job)return{httpStatus:404,body:{ok:false,code:"NOT_AVAILABLE",message:"Fixture not available."}};
+  const date=dateOfV19(job.kickoff_at),oddsRow=await getFeedSnapshot(env,oddsKey(date)).catch(()=>null),
+    groups=oddsMarketsFromSnapshot(oddsRow?.payload||{},fixtureId),markets=[];
+  for(const g of groups){
+    const outcomes=arr(g?.outcomes).filter(x=>Number(x?.odds)>=1.15).map(x=>({
+      selection:ticketSelectionKeyV78(x.selection),label:String(x.rawSelection||x.selection||"").trim(),odds:Number(x.odds)
+    }));
+    if(!outcomes.length)continue;
+    markets.push({category:founderMarketCategoryV97(g.market),market:g.market,label:g.rawMarket||g.market,outcomes});
+  }
+  const order={Result:1,Goals:2,Handicaps:3,Corners:4,Cards:5,Shots:6};
+  markets.sort((a,b)=>(order[a.category]||9)-(order[b.category]||9)||String(a.label).localeCompare(String(b.label)));
+  return{httpStatus:200,body:{ok:true,fixtureId,date,bookmaker:"Bet365",markets,count:markets.reduce((n,x)=>n+x.outcomes.length,0)}};
 }
 async function founderPickPublicV96(env,date=easternDate()){
   const rows=await sb(env,`two45_founder_picks?pick_date=eq.${encodeURIComponent(date)}&select=*&limit=1`).catch(()=>[]);
@@ -9633,6 +9661,11 @@ export default {
         });
       }
 
+      if (url.pathname === "/api/founder/markets" && request.method === "GET") {
+        const fixtureId=Math.trunc(num(url.searchParams.get("fixtureId"),0));
+        if(!fixtureId)return json({ok:false,code:"INVALID_FIXTURE"},400);
+        const result=await founderMarketsV97(request,env,fixtureId); return json(result.body,result.httpStatus);
+      }
       if (url.pathname === "/api/founder-pick" && request.method === "GET") {
         return json(await founderPickPublicV96(env,url.searchParams.get("date")||easternDate()));
       }
