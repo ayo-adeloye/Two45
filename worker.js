@@ -8084,9 +8084,9 @@ function fixtureIdV19(f) {
   return Number(f?.fixture?.id || f?.fixtureId || f?.fixture_id || 0);
 }
 
-function eligibleFixtureV19(f, date) {
+function eligibleFixtureV19(f, date, explicitDate = false) {
   const status = f?.fixture?.status?.short;
-  return dateAllowedV19(date) && dateOfV19(f?.fixture?.date) === date &&
+  return (explicitDate || dateAllowedV19(date)) && dateOfV19(f?.fixture?.date) === date &&
     (UPCOMING_STATUSES.has(status) || LIVE_STATUSES.has(status)) &&
     fixtureIdV19(f) > 0 && Number(f?.league?.id) > 0 &&
     Number.isInteger(Number(f?.league?.season)) && Number(f?.league?.season) > 0 &&
@@ -8160,7 +8160,7 @@ async function syncFixtureJobsV19(env, dates = null) {
     const snapshot = await fixtureSnapshotV19(env, date);
     summary.dates.push({date, fixtures: snapshot.fixtures.length});
     for (const fixture of snapshot.fixtures) {
-      if (eligibleFixtureV19(fixture, date)) wanted.push(jobFromFixtureV19(fixture, date, now));
+      if (eligibleFixtureV19(fixture, date, Array.isArray(dates) && dates.length > 0)) wanted.push(jobFromFixtureV19(fixture, date, now));
       else summary.excluded++;
     }
   }
