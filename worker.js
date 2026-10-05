@@ -10,8 +10,8 @@ import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 78;
-const PACING_REVISION = "2026-10-05.78-elite-candidate-pipeline-v94";
+const WORKER_VERSION = 79;
+const PACING_REVISION = "2026-10-05.79-founder-elite-scout-v95";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -4627,6 +4627,59 @@ async function authenticatedUser(
     .catch(
       () => null
     );
+}
+
+async function founderAuthorizedV95(env,user) {
+  if(!user?.id)return false;
+  const rows=await sb(env,`two45_founder_access?user_id=eq.${encodeURIComponent(user.id)}&enabled=eq.true&role=eq.founder&select=user_id&limit=1`).catch(()=>[]);
+  return arr(rows).length===1;
+}
+async function founderStatusV95(request,env){
+  const user=await authenticatedUser(request,env);
+  if(!user?.id)return{httpStatus:401,body:{ok:false,founder:false,code:"SIGN_IN_REQUIRED"}};
+  return{httpStatus:200,body:{ok:true,founder:await founderAuthorizedV95(env,user)}};
+}
+async function founderSuggestEliteV95(request,env){
+  const user=await authenticatedUser(request,env);
+  if(!user?.id)return{httpStatus:401,body:{ok:false,code:"SIGN_IN_REQUIRED",message:"Sign in to use founder scouting."}};
+  if(!(await founderAuthorizedV95(env,user)))return{httpStatus:403,body:{ok:false,code:"FOUNDER_ONLY",message:"Founder scouting is not available on this account."}};
+  const body=await request.json().catch(()=>({})),fixtureId=Math.trunc(num(body.fixtureId,0));
+  if(!fixtureId)return{httpStatus:400,body:{ok:false,code:"INVALID_FIXTURE",message:"A valid fixture is required."}};
+  const job=await jobForFixture(env,fixtureId).catch(()=>null);
+  if(!job)return{httpStatus:404,body:{ok:false,code:"NOT_AVAILABLE",message:"This fixture is not available for Elite review."}};
+  const fixtureDate=dateOfV19(job.kickoff_at),tier=competitionTierV21(job.competition,job.provider_league_id);
+  if(tier>2)return{httpStatus:400,body:{ok:false,code:"ELITE_TIER_INELIGIBLE",message:"Elite review remains restricted to Tier 1 and Tier 2 competitions."}};
+  const reviewBase={requestedBy:"founder",requestedAt:new Date().toISOString(),competition:job.competition,tier};
+  await sb(env,"two45_founder_elite_suggestions?on_conflict=user_id,fixture_id,fixture_date",{
+    method:"POST",prefer:"resolution=merge-duplicates,return=representation",
+    body:JSON.stringify({user_id:user.id,fixture_id:fixtureId,fixture_date:fixtureDate,status:"REVIEWING",review:reviewBase})
+  });
+  const auth=request.headers.get("Authorization")||"";
+  const deepReq=new Request("https://two45.internal/api/model/analyze",{method:"POST",
+    headers:{"Authorization":auth,"Content-Type":"application/json"},body:JSON.stringify({fixtureId,force:true})});
+  const analysis=await analyzeFixtureOnDemand(deepReq,env);
+  let status="REVIEWING",review={...reviewBase,analysisStatus:analysis?.body?.status||null};
+  if(analysis?.body?.status==="READY"){
+    const forecast=analysis.body.forecast||{},candidate={...forecast,competitionTier:tier},
+      elite=eliteLegQualityV79(candidate);
+    status=elite?"ELITE_QUALIFIED":(forecast?.decision==="PICK"?"STRONG_ONLY":"REJECTED");
+    review={...review,decision:forecast?.decision||null,market:forecast?.market||null,
+      selection:forecast?.selection||null,probability:forecast?.probability??null,
+      sportsbookOdds:forecast?.sportsbookOdds??null,bookmaker:forecast?.bookmaker||null,
+      eliteQualified:elite,premiumScore:ticketPremiumScoreV80(candidate),
+      reason:arr(forecast?.reasons)[0]||null,reviewedAt:new Date().toISOString()};
+    await sb(env,`two45_founder_elite_suggestions?user_id=eq.${encodeURIComponent(user.id)}&fixture_id=eq.${fixtureId}&fixture_date=eq.${fixtureDate}`,{
+      method:"PATCH",prefer:"return=representation",
+      body:JSON.stringify({status,review,reviewed_at:new Date().toISOString()})
+    });
+    await evaluateBoardV19(env,fixtureDate).catch(()=>null);
+    await ensureTicketLocksV70(env).catch(()=>null);
+  }
+  return{httpStatus:analysis.httpStatus===500?202:200,body:{ok:true,founder:true,fixtureId,status,
+    message:status==="ELITE_QUALIFIED"?"Founder suggestion passed the Elite gate."
+      :status==="STRONG_ONLY"?"Founder suggestion is strong, but did not clear Elite."
+      :status==="REJECTED"?"Two45 reviewed the suggestion and rejected it for Elite."
+      :"Founder suggestion is under deeper review.",review}};
 }
 
 async function existingForecast(
@@ -9527,6 +9580,13 @@ export default {
             ? selectIndependent(testAnalysis, testBody.marketOdds)
             : null
         });
+      }
+
+      if (url.pathname === "/api/founder/status" && request.method === "GET") {
+        const result=await founderStatusV95(request,env); return json(result.body,result.httpStatus);
+      }
+      if (url.pathname === "/api/founder/elite-suggest" && request.method === "POST") {
+        const result=await founderSuggestEliteV95(request,env); return json(result.body,result.httpStatus);
       }
 
       if (
