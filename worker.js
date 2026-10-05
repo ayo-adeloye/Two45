@@ -8091,7 +8091,9 @@ function fixtureIdV19(f) {
 
 function eligibleFixtureV19(f, date, explicitDate = false) {
   const status = f?.fixture?.status?.short;
-  return (explicitDate || dateAllowedV19(date)) && dateOfV19(f?.fixture?.date) === date &&
+  const tier = competitionTierV21(f?.league?.name, f?.league?.id);
+  return tier <= 3 &&
+    (explicitDate || dateAllowedV19(date)) && dateOfV19(f?.fixture?.date) === date &&
     (UPCOMING_STATUSES.has(status) || LIVE_STATUSES.has(status)) &&
     fixtureIdV19(f) > 0 && Number(f?.league?.id) > 0 &&
     Number.isInteger(Number(f?.league?.season)) && Number(f?.league?.season) > 0 &&
