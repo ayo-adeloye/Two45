@@ -272,9 +272,14 @@ function fourDayFixtureDatesV20() {
 }
 
 function deepAnalysisDatesV20() {
-  if (weekendModeV20()) return weekendLadderDatesV67();
   const today = easternDate();
-  return [today, ...(shouldPreloadTomorrow() ? [datePlusDays(today, 1)] : [])];
+  const dates = weekendModeV20() ? weekendLadderDatesV67() : [today];
+  // After the 8 PM ET gate, tomorrow is always part of deep analysis — even on Sunday night.
+  if (shouldPreloadTomorrow()) {
+    const tomorrow = datePlusDays(today, 1);
+    if (!dates.includes(tomorrow)) dates.push(tomorrow);
+  }
+  return dates;
 }
 
 function supa(env) {
