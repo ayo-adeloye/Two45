@@ -8148,7 +8148,7 @@ function jobFromFixtureV19(f, date, now) {
   };
 }
 
-async function syncFixtureJobsV19(env) {
+async function syncFixtureJobsV19(env, dates = null) {
   // V2: queue synchronization is intentionally lock-free and idempotent.
   // Unique job_key + compare-and-set claiming prevent duplicate processing,
   // while overlapping cron runs can no longer freeze the whole queue.
@@ -8156,7 +8156,7 @@ async function syncFixtureJobsV19(env) {
   const summary = {eligible: 0, inserted: 0, existing: 0, excluded: 0, dates: []};
   const now = new Date().toISOString();
 
-  for (const date of activeDatesV19()) {
+  for (const date of (Array.isArray(dates) && dates.length ? dates : activeDatesV19())) {
     const snapshot = await fixtureSnapshotV19(env, date);
     summary.dates.push({date, fixtures: snapshot.fixtures.length});
     for (const fixture of snapshot.fixtures) {
@@ -8640,7 +8640,8 @@ async function ensureTomorrowPreloadV49(env) {
   // Once tomorrow has been staged successfully, never put another provider
   // fixture refresh in front of the analysis queue. Feed maintenance can
   // happen later; analysis must keep moving continuously.
-  if (snap && staged?.payload?.staged) {
+  const stagedHasTomorrow = arr(staged?.payload?.queue?.dates).some(x => x?.date === tomorrow);
+  if (snap && staged?.payload?.staged && stagedHasTomorrow) {
     const fixtureCount =
       arr(snap?.payload?.fixtures).length ||
       arr(snap?.payload?.response).length ||
@@ -8675,7 +8676,7 @@ async function ensureTomorrowPreloadV49(env) {
     num(payload?.total,0);
 
   const sync = await timedV2(
-    syncFixtureJobsV19(env),
+    syncFixtureJobsV19(env, [tomorrow]),
     9000,
     "initial tomorrow queue sync"
   );
