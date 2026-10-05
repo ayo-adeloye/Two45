@@ -10,8 +10,8 @@ import { explainEliteSelection } from "./elite-selection-explanation-v92.js";
  * Independent Model V1.5 â Broad Analysis
  */
 
-const WORKER_VERSION = 77;
-const PACING_REVISION = "2026-10-04.77-elite-odds-priority-v83";
+const WORKER_VERSION = 78;
+const PACING_REVISION = "2026-10-05.78-elite-candidate-pipeline-v94";
 const PROVIDER_INTERVAL_MS = 7000;
 const PRACTICAL_DAILY_CAP = 6500;
 const MODEL_VERSION = "two45-independent-v1.9";
@@ -7023,6 +7023,7 @@ async function oddsRepairActiveV68(env) {
     if (
       !row ||
       !arr(row?.payload?.response).length ||
+      row?.payload?.paging?.complete === false ||
       row?.payload?.repairInProgress ||
       oddsSnapshotStaleV83(row)
     ) return true;
@@ -7433,6 +7434,10 @@ async function selectFeedJobV18(
     !arr(oddsSnapshot?.payload?.response).length ||
     num(oddsSnapshot?.payload?.total, 0) <= 0;
 
+  const oddsIncomplete =
+    Boolean(oddsSnapshot) &&
+    oddsSnapshot?.payload?.paging?.complete === false;
+
   if (
     fixturesMissing
   ) {
@@ -7451,6 +7456,16 @@ async function selectFeedJobV18(
             env,
             date
           )
+    };
+  }
+
+  // A paginated Bet365 snapshot is not healthy until every page lands.
+  if (oddsIncomplete) {
+    return {
+      key: oddsKey(date),
+      ttl: 900,
+      savesItself: true,
+      run: () => refreshOddsPageV18(env, date)
     };
   }
 
@@ -8769,14 +8784,78 @@ function publishedReasonV81(x){const market=String(x?.market||"").toUpperCase(),
 function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){const wantMarket=String(market||"").trim().toUpperCase(),wantSelection=ticketSelectionKeyV78(selection);if(!wantMarket||!wantSelection)return null;const matches=[];for(const group of oddsMarketsFromSnapshot(oddsPayload,fixtureId)){if(String(group?.market||"").toUpperCase()!==wantMarket)continue;const book=String(group?.bookmaker||"").replace(/[^a-z0-9]/gi,"").toLowerCase();if(book!=="bet365")continue;for(const outcome of arr(group?.outcomes)){if(ticketSelectionKeyV78(outcome?.selection)!==wantSelection)continue;const odds=Number(outcome?.odds);if(!(odds>=1.15))continue;matches.push({odds,bookmaker:group.bookmaker||"Bet365",rawMarket:group.rawMarket||null,rawSelection:outcome.rawSelection||null,groupKey:group.groupKey||null})}}if(!matches.length)return null;const unique=[...new Map(matches.map(x=>[[x.rawMarket,x.rawSelection,x.odds].join("|"),x])).values()],distinctOdds=[...new Set(unique.map(x=>Number(x.odds).toFixed(4)))];if(distinctOdds.length>1)return null;const quote=unique[0],verification=crossBookCheckV81(oddsPayload,fixtureId,wantMarket,wantSelection,quote.odds);if(!verification.ok)return null;return{...quote,oddsVerification:verification}}
 function trustScoreV83(x){const premium=clamp(num(x?.premiumScore,ticketPremiumScoreV80(x)),0,100),dq=clamp(ticketNormV70(x?.dataQuality,.7)*100,0,100),prob=clamp(ticketNormV70(x?.probability,0)*100,0,100),verify=x?.oddsVerification?.status==="CROSS_BOOK_VERIFIED"?9:x?.oddsVerification?.status==="BET365_ONLY"?5:0,rel=clamp(num(x?.teamMarketReliability?.bonus,0),-4,6);return Math.round(clamp(premium*.52+dq*.18+prob*.18+verify+rel,0,100))}
 async function verifyPublicStrongPicksV83(env,date,board){const oddsRow=await getFeedSnapshot(env,oddsKey(date)).catch(()=>null),learningRow=await getFeedSnapshot(env,"two45-learning:v82").catch(()=>null),oddsPayload=oddsRow?.payload||{},learning=learningRow?.payload||{},profiles=learning.profiles||{},verified=[];for(const p of arr(board?.strongPicks)){const fixtureId=p?.fixtureId??p?.providerMatchId,quote=exactBet365QuoteV78(oddsPayload,fixtureId,p?.market,p?.selection);if(!quote)continue;const tier=num(p?.competitionTier,4),x={...p,bookmaker:quote.bookmaker,sportsbookOdds:quote.odds,rawMarket:quote.rawMarket,rawSelection:quote.rawSelection,oddsVerification:quote.oddsVerification,priceVerified:true,priceVerificationRevision:TICKET_LOCK_REVISION_V78,convictionLabel:"Two45 High Conviction"};x.premiumScore=num(x.premiumScore,ticketPremiumScoreV80(x));const rels=[profiles[learningProfileKeyV82(x.home,x.market,x.selection)],profiles[learningProfileKeyV82(x.away,x.market,x.selection)]].filter(Boolean).sort((a,b)=>num(b?.reliability?.bonus,0)-num(a?.reliability?.bonus,0));const rel=rels[0]||null;x.teamMarketReliability=rel?{team:rel.team,settled:rel.settled,wins:rel.wins,losses:rel.losses,hitRate:rel.hitRate,label:rel.reliability?.label||null,bonus:clamp(num(rel?.reliability?.bonus,0),-4,6)}:null;x.trustScore=trustScoreV83(x);x.trustStatus=x.trustScore>=82?"HIGH":x.trustScore>=74?"SOLID":"HOLD";x.reasons=[publishedReasonV81(x),...(rel&&num(rel.settled,0)>=6?["Two45 history: "+rel.team+" is "+rel.wins+"/"+rel.settled+" on this team-market pattern. Historical reliability supports the decision but never creates it."]:[])];if(tier<=3&&x.trustScore>=74)verified.push(x)}verified.sort((a,b)=>num(a.competitionTier,4)-num(b.competitionTier,4)||num(b.trustScore,0)-num(a.trustScore,0)||num(b.premiumScore,0)-num(a.premiumScore,0));const ids=new Set(verified.map(x=>String(x.fixtureId||x.providerMatchId||"")));return{...board,strongPicks:verified,picks:arr(board?.picks).filter(x=>x?.pickType==="RISKY_VALUE"||ids.has(String(x?.fixtureId||x?.providerMatchId||"")))} }
-function ticketPoolBoardVerifiedV78(board,day,oddsPayload,alts=false,learning=null){const rows=[];for(const p of arr(board?.strongPicks)){const tier=ticketCompetitionTierV79(board,p);if(tier>3||p?.decision!=="PICK"||!ticketUpcomingV70(board,p))continue;for(const c of (alts?[p,...arr(p.alternatives)]:[p])){const x={...p,...c},fixtureId=p.fixtureId??p.providerMatchId,quote=exactBet365QuoteV78(oddsPayload,fixtureId,x.market,x.selection);if(!quote)continue;const verified={...x,fixtureId:p.fixtureId,providerMatchId:p.providerMatchId,home:p.home,away:p.away,league:p.league,kickoff:p.kickoff,competitionTier:tier,bookmaker:quote.bookmaker,sportsbookOdds:quote.odds,rawMarket:quote.rawMarket,rawSelection:quote.rawSelection,oddsVerification:quote.oddsVerification,priceVerified:true,priceVerificationRevision:TICKET_LOCK_REVISION_V78,_ticketOdds:quote.odds,_ticketDay:day};if(!ticketPriceCoherentV70(verified))continue;verified.premiumScore=ticketPremiumScoreV80(verified);const profiles=learning?.profiles||{},teamProfiles=[profiles[learningProfileKeyV82(verified.home,verified.market,verified.selection)],profiles[learningProfileKeyV82(verified.away,verified.market,verified.selection)]].filter(Boolean).sort((a,b)=>num(b?.reliability?.bonus,0)-num(a?.reliability?.bonus,0)),rel=teamProfiles[0]||null,relBonus=clamp(num(rel?.reliability?.bonus,0),-4,6);verified.teamMarketReliability=rel?{team:rel.team,settled:rel.settled,wins:rel.wins,losses:rel.losses,hitRate:rel.hitRate,label:rel.reliability?.label||null,bonus:relBonus}:null;verified._ticketScore=(verified.premiumScore+relBonus)/100;verified.convictionLabel="Two45 High Conviction";verified.reasons=[publishedReasonV81(verified)];if(rel&&num(rel.settled,0)>=6)verified.reasons.push("Two45 history: "+rel.team+" has gone "+rel.wins+"/"+rel.settled+" on this team-market pattern. This is a supporting signal, not an automatic pick.");rows.push(verified)}}const seen=new Map();for(const x of rows){const id=String(x.fixtureId||x.providerMatchId||""),prev=seen.get(id);if(id&&(!prev||x._ticketScore>prev._ticketScore))seen.set(id,x)}return[...seen.values()].sort((a,b)=>num(a.competitionTier,4)-num(b.competitionTier,4)||b._ticketScore-a._ticketScore)}
+function ticketPoolBoardVerifiedV78(board,day,oddsPayload,alts=false,learning=null){const rows=[];const sources=[...arr(board?.strongPicks),...arr(board?.premiumCandidates)];for(const p of sources){const tier=ticketCompetitionTierV79(board,p);if(tier>3||p?.decision!=="PICK"||!ticketUpcomingV70(board,p))continue;for(const c of (alts?[p,...arr(p.alternatives)]:[p])){const x={...p,...c},fixtureId=p.fixtureId??p.providerMatchId,quote=exactBet365QuoteV78(oddsPayload,fixtureId,x.market,x.selection);if(!quote)continue;const verified={...x,fixtureId:p.fixtureId,providerMatchId:p.providerMatchId,home:p.home,away:p.away,league:p.league,kickoff:p.kickoff,competitionTier:tier,bookmaker:quote.bookmaker,sportsbookOdds:quote.odds,rawMarket:quote.rawMarket,rawSelection:quote.rawSelection,oddsVerification:quote.oddsVerification,priceVerified:true,priceVerificationRevision:TICKET_LOCK_REVISION_V78,_ticketOdds:quote.odds,_ticketDay:day};if(!ticketPriceCoherentV70(verified))continue;verified.premiumScore=ticketPremiumScoreV80(verified);const profiles=learning?.profiles||{},teamProfiles=[profiles[learningProfileKeyV82(verified.home,verified.market,verified.selection)],profiles[learningProfileKeyV82(verified.away,verified.market,verified.selection)]].filter(Boolean).sort((a,b)=>num(b?.reliability?.bonus,0)-num(a?.reliability?.bonus,0)),rel=teamProfiles[0]||null,relBonus=clamp(num(rel?.reliability?.bonus,0),-4,6);verified.teamMarketReliability=rel?{team:rel.team,settled:rel.settled,wins:rel.wins,losses:rel.losses,hitRate:rel.hitRate,label:rel.reliability?.label||null,bonus:relBonus}:null;verified._ticketScore=(verified.premiumScore+relBonus)/100;verified.convictionLabel="Two45 High Conviction";verified.reasons=[publishedReasonV81(verified)];if(rel&&num(rel.settled,0)>=6)verified.reasons.push("Two45 history: "+rel.team+" has gone "+rel.wins+"/"+rel.settled+" on this team-market pattern. This is a supporting signal, not an automatic pick.");rows.push(verified)}}const seen=new Map();for(const x of rows){const id=String(x.fixtureId||x.providerMatchId||""),prev=seen.get(id);if(id&&(!prev||x._ticketScore>prev._ticketScore))seen.set(id,x)}return[...seen.values()].sort((a,b)=>num(a.competitionTier,4)-num(b.competitionTier,4)||b._ticketScore-a._ticketScore)}
 async function archiveTicketLockV78(env,type,date,row){const payload=row?.payload;if(!payload)return;const stamp=String(payload.lockedAt||new Date().toISOString()).replace(/[:.]/g,"-");await saveFeedSnapshot(env,"ticket-lock-history:"+type+":"+date+":"+stamp,{archivedAt:new Date().toISOString(),archiveReason:"pricing-integrity-revision",replacedByRevision:TICKET_LOCK_REVISION_V78,payload},30*86400).catch(()=>null)}
 function ticketPoolBoardV70(board,day,alts=false){const rows=[];for(const p of arr(board?.strongPicks)){if(p?.decision!=="PICK"||!ticketUpcomingV70(board,p))continue;for(const c of (alts?[p,...arr(p.alternatives)]:[p])){const x={...p,...c},book=String(x.bookmaker||"").replace(/[^a-z0-9]/gi,"").toLowerCase();if(book!=="bet365"||!ticketPriceCoherentV70(x))continue;rows.push({...x,fixtureId:p.fixtureId,providerMatchId:p.providerMatchId,home:p.home,away:p.away,league:p.league,kickoff:p.kickoff,_ticketOdds:ticketPriceV70(x),_ticketDay:day,_ticketScore:ticketNormV70(x.probability,0)*.68+ticketNormV70(p.dataQuality,.7)*.18+ticketNormV70(p.competitionReliability,.75)*.09+ticketSafetyV70(x)})}}const seen=new Map();for(const x of rows){const id=String(x.fixtureId||x.providerMatchId||"");const prev=seen.get(id);if(id&&(!prev||x._ticketScore>prev._ticketScore))seen.set(id,x)}return[...seen.values()].sort((a,b)=>b._ticketScore-a._ticketScore)}
 function ticketOptimizeV70(pool,target,low,high,minLegs,maxLegs,requireTier1=false){let best=null,fallback=null;const tier1Available=requireTier1&&pool.some(x=>num(x?.competitionTier,4)===1);function visit(start,legs,combined,sum){if(legs.length>=minLegs){const hasTier1=legs.some(x=>num(x?.competitionTier,4)===1);if(!tier1Available||hasTier1){const avg=sum/legs.length,dist=Math.abs(combined-target)/target,c={legs:legs.slice(),combined,score:avg-dist*.08-Math.max(0,legs.length-minLegs)*.008,target,targetLow:low,targetHigh:high};if(combined>=low&&combined<=high&&(!best||c.score>best.score))best=c;c.fallbackScore=avg-dist*.16-Math.max(0,legs.length-minLegs)*.01;if(!fallback||c.fallbackScore>fallback.fallbackScore)fallback=c}}if(legs.length>=maxLegs||combined>high*1.75)return;for(let i=start;i<pool.length;i++){const next=combined*pool[i]._ticketOdds;if(next>Math.max(high*1.75,target*1.75))continue;legs.push(pool[i]);visit(i+1,legs,next,sum+pool[i]._ticketScore);legs.pop()}}visit(0,[],1,0);const chosen=best||fallback;if(chosen){chosen.targetMet=!!best;chosen.tier1Required=tier1Available;chosen.tier1Included=chosen.legs.some(x=>num(x?.competitionTier,4)===1)}return chosen}
-async function ticketBoardV70(env,date){const fs=await snapshot(env,fixtureKey(date)).catch(()=>null),games=fixtureRowsV58(fs);if(!games.length)return{ok:true,date,games:[],fixtures:[],strongPicks:[],riskyPlays:[]};const bs=await snapshot(env,modelBoardKey(date)).catch(()=>null),base=bs?.payload||{ok:true,date,games,fixtures:games};const rows=await canonicalAnalysisRowsV2(env,games.map(fixtureIdV19)).catch(()=>[]);return presentCanonicalBoardV59(base,games,rows)}
+async function ticketBoardV70(env,date){
+  const fs=await snapshot(env,fixtureKey(date)).catch(()=>null),games=fixtureRowsV58(fs);
+  if(!games.length)return{ok:true,date,games:[],fixtures:[],strongPicks:[],riskyPlays:[],premiumCandidates:[]};
+  const bs=await snapshot(env,modelBoardKey(date)).catch(()=>null),
+    base=bs?.payload||{ok:true,date,games,fixtures:games};
+  let rows=await canonicalAnalysisRowsV2(env,games.map(fixtureIdV19)).catch(()=>[]);
+  rows=await repriceCanonicalRowsV84(env,date,rows);
+  const presented=presentCanonicalBoardV59(base,games,rows);
+  const fixtureMap=new Map(games.map(f=>[String(fixtureIdV19(f)),f]));
+  const chosenRows=new Map();
+  for(const row of arr(rows)){
+    if(row?.status!=="COMPLETE")continue;
+    const id=String(row?.fixture_id||""); if(!id)continue;
+    const rank=row?.model_version===MODEL_VERSION?2:1;
+    const completed=Date.parse(row?.completed_at||row?.updated_at||row?.requested_at||0);
+    const prev=chosenRows.get(id);
+    if(!prev||rank>prev.rank||(rank===prev.rank&&completed>prev.completed))chosenRows.set(id,{row,rank,completed});
+  }
+  const premiumCandidates=[];
+  for(const [id,entry] of chosenRows){
+    const row=entry.row,f=fixtureMap.get(id);
+    if(!f||!UPCOMING_STATUSES.has(f?.fixture?.status?.short))continue;
+    const tier=competitionTierV21(f?.league?.name,f?.league?.id);
+    if(tier>2)continue;
+    const forecast=canonicalForecastV2(row); if(!forecast)continue;
+    for(const option of arr(row?.result?.marketOptions)){
+      if(String(option?.lane||"").toUpperCase()!=="STRONG")continue;
+      if(String(option?.analysisSource||"").toLowerCase()!=="independent-model")continue;
+      premiumCandidates.push({...forecast,...option,fixtureId:Number(id),providerMatchId:Number(id),
+        home:forecast?.home||f?.teams?.home?.name||null,away:forecast?.away||f?.teams?.away?.name||null,
+        league:f?.league?.name||forecast?.league||null,kickoff:f?.fixture?.date||forecast?.kickoff||null,
+        competitionTier:tier,decision:"PICK",alternatives:[]});
+    }
+  }
+  return{...presented,premiumCandidates};
+}
 async function ticketBaselineV70(env,legs){const out={},ids=[...new Set(arr(legs).map(x=>Number(x.fixtureId||x.providerMatchId)).filter(Boolean))];await Promise.all(ids.map(async id=>{const s=await getFeedSnapshot(env,"match-intelligence:"+id).catch(()=>null),p=s?.payload||{};out[String(id)]={generatedAt:p.generatedAt||s?.refreshed_at||null,homeAbsences:num(p.homeAbsences,0),awayAbsences:num(p.awayAbsences,0),lineupsConfirmed:Boolean(p.lineupsConfirmed)}}));return out}
 function lockTicketV70(t,at,b){if(!t)return null;return{...t,locked:true,lockedAt:at,legs:arr(t.legs).map(x=>({...x,locked:true,lockedAt:at,originalOdds:ticketPriceV70(x),originalProbability:num(x.probability,null),originalMarket:x.market||null,originalSelection:x.selection||null,lockIntel:b?.[String(x.fixtureId||x.providerMatchId)]||null}))}}
-async function buildDailyLockV70(env,date,rebuildReason=null){const values=await Promise.all([ticketBoardV70(env,date),getFeedSnapshot(env,oddsKey(date)).catch(()=>null),getFeedSnapshot(env,"two45-learning:v82").catch(()=>null)]),board=values[0],oddsRow=values[1],learning=values[2]?.payload||{},oddsPayload=oddsRow?.payload||{},pool=ticketPoolBoardVerifiedV78(board,"Today",oddsPayload,true,learning).filter(x=>num(x?.competitionTier,4)<=2).filter(x=>String(x?.lane||"").toUpperCase()!=="WATCH"&&String(x?.role||"").toUpperCase()!=="WATCH_OPTION").filter(eliteLegQualityV79).slice(0,30),tier1Pool=pool.filter(x=>num(x?.competitionTier,4)===1),tier1Try=ticketOptimizeV70(tier1Pool,3.125,3,3.25,2,6,true),tier12Try=tier1Try?.targetMet?tier1Try:ticketOptimizeV70(pool,3.125,3,3.25,2,6,true),t=tier12Try?.targetMet?tier12Try:null,at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),payload={ok:true,type:"daily",date,status:t?"LOCKED":"BUILDING",lockedAt:t?at:null,immutable:Boolean(t),revision:TICKET_LOCK_REVISION_V78,rebuiltForPricingIntegrity:Boolean(rebuildReason),rebuildReason:rebuildReason||null,oddsSnapshotUpdatedAt:oddsPayload.updatedAt||oddsRow?.refreshed_at||null,ticket:lockTicketV70(t,at,b),candidateCount:pool.length,rule:"Frozen after publication. Every leg is exact Bet365 verified and cross-checked against DraftKings/FanDuel when available. Elite uses Tier 1 first and Tier 2 only when Tier 1 cannot complete the target. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 3.00-3.25 target is genuinely met."};await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200);return payload}
+async function buildDailyLockV70(env,date,rebuildReason=null){
+  const values=await Promise.all([ticketBoardV70(env,date),getFeedSnapshot(env,oddsKey(date)).catch(()=>null),getFeedSnapshot(env,"two45-learning:v82").catch(()=>null)]),
+    board=values[0],oddsRow=values[1],learning=values[2]?.payload||{},oddsPayload=oddsRow?.payload||{};
+  const oddsComplete=Boolean(oddsRow)&&oddsPayload?.paging?.complete!==false&&!oddsPayload?.repairInProgress;
+  const pipelineBase={analyzed:num(board?.analyzedCount,0),headlineStrong:arr(board?.strongPicks).length,
+    strongMarketOptions:arr(board?.premiumCandidates).length,oddsComplete};
+  if(!oddsComplete){
+    const payload={ok:true,type:"daily",date,status:"BUILDING",lockedAt:null,immutable:false,
+      revision:TICKET_LOCK_REVISION_V78,rebuiltForPricingIntegrity:Boolean(rebuildReason),rebuildReason:rebuildReason||null,
+      waitingFor:"BET365_ODDS_COMPLETE",oddsSnapshotUpdatedAt:oddsPayload.updatedAt||oddsRow?.refreshed_at||null,
+      ticket:null,candidateCount:0,pipeline:{...pipelineBase,exactVerified:0,eliteQualified:0},
+      rule:"Elite waits for the complete Bet365 price snapshot. Every leg must then pass exact market/selection verification, Tier 1/2 quality rules and the unchanged Elite threshold."};
+    await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200); return payload;
+  }
+  const verifiedPool=ticketPoolBoardVerifiedV78(board,"Today",oddsPayload,true,learning)
+    .filter(x=>num(x?.competitionTier,4)<=2)
+    .filter(x=>String(x?.lane||"").toUpperCase()!=="WATCH"&&String(x?.role||"").toUpperCase()!=="WATCH_OPTION");
+  const pool=verifiedPool.filter(eliteLegQualityV79).slice(0,30),
+    tier1Pool=pool.filter(x=>num(x?.competitionTier,4)===1),
+    tier1Try=ticketOptimizeV70(tier1Pool,3.125,3,3.25,2,6,true),
+    tier12Try=tier1Try?.targetMet?tier1Try:ticketOptimizeV70(pool,3.125,3,3.25,2,6,true),
+    t=tier12Try?.targetMet?tier12Try:null,at=new Date().toISOString(),b=await ticketBaselineV70(env,t?.legs||[]),
+    payload={ok:true,type:"daily",date,status:t?"LOCKED":"BUILDING",lockedAt:t?at:null,immutable:Boolean(t),
+      revision:TICKET_LOCK_REVISION_V78,rebuiltForPricingIntegrity:Boolean(rebuildReason),rebuildReason:rebuildReason||null,
+      waitingFor:t?null:(pool.length?"TARGET_ODDS_COMBINATION":"ELITE_QUALITY"),
+      oddsSnapshotUpdatedAt:oddsPayload.updatedAt||oddsRow?.refreshed_at||null,ticket:lockTicketV70(t,at,b),
+      candidateCount:pool.length,pipeline:{...pipelineBase,exactVerified:verifiedPool.length,eliteQualified:pool.length},
+      rule:"Frozen after publication. Every leg is exact Bet365 verified and cross-checked against DraftKings/FanDuel when available. Elite evaluates every STRONG independent-model Tier 1/2 market option, prioritizes Tier 1, and never lowers the existing Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 3.00-3.25 target is genuinely met."};
+  await saveFeedSnapshot(env,"ticket-lock:daily:"+date,payload,259200); return payload
+}
 function weekendAnchorV70(){const d=easternDate(),day=easternWeekday();if(day==="Fri")return datePlusDays(d,1);if(day==="Sat")return d;if(day==="Sun")return datePlusDays(d,-1);return null}
 async function buildWeekendLockV70(env,satDate,rebuildReason=null){const sunDate=datePlusDays(satDate,1),values=await Promise.all([ticketBoardV70(env,satDate),ticketBoardV70(env,sunDate),getFeedSnapshot(env,oddsKey(satDate)).catch(()=>null),getFeedSnapshot(env,oddsKey(sunDate)).catch(()=>null),getFeedSnapshot(env,"two45-learning:v82").catch(()=>null)]),satBoard=values[0],sunBoard=values[1],satOddsRow=values[2],sunOddsRow=values[3],learning=values[4]?.payload||{},ranked=[...ticketPoolBoardVerifiedV78(satBoard,"Sat",satOddsRow?.payload||{},false,learning),...ticketPoolBoardVerifiedV78(sunBoard,"Sun",sunOddsRow?.payload||{},false,learning)].sort((a,b)=>b._ticketScore-a._ticketScore).slice(0,24),dailySnap=await getFeedSnapshot(env,"ticket-lock:daily:"+satDate).catch(()=>null),reserved=new Set(arr(dailySnap?.payload?.ticket?.legs).map(x=>String(x.fixtureId||x.providerMatchId||"")).filter(Boolean)),pool=reserved.size?ranked.filter(x=>!reserved.has(String(x.fixtureId||x.providerMatchId||""))):ranked,fiveTry=ticketOptimizeV70(pool,5,4.75,5.5,2,5),tenTry=ticketOptimizeV70(pool,10,9,11,3,7),fiftyTry=ticketOptimizeV70(pool,50,45,55,4,9),five=fiveTry?.targetMet?fiveTry:null,ten=tenTry?.targetMet?tenTry:null,fifty=fiftyTry?.targetMet?fiftyTry:null,weekendReady=Boolean(five&&ten&&fifty),at=new Date().toISOString(),b=await ticketBaselineV70(env,[...arr(five?.legs),...arr(ten?.legs),...arr(fifty?.legs)]),payload={ok:true,type:"weekend",saturday:satDate,sunday:sunDate,status:weekendReady?"LOCKED":"BUILDING",lockedAt:weekendReady?at:null,immutable:weekendReady,revision:TICKET_LOCK_REVISION_V78,rebuiltForPricingIntegrity:Boolean(rebuildReason),rebuildReason:rebuildReason||null,saturdayOddsSnapshotUpdatedAt:satOddsRow?.payload?.updatedAt||satOddsRow?.refreshed_at||null,sundayOddsSnapshotUpdatedAt:sunOddsRow?.payload?.updatedAt||sunOddsRow?.refreshed_at||null,tickets:{five:lockTicketV70(five,at,b),ten:lockTicketV70(ten,at,b),fifty:lockTicketV70(fifty,at,b)},candidateCount:pool.length,eliteReservedCount:reserved.size,rule:"Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder."};await saveFeedSnapshot(env,"ticket-lock:weekend:"+satDate,payload,432000);return payload}
 function activeDailyTicketDateV93(){const date=easternDate();return shouldPreloadTomorrow()?datePlusDays(date,1):date}
