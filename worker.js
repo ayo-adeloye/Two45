@@ -273,12 +273,12 @@ function fourDayFixtureDatesV20() {
 
 function deepAnalysisDatesV20() {
   const today = easternDate();
+  const tomorrow = datePlusDays(today, 1);
+  // Sunday after 8 PM ET is a clean handoff: fresh analysis moves to Monday only.
+  // Sunday remains available to live/settlement/record paths, but consumes no new analysis capacity.
+  if (easternWeekday() === "Sun" && shouldPreloadTomorrow()) return [tomorrow];
   const dates = weekendModeV20() ? weekendLadderDatesV67() : [today];
-  // After the 8 PM ET gate, tomorrow is always part of deep analysis — even on Sunday night.
-  if (shouldPreloadTomorrow()) {
-    const tomorrow = datePlusDays(today, 1);
-    if (!dates.includes(tomorrow)) dates.push(tomorrow);
-  }
+  if (shouldPreloadTomorrow() && !dates.includes(tomorrow)) dates.push(tomorrow);
   return dates;
 }
 
