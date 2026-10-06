@@ -3863,18 +3863,23 @@ async function founderSuggestEliteV95(request, env) {
 }
 __name(founderSuggestEliteV95, "founderSuggestEliteV95");
 function founderAgreementV96(founderMarket, founderSelection, forecast) {
-  const fm = String(founderMarket || "").toUpperCase(), fs = ticketSelectionKeyV78(founderSelection), mm = String(forecast?.market || "").toUpperCase(), ms = ticketSelectionKeyV78(forecast?.selection);
-  if (!mm || !ms || forecast?.decision !== "PICK") return "DISAGREES";
-  if (fm === mm && fs === ms) return "AGREES";
+  const fm = String(founderMarket || "").toUpperCase(), fs = ticketSelectionKeyV78(founderSelection);
   const homeDraw = (s) => ["HOME_DRAW","HOME_OR_DRAW","DRAW_OR_HOME"].includes(s);
   const awayDraw = (s) => ["AWAY_DRAW","AWAY_OR_DRAW","DRAW_OR_AWAY"].includes(s);
-  const equivalent =
-    fm === "DOUBLE_CHANCE" && homeDraw(fs) && mm === "HANDICAP" && ms === "HOME_PLUS_0_5" ||
-    fm === "DOUBLE_CHANCE" && awayDraw(fs) && mm === "HANDICAP" && ms === "AWAY_PLUS_0_5" ||
-    mm === "DOUBLE_CHANCE" && homeDraw(ms) && fm === "HANDICAP" && fs === "HOME_PLUS_0_5" ||
-    mm === "DOUBLE_CHANCE" && awayDraw(ms) && fm === "HANDICAP" && fs === "AWAY_PLUS_0_5";
-  if (equivalent) return "AGREES";
-  return "PARTIAL";
+  const sameOrEquivalent = (market, selection) => {
+    const mm = String(market || "").toUpperCase(), ms = ticketSelectionKeyV78(selection);
+    if (!mm || !ms) return false;
+    if (fm === mm && fs === ms) return true;
+    return fm === "DOUBLE_CHANCE" && homeDraw(fs) && mm === "HANDICAP" && ms === "HOME_PLUS_0_5" ||
+      fm === "DOUBLE_CHANCE" && awayDraw(fs) && mm === "HANDICAP" && ms === "AWAY_PLUS_0_5" ||
+      mm === "DOUBLE_CHANCE" && homeDraw(ms) && fm === "HANDICAP" && fs === "HOME_PLUS_0_5" ||
+      mm === "DOUBLE_CHANCE" && awayDraw(ms) && fm === "HANDICAP" && fs === "AWAY_PLUS_0_5";
+  };
+  if (forecast?.decision === "PICK" && sameOrEquivalent(forecast?.market, forecast?.selection)) return "AGREES";
+  const independent = arr2(forecast?.alternatives).filter((x) => String(x?.analysisSource || "").toLowerCase() === "independent-model");
+  if (independent.some((x) => String(x?.lane || "").toUpperCase() === "STRONG" && sameOrEquivalent(x?.market, x?.selection))) return "AGREES";
+  if (independent.some((x) => sameOrEquivalent(x?.market, x?.selection))) return "PARTIAL";
+  return "DISAGREES";
 }
 __name(founderAgreementV96, "founderAgreementV96");
 function founderMarketCategoryV97(market) {
