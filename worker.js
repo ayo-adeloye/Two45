@@ -1504,24 +1504,26 @@ function expectedGoals(home, away, ctx = {}) {
     ctx.leagueAwayGoalsAvg,
     1.15
   );
+  const homeVenueSample = Math.max(0, num4(home.homeSampleSize, home.sampleSize));
+  const awayVenueSample = Math.max(0, num4(away.awaySampleSize, away.sampleSize));
   const hgf = shrink(
     home.homeGoalsForAvg ?? home.goalsForAvg,
-    home.sampleSize,
+    homeVenueSample,
     lh
   );
   const hga = shrink(
     home.homeGoalsAgainstAvg ?? home.goalsAgainstAvg,
-    home.sampleSize,
+    homeVenueSample,
     la
   );
   const agf = shrink(
     away.awayGoalsForAvg ?? away.goalsForAvg,
-    away.sampleSize,
+    awayVenueSample,
     la
   );
   const aga = shrink(
     away.awayGoalsAgainstAvg ?? away.goalsAgainstAvg,
-    away.sampleSize,
+    awayVenueSample,
     lh
   );
   let hx = Math.sqrt(
@@ -1555,7 +1557,9 @@ function expectedGoals(home, away, ctx = {}) {
   );
   hx *= 1 + form * 0.12;
   ax *= 1 - form * 0.1;
-  const venueEdge = clamp4((num4(home.homePointsPerGame, 1.5) - num4(away.awayPointsPerGame, 1.5)) / 3, -0.3, 0.3);
+  const homeVenuePPG = shrink(num4(home.homePointsPerGame, home.formPointsPerGame), homeVenueSample, num4(home.formPointsPerGame, 1.5), 4);
+  const awayVenuePPG = shrink(num4(away.awayPointsPerGame, away.formPointsPerGame), awayVenueSample, num4(away.formPointsPerGame, 1.5), 4);
+  const venueEdge = clamp4((homeVenuePPG - awayVenuePPG) / 3, -0.3, 0.3);
   hx *= 1 + venueEdge * 0.08;
   ax *= 1 - venueEdge * 0.07;
   const homeAttackReliability = clamp4(1 - num4(home.failedToScoreRate, 0), 0.35, 1);
@@ -2533,6 +2537,8 @@ function toFeatures(stats) {
   const form = String(stats?.form || "");
   return {
     sampleSize,
+    homeSampleSize: homePlayed,
+    awaySampleSize: awayPlayed,
     goalsForAvg: gf,
     goalsAgainstAvg: ga,
     homeGoalsForAvg: num4(path(stats, ["goals", "for", "average", "home"]), gf),
@@ -3165,6 +3171,8 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
       team.homeGoalsAgainstAvg = team.goalsAgainstAvg;
       team.awayGoalsForAvg = team.goalsForAvg;
       team.awayGoalsAgainstAvg = team.goalsAgainstAvg;
+      team.homeSampleSize = num4(recent.matches, team.sampleSize);
+      team.awaySampleSize = num4(recent.matches, team.sampleSize);
       team.homePointsPerGame = team.formPointsPerGame;
       team.awayPointsPerGame = team.formPointsPerGame;
       team.winRate = recent.matches ? num4(recent.wins, 0) / recent.matches : team.winRate;
