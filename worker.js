@@ -1900,18 +1900,63 @@ function selectIndependent(
       // disagreement is treated as a mapping mismatch, not artificial value.
       if (!priceCoherentV60(m.probability, candidate.sportsbookOdds)) continue;
 
-      if (
-        m.probability >=
-          0.64 &&
-        edge >=
-          0.035 &&
-        analysis.dataQuality >=
-          tierGate.strongQ
-      ) {
-        strong.push(
-          candidate
+      // V101 conviction lane: Bet365 verifies playability, but a small
+      // negative price edge must not erase a strong independent Tier 1/2
+      // football opinion. Ultra-protected +1.5 and Under 4.5 are excluded.
+      const pricedConviction =
+        tier <= 2 &&
+        analysis.dataQuality >= tierGate.convictionQ &&
+        edge >= (tier === 1 ? -0.08 : -0.05) &&
+        (
+          (
+            m.market === "MATCH_RESULT" &&
+            ["HOME","AWAY"].includes(String(m.selection)) &&
+            m.probability >= tierGate.winFloor
+          ) ||
+          (
+            m.market === "DOUBLE_CHANCE" &&
+            m.probability >= (tier === 1 ? 0.74 : 0.77)
+          ) ||
+          (
+            m.market === "HANDICAP" &&
+            /PLUS_0_5$/.test(String(m.selection)) &&
+            m.probability >= (tier === 1 ? 0.74 : 0.77)
+          ) ||
+          (
+            m.market === "TOTAL_GOALS" &&
+            m.selection === "OVER_1_5" &&
+            m.probability >= (tier === 1 ? 0.74 : 0.77)
+          ) ||
+          (
+            m.market === "TOTAL_GOALS" &&
+            m.selection === "OVER_2_5" &&
+            m.probability >= (tier === 1 ? 0.66 : 0.69)
+          ) ||
+          (
+            m.market === "BTTS" &&
+            m.selection === "YES" &&
+            m.probability >= (tier === 1 ? 0.66 : 0.69)
+          )
         );
-      } else if (
+
+      if (
+        (
+          m.probability >=
+            0.64 &&
+          edge >=
+            0.035 &&
+          analysis.dataQuality >=
+            tierGate.strongQ
+        ) ||
+        pricedConviction
+      ) {
+        strong.push({
+          ...candidate,
+          qualificationMode:
+            pricedConviction && edge < 0.035
+              ? "MODEL_CONVICTION_PRICED"
+              : candidate.qualificationMode
+        }); else if (
         candidate.sportsbookOdds >=
           1.35 &&
         analysis.dataQuality >=
@@ -4687,6 +4732,16 @@ function founderAgreementV96(founderMarket,founderSelection,forecast){
     mm=String(forecast?.market||"").toUpperCase(),ms=ticketSelectionKeyV78(forecast?.selection);
   if(!mm||!ms||forecast?.decision!=="PICK")return "DISAGREES";
   if(fm===mm&&fs===ms)return "AGREES";
+
+  // V101: recognize equivalent full-match protection markets.
+  const homeDraw=s=>["HOME_DRAW","HOME_OR_DRAW","DRAW_OR_HOME"].includes(s);
+  const awayDraw=s=>["AWAY_DRAW","AWAY_OR_DRAW","DRAW_OR_AWAY"].includes(s);
+  const equivalent=
+    (fm==="DOUBLE_CHANCE"&&homeDraw(fs)&&mm==="HANDICAP"&&ms==="HOME_PLUS_0_5")||
+    (fm==="DOUBLE_CHANCE"&&awayDraw(fs)&&mm==="HANDICAP"&&ms==="AWAY_PLUS_0_5")||
+    (mm==="DOUBLE_CHANCE"&&homeDraw(ms)&&fm==="HANDICAP"&&fs==="HOME_PLUS_0_5")||
+    (mm==="DOUBLE_CHANCE"&&awayDraw(ms)&&fm==="HANDICAP"&&fs==="AWAY_PLUS_0_5");
+  if(equivalent)return "AGREES";
   return "PARTIAL";
 }
 function founderMarketCategoryV97(market){
@@ -5703,20 +5758,45 @@ async function processOne(
       .filter(Boolean);
     if (decision?.decision === "PICK") {
       const verifiedMainV85 = verifyCandidateV85(decision);
+      // V101: an unavailable exact quote is a pricing/representation failure,
+      // not a football-analysis failure. Promote the next already-qualified
+      // exact Bet365 option before declaring the entire fixture NO_BET.
+      const verifiedFallbackV101 =
+        verifiedTopMarketsV85.find(x => String(x?.lane || "").toUpperCase() === "STRONG") ||
+        verifiedTopMarketsV85.find(x => String(x?.lane || "").toUpperCase() === "RISKY_VALUE") ||
+        null;
+
       decision = verifiedMainV85
         ? {...decision, ...verifiedMainV85, topMarkets: verifiedTopMarketsV85}
-        : {
-            ...decision,
-            decision: "NO_BET",
-            pickType: "NO_BET",
-            sportsbookOdds: null,
-            bookmaker: null,
-            valueEdge: null,
-            priceVerified: false,
-            oddsVerification: null,
-            topMarkets: verifiedTopMarketsV85,
-            reason: "Pick withheld until the exact full-match Bet365 market and selection are verified."
-          };
+        : verifiedFallbackV101
+          ? {
+              ...decision,
+              ...verifiedFallbackV101,
+              decision: "PICK",
+              pickType:
+                String(verifiedFallbackV101.lane || "").toUpperCase() === "RISKY_VALUE"
+                  ? "RISKY_VALUE"
+                  : "STRONG_PICK",
+              confidenceTier:
+                String(verifiedFallbackV101.lane || "").toUpperCase() === "RISKY_VALUE"
+                  ? "RISKY"
+                  : decision.confidenceTier,
+              priceVerified: true,
+              topMarkets: verifiedTopMarketsV85,
+              reason: "Primary model line was not exactly priced; Two45 promoted the next independently qualified exact Bet365 option."
+            }
+          : {
+              ...decision,
+              decision: "NO_BET",
+              pickType: "NO_BET",
+              sportsbookOdds: null,
+              bookmaker: null,
+              valueEdge: null,
+              priceVerified: false,
+              oddsVerification: null,
+              topMarkets: verifiedTopMarketsV85,
+              reason: "Pick withheld until an independently qualified exact full-match Bet365 option is verified."
+            };
     } else {
       decision = {...decision, topMarkets: verifiedTopMarketsV85};
     }
