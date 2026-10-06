@@ -9011,7 +9011,65 @@ function ticketSafetyV70(x){const m=String(x?.market||"").toUpperCase();return m
 function ticketUpcomingV70(board,x){const id=String(x?.fixtureId??x?.providerMatchId??"");const f=arr(board?.games||board?.fixtures).find(g=>String(fixtureIdV19(g))===id);return !!f&&f?.fixture?.status?.short==="NS"&&Date.parse(f?.fixture?.date||0)>Date.now()}
 function ticketCompetitionTierV79(board,x){const id=String(x?.fixtureId??x?.providerMatchId??"");const f=arr(board?.games||board?.fixtures).find(g=>String(fixtureIdV19(g))===id);if(f)return competitionTierV21(f?.league?.name,f?.league?.id);return Math.max(1,Math.min(4,num(x?.competitionTier,4)))}
 function ticketPremiumScoreV80(x){const probability=ticketNormV70(x?.probability,0)*100,dq=ticketNormV70(x?.dataQuality,.7)*100,edgeRaw=x?.valueEdgePct??x?.valueEdge,edge=Math.abs(num(edgeRaw,0))<=1?num(edgeRaw,0)*100:num(edgeRaw,0),tier=num(x?.competitionTier,4),odds=ticketPriceV70(x)||0,market=String(x?.market||"").toUpperCase(),selection=String(x?.selection||"").toUpperCase();let marketPts=0;if(market==="MATCH_RESULT"&&["HOME","AWAY"].includes(selection))marketPts=6;else if(market==="BTTS")marketPts=4;else if(market==="TOTAL_GOALS"&&selection==="OVER_2_5")marketPts=7;else if(market==="TOTAL_GOALS"&&selection==="OVER_3_5")marketPts=6;else if(market==="TOTAL_GOALS"&&selection==="OVER_1_5")marketPts=3;else if(market==="TOTAL_GOALS"&&selection==="UNDER_3_5")marketPts=2;else if(market==="TOTAL_GOALS"&&selection==="UNDER_4_5")marketPts=-12;else if(["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market)&&/OVER_(1_5|2_5)/.test(selection))marketPts=6;else if(market==="HANDICAP"&&/PLUS_1_5/.test(selection))marketPts=-10;else if(market==="HANDICAP"&&/PLUS_0_5/.test(selection))marketPts=1;else if(market==="HANDICAP"&&/MINUS/.test(selection))marketPts=4;else if(market==="DOUBLE_CHANCE")marketPts=-4;const tierPts=tier===1?12:tier===2?7:0,pricePts=odds>=1.50&&odds<=1.90?6:odds>=1.25&&odds<1.50?4:odds>1.90&&odds<=2.50?5:odds>2.50?2:0;return probability*.45+dq*.18+Math.min(Math.max(edge,0),25)*.60+tierPts+pricePts+marketPts}
-function eliteLegQualityV79(x){const odds=ticketPriceV70(x),market=String(x?.market||"").toUpperCase(),selection=String(x?.selection||"").toUpperCase(),tier=num(x?.competitionTier,4),premium=ticketPremiumScoreV80(x);if(!odds||odds<1.18||tier>2)return false;if(market==="HANDICAP"&&/(HOME|AWAY)_PLUS_1_5/.test(selection)&&odds<1.30)return false;if(market==="TOTAL_GOALS"&&selection==="UNDER_4_5"&&odds<1.35)return false;if(tier===1&&premium<77)return false;if(tier===2&&premium<82)return false;return true}
+function eliteConfidenceScoreV102(x){
+  const probability=ticketNormV70(x?.probability,0)*100,
+    dq=ticketNormV70(x?.dataQuality,.7)*100,
+    edgeRaw=x?.valueEdgePct??x?.valueEdge,
+    edge=Math.abs(num(edgeRaw,0))<=1?num(edgeRaw,0)*100:num(edgeRaw,0),
+    tier=num(x?.competitionTier,4),
+    odds=ticketPriceV70(x)||0,
+    market=String(x?.market||"").toUpperCase(),
+    selection=String(x?.selection||"").toUpperCase();
+  let marketPts=0;
+  if(market==="MATCH_RESULT"&&["HOME","AWAY"].includes(selection))marketPts=3;
+  else if(market==="BTTS")marketPts=2;
+  else if(market==="TOTAL_GOALS"&&selection==="OVER_2_5")marketPts=3;
+  else if(market==="TOTAL_GOALS"&&selection==="OVER_3_5")marketPts=2;
+  else if(market==="TOTAL_GOALS"&&selection==="OVER_1_5")marketPts=2;
+  else if(market==="TOTAL_GOALS"&&selection==="UNDER_3_5")marketPts=1;
+  else if(market==="TOTAL_GOALS"&&selection==="UNDER_4_5")marketPts=-10;
+  else if(["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(market)&&/OVER_(1_5|2_5)/.test(selection))marketPts=2;
+  else if(market==="HANDICAP"&&/PLUS_1_5/.test(selection))marketPts=-9;
+  else if(market==="HANDICAP"&&/PLUS_0_5/.test(selection))marketPts=1;
+  else if(market==="HANDICAP"&&/MINUS/.test(selection))marketPts=2;
+  else if(market==="DOUBLE_CHANCE")marketPts=-1;
+  const tierPts=tier===1?8:tier===2?5:0,
+    pricePts=odds>=1.50&&odds<=1.90?2:odds>=1.25&&odds<1.50?1:odds>1.90&&odds<=2.50?3:odds>2.50?1:0,
+    edgePts=clamp(edge,-8,6)*.20;
+  return probability*.60+dq*.22+edgePts+tierPts+pricePts+marketPts;
+}
+function eliteLegQualityV79(x){
+  const odds=ticketPriceV70(x),
+    market=String(x?.market||"").toUpperCase(),
+    selection=String(x?.selection||"").toUpperCase(),
+    tier=num(x?.competitionTier,4),
+    p=ticketNormV70(x?.probability,0),
+    dq=ticketNormV70(x?.dataQuality,.7),
+    edgeRaw=x?.valueEdgePct??x?.valueEdge,
+    edge=(Math.abs(num(edgeRaw,0))<=1?num(edgeRaw,0)*100:num(edgeRaw,0))/100,
+    score=eliteConfidenceScoreV102(x);
+  if(!odds||odds<1.18||tier>2)return false;
+  if(dq<(tier===1?.64:.72))return false;
+  if(edge<(tier===1?-.08:-.05))return false;
+  let probabilityFloor=tier===1?.72:.76;
+  if(market==="MATCH_RESULT"&&["HOME","AWAY"].includes(selection))probabilityFloor=tier===1?.66:.70;
+  else if(market==="TOTAL_GOALS"&&selection==="OVER_1_5")probabilityFloor=tier===1?.74:.77;
+  else if(market==="TOTAL_GOALS"&&selection==="OVER_2_5")probabilityFloor=tier===1?.66:.69;
+  else if(market==="BTTS")probabilityFloor=tier===1?.66:.69;
+  else if(market==="HANDICAP"&&/PLUS_0_5/.test(selection))probabilityFloor=tier===1?.74:.77;
+  else if(market==="DOUBLE_CHANCE")probabilityFloor=tier===1?.78:.80;
+  else if(market==="TOTAL_GOALS"&&selection==="UNDER_4_5"){
+    probabilityFloor=tier===1?.86:.88;
+    if(odds<1.45)return false;
+  }else if(market==="HANDICAP"&&/(HOME|AWAY)_PLUS_1_5/.test(selection)){
+    probabilityFloor=tier===1?.86:.88;
+    if(odds<1.30)return false;
+  }
+  if(p<probabilityFloor)return false;
+  if(tier===1&&score<73.5)return false;
+  if(tier===2&&score<77)return false;
+  return true;
+}
 function ticketSelectionKeyV78(value){return String(value||"").trim().toUpperCase().replace(/(\d)\.(\d)/g,"$1_$2").replace(/[^A-Z0-9_]+/g,"_")}
 function oddsMarketsForBooksV81(payload,fixtureId,allowedBooks){const rows=Array.isArray(payload?.response)?payload.response:[],row=rows.find(x=>String(x?.fixture?.id??x?.fixture_id??x?.id)===String(fixtureId));if(!row)return[];const allowed=new Set(arr(allowedBooks).map(x=>String(x||"").toLowerCase().replace(/[^a-z0-9]/g,""))),out=[];for(const book of row.bookmakers||[]){const normalized=String(book?.name||"").toLowerCase().replace(/[^a-z0-9]/g,"");if(allowed.size&&!allowed.has(normalized))continue;for(const bet of book.bets||[]){const market=providerMarketName(bet.name);if(!market)continue;const outcomes=[];for(const v of bet.values||[]){const raw=String(v.value??v.name??""),selection=thresholdSelection(raw),odds=num(v.odd??v.odds,null);if(selection&&odds>1)outcomes.push({selection,rawSelection:raw,odds})}if(outcomes.length>=2)out.push({market,rawMarket:bet.name||market,bookmaker:book.name||null,outcomes})}}return groupMarketLinesV19(out)}
 function crossBookCheckV81(oddsPayload,fixtureId,market,selection,bet365Odds){const books=oddsMarketsForBooksV81(oddsPayload,fixtureId,["DraftKings","FanDuel"]),wantMarket=String(market||"").toUpperCase(),wantSelection=ticketSelectionKeyV78(selection),comparisons=[];for(const group of books){if(String(group?.market||"").toUpperCase()!==wantMarket)continue;for(const outcome of arr(group?.outcomes)){if(ticketSelectionKeyV78(outcome?.selection)!==wantSelection)continue;const odds=Number(outcome?.odds);if(odds>1)comparisons.push({bookmaker:group.bookmaker,odds,rawMarket:group.rawMarket,rawSelection:outcome.rawSelection})}}if(!comparisons.length)return{status:"BET365_ONLY",ok:true,comparisons:[],median:null,spreadPct:null};const vals=comparisons.map(x=>x.odds).sort((a,b)=>a-b),median=vals.length%2?vals[(vals.length-1)/2]:(vals[vals.length/2-1]+vals[vals.length/2])/2,spreadPct=Math.abs(Number(bet365Odds)/median-1)*100;return{status:spreadPct<=20?"CROSS_BOOK_VERIFIED":"CROSS_BOOK_MISMATCH",ok:spreadPct<=20,comparisons,median,spreadPct}}
