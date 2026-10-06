@@ -3166,10 +3166,23 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
       team.failedToScoreRate = num4(recent.failedToScoreRate, team.failedToScoreRate);
     }
   }, "applyRecent");
-  applyRecent(home, intel.homeRecent);
-  applyRecent(away, intel.awayRecent);
-  home.recentMatchContext = intel.homeRecent || null;
-  away.recentMatchContext = intel.awayRecent || null;
+  const homeRecentUsable = num(intel?.homeRecent?.matches,0) >= 3;
+  const awayRecentUsable = num(intel?.awayRecent?.matches,0) >= 3;
+  const balancedRecentContext = homeRecentUsable && awayRecentUsable;
+  // V104: recent-form enrichment must be symmetric. A pacing miss on one side
+  // must never let one team receive a fresh-form adjustment while the opponent
+  // remains on a different baseline. This was a real source of distorted 1X2
+  // views in Founder/model disagreement review.
+  if (balancedRecentContext) {
+    applyRecent(home, intel.homeRecent);
+    applyRecent(away, intel.awayRecent);
+  }
+  intel.recentContextBalanced = balancedRecentContext;
+  intel.recentContextHoldReason = balancedRecentContext
+    ? null
+    : "Recent-form adjustment held until both teams have comparable recent-match samples.";
+  home.recentMatchContext = balancedRecentContext ? intel.homeRecent : null;
+  away.recentMatchContext = balancedRecentContext ? intel.awayRecent : null;
   home.marketProfile = intel.homeMarketProfile || null;
   away.marketProfile = intel.awayMarketProfile || null;
   intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
@@ -6977,7 +6990,7 @@ async function refreshTodayScoreStateV66(env) {
   };
 }
 __name(refreshTodayScoreStateV66, "refreshTodayScoreStateV66");
-var TICKET_LOCK_REVISION_V78 = "2026-10-03-exact-market-tiers-v10";
+var TICKET_LOCK_REVISION_V78 = "2026-10-06-normalized-selection-quality-v11";
 function ticketNormV70(v, d = 0) {
   v = Number(v);
   return Number.isFinite(v) ? v > 1 ? v / 100 : v : d;
@@ -7017,7 +7030,7 @@ function ticketCompetitionTierV79(board, x) {
 }
 __name(ticketCompetitionTierV79, "ticketCompetitionTierV79");
 function ticketPremiumScoreV80(x) {
-  const probability = ticketNormV70(x?.probability, 0) * 100, dq = ticketNormV70(x?.dataQuality, 0.7) * 100, edgeRaw = x?.valueEdgePct ?? x?.valueEdge, edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0), tier = num4(x?.competitionTier, 4), odds = ticketPriceV70(x) || 0, market = String(x?.market || "").toUpperCase(), selection = String(x?.selection || "").toUpperCase();
+  const probability = ticketNormV70(x?.probability, 0) * 100, dq = ticketNormV70(x?.dataQuality, 0.7) * 100, edgeRaw = x?.valueEdgePct ?? x?.valueEdge, edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0), tier = num4(x?.competitionTier, 4), odds = ticketPriceV70(x) || 0, market = String(x?.market || "").toUpperCase(), selection = ticketSelectionKeyV78(x?.selection);
   let marketPts = 0;
   if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection))
     marketPts = 6;
@@ -7047,18 +7060,65 @@ function ticketPremiumScoreV80(x) {
   return probability * 0.45 + dq * 0.18 + Math.min(Math.max(edge, 0), 25) * 0.6 + tierPts + pricePts + marketPts;
 }
 __name(ticketPremiumScoreV80, "ticketPremiumScoreV80");
+function eliteConfidenceScoreV102(x) {
+  const probability = ticketNormV70(x?.probability, 0) * 100,
+    dq = ticketNormV70(x?.dataQuality, 0.7) * 100,
+    edgeRaw = x?.valueEdgePct ?? x?.valueEdge,
+    edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0),
+    tier = num4(x?.competitionTier, 4),
+    odds = ticketPriceV70(x) || 0,
+    market = String(x?.market || "").toUpperCase(),
+    selection = ticketSelectionKeyV78(x?.selection);
+  let marketPts = 0;
+  if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection)) marketPts = 3;
+  else if (market === "BTTS") marketPts = 2;
+  else if (market === "TOTAL_GOALS" && selection === "OVER_2_5") marketPts = 3;
+  else if (market === "TOTAL_GOALS" && selection === "OVER_3_5") marketPts = 2;
+  else if (market === "TOTAL_GOALS" && selection === "OVER_1_5") marketPts = 2;
+  else if (market === "TOTAL_GOALS" && selection === "UNDER_3_5") marketPts = 1;
+  else if (market === "TOTAL_GOALS" && selection === "UNDER_4_5") marketPts = -10;
+  else if (["HOME_TEAM_GOALS", "AWAY_TEAM_GOALS"].includes(market) && /OVER_(1_5|2_5)/.test(selection)) marketPts = 2;
+  else if (market === "HANDICAP" && /PLUS_1_5/.test(selection)) marketPts = -9;
+  else if (market === "HANDICAP" && /PLUS_0_5/.test(selection)) marketPts = 1;
+  else if (market === "HANDICAP" && /MINUS/.test(selection)) marketPts = 2;
+  else if (market === "DOUBLE_CHANCE") marketPts = -1;
+  const tierPts = tier === 1 ? 8 : tier === 2 ? 5 : 0,
+    pricePts = odds >= 1.50 && odds <= 1.90 ? 2 : odds >= 1.25 && odds < 1.50 ? 1 : odds > 1.90 && odds <= 2.50 ? 3 : odds > 2.50 ? 1 : 0,
+    edgePts = clamp4(edge, -8, 6) * 0.20;
+  return probability * 0.60 + dq * 0.22 + edgePts + tierPts + pricePts + marketPts;
+}
+__name(eliteConfidenceScoreV102, "eliteConfidenceScoreV102");
+
 function eliteLegQualityV79(x) {
-  const odds = ticketPriceV70(x), market = String(x?.market || "").toUpperCase(), selection = String(x?.selection || "").toUpperCase(), tier = num4(x?.competitionTier, 4), premium = ticketPremiumScoreV80(x);
-  if (!odds || odds < 1.18 || tier > 2)
-    return false;
-  if (market === "HANDICAP" && /(HOME|AWAY)_PLUS_1_5/.test(selection) && odds < 1.3)
-    return false;
-  if (market === "TOTAL_GOALS" && selection === "UNDER_4_5" && odds < 1.35)
-    return false;
-  if (tier === 1 && premium < 77)
-    return false;
-  if (tier === 2 && premium < 82)
-    return false;
+  const odds = ticketPriceV70(x),
+    market = String(x?.market || "").toUpperCase(),
+    selection = ticketSelectionKeyV78(x?.selection),
+    tier = num4(x?.competitionTier, 4),
+    p = ticketNormV70(x?.probability, 0),
+    dq = ticketNormV70(x?.dataQuality, 0.7),
+    edgeRaw = x?.valueEdgePct ?? x?.valueEdge,
+    edge = (Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0)) / 100,
+    score = eliteConfidenceScoreV102(x);
+  if (!odds || odds < 1.18 || tier > 2) return false;
+  if (dq < (tier === 1 ? 0.64 : 0.72)) return false;
+  if (edge < (tier === 1 ? -0.08 : -0.05)) return false;
+  let probabilityFloor = tier === 1 ? 0.72 : 0.76;
+  if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection)) probabilityFloor = tier === 1 ? 0.66 : 0.70;
+  else if (market === "TOTAL_GOALS" && selection === "OVER_1_5") probabilityFloor = tier === 1 ? 0.74 : 0.77;
+  else if (market === "TOTAL_GOALS" && selection === "OVER_2_5") probabilityFloor = tier === 1 ? 0.66 : 0.69;
+  else if (market === "BTTS") probabilityFloor = tier === 1 ? 0.66 : 0.69;
+  else if (market === "HANDICAP" && /PLUS_0_5/.test(selection)) probabilityFloor = tier === 1 ? 0.74 : 0.77;
+  else if (market === "DOUBLE_CHANCE") probabilityFloor = tier === 1 ? 0.78 : 0.80;
+  else if (market === "TOTAL_GOALS" && selection === "UNDER_4_5") {
+    probabilityFloor = tier === 1 ? 0.86 : 0.88;
+    if (odds < 1.45) return false;
+  } else if (market === "HANDICAP" && /(HOME|AWAY)_PLUS_1_5/.test(selection)) {
+    probabilityFloor = tier === 1 ? 0.86 : 0.88;
+    if (odds < 1.30) return false;
+  }
+  if (p < probabilityFloor) return false;
+  if (tier === 1 && score < 73.5) return false;
+  if (tier === 2 && score < 77) return false;
   return true;
 }
 __name(eliteLegQualityV79, "eliteLegQualityV79");
