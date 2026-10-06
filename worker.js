@@ -5972,13 +5972,13 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
   // This removes queue-load + rank + REST claim from the cron critical path.
   if (skipRecovery) {
     const freshResults = [];
-    const freshDeadline = Date.now() + 12500;
+    const freshDeadline = Date.now() + 17000;
     for (let step = 0; step < 3 && Date.now() < freshDeadline; step++) {
       const freshOwned = await timedV2(claimNextFreshJobV55(env), 3000, "atomic fresh claim").catch(() => null);
       if (!freshOwned) break;
       let result;
       try {
-        result = await timedV2(processOne(env, freshOwned), 11000,
+        result = await timedV2(processOne(env, freshOwned), 15000,
           "fresh fixture " + freshOwned.fixture_id + " analysis");
       } catch (e) {
         const msg = "V69 bounded fresh-cycle recovery: " + safeRefreshError(e);
@@ -6029,7 +6029,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     return {ok:true, skipped:true, cooldownActive:true, retryAt:num(pacing.blockedUntil), reason:'Provider cooldown', claimed:0, processed:0, freshTomorrowBacklog, freshBaselineBacklog, adaptiveBatch:cycleLimit, queue:queue.summary, results:[]};
   }
   const results = [];
-  const deadline = Date.now() + (freshBaselineBacklog > 0 ? 15000 : 13000);
+  const deadline = Date.now() + (freshBaselineBacklog > 0 ? 17500 : 17000);
   let claimed = 0;
   for (const candidate of candidates) {
     if (claimed >= cycleLimit || Date.now() >= deadline) break;
@@ -6051,7 +6051,7 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
     try {
       result = await timedV2(
         processOne(env, owned),
-        10000,
+        15000,
         "fixture " + owned.fixture_id + " analysis"
       );
     } catch (e) {
@@ -9245,7 +9245,7 @@ async function scheduledAnalysisV2(event, env) {
   try {
     result.model = await timedV2(
       processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-      14000,
+      19000,
       "analysis pass"
     );
   } catch (e) {
