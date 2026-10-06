@@ -2152,7 +2152,11 @@ function selectIndependent(analysis, marketOdds = [], competitionTier = 4) {
       return 3;
     if (x?.market === "TOTAL_GOALS" && s === "OVER_1_5")
       return 1;
-    if (x?.market === "HANDICAP" && /PLUS_1_5/.test(s))
+    if (x?.market === "TOTAL_GOALS" && (s === "UNDER_3_5" || s === "UNDER_4_5"))
+      return 0;
+    if (x?.market === "DOUBLE_CHANCE")
+      return 0;
+    if (x?.market === "HANDICAP" && /PLUS_(0_5|1_5)/.test(s))
       return 0;
     return 2;
   }, "audacityRank");
