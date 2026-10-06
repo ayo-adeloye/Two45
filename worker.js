@@ -4711,7 +4711,7 @@ async function founderFixtureV99(env,fixtureId){
 }
 async function founderMarketsV97(request,env,fixtureId){
   const user=await authenticatedUser(request,env);
-  if(!user?.id)return{httpStatus:401,body:{ok:false,code:"SIGN_IN_REQUIRED"}};
+  if(!user?.id)return{httpStatus:401,body:{ok:false,code:"SIGN_IN_REQUIRED",message:"Your Founder session has expired. Sign in again to publish a Founder’s Pick."}};
   if(!(await founderAuthorizedV95(env,user)))return{httpStatus:403,body:{ok:false,code:"FOUNDER_ONLY"}};
   const job=await founderFixtureV99(env,fixtureId).catch(()=>null);
   if(!job)return{httpStatus:404,body:{ok:false,code:"NOT_AVAILABLE",message:"Fixture not available."}};
