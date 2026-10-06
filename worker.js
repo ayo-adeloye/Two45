@@ -3039,12 +3039,18 @@ async function optionalIntelligenceV21(env, job) {
   const cached = await getFeedSnapshot(env, key);
   const age = cached ? Date.now() - Date.parse(cached.refreshed_at) : Infinity;
   const ttl = hours <= 3 ? 2 * 36e5 : hours <= 18 ? 4 * 36e5 : 8 * 36e5;
-  if (cached && age < ttl)
-    return cached.payload || { source: "cache", enriched: false };
-  const out = { source: "API-Football enrichment", enriched: true, fixtureId, generatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  const cachedPayload = cached?.payload || null;
+  const cachedHomeRecent = num4(cachedPayload?.homeRecent?.matches, 0) >= 3;
+  const cachedAwayRecent = num4(cachedPayload?.awayRecent?.matches, 0) >= 3;
+  const cachedRecentBalanced = cachedHomeRecent && cachedAwayRecent;
+  if (cached && age < ttl && cachedRecentBalanced)
+    return cachedPayload || { source: "cache", enriched: false };
+  if (cached && age < 6e4)
+    return cachedPayload || { source: "cache", enriched: false };
+  const out = cachedPayload ? { ...cachedPayload, source: "API-Football enrichment", enriched: true, fixtureId, generatedAt: (/* @__PURE__ */ new Date()).toISOString() } : { source: "API-Football enrichment", enriched: true, fixtureId, generatedAt: (/* @__PURE__ */ new Date()).toISOString() };
   let homeRecentFixtures = [];
   let awayRecentFixtures = [];
-  try {
+  if (!cachedHomeRecent) try {
     const recent = await football(env, "/fixtures", { league: job.provider_league_id, season: job.season, team: job.home_team_id, last: 8 });
     homeRecentFixtures = arr2(recent.response);
     out.homeRecent = summarizeRecentV211(homeRecentFixtures, Number(job.home_team_id));
@@ -3056,10 +3062,11 @@ async function optionalIntelligenceV21(env, job) {
         out.homeRecentSource = "all-competitions";
       }
     }
+    delete out.homeRecentError;
   } catch (e) {
     out.homeRecentError = safeRefreshError(e);
   }
-  try {
+  if (!cachedAwayRecent) try {
     const recent = await football(env, "/fixtures", { league: job.provider_league_id, season: job.season, team: job.away_team_id, last: 8 });
     awayRecentFixtures = arr2(recent.response);
     out.awayRecent = summarizeRecentV211(awayRecentFixtures, Number(job.away_team_id));
@@ -3071,6 +3078,7 @@ async function optionalIntelligenceV21(env, job) {
         out.awayRecentSource = "all-competitions";
       }
     }
+    delete out.awayRecentError;
   } catch (e) {
     out.awayRecentError = safeRefreshError(e);
   }
