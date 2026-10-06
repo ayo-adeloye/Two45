@@ -3444,10 +3444,22 @@ function applyOptionalIntelligenceV21(home, away, intel, job) {
       team.failedToScoreRate = num(recent.failedToScoreRate, team.failedToScoreRate);
     }
   };
-  applyRecent(home, intel.homeRecent);
-  applyRecent(away, intel.awayRecent);
-  home.recentMatchContext = intel.homeRecent || null;
-  away.recentMatchContext = intel.awayRecent || null;
+  const homeRecentUsable = num(intel?.homeRecent?.matches,0) >= 3;
+  const awayRecentUsable = num(intel?.awayRecent?.matches,0) >= 3;
+  const balancedRecentContext = homeRecentUsable && awayRecentUsable;
+  // V104: recent-form enrichment must be symmetric. A pacing miss on one side
+  // must never let one team receive a fresh-form adjustment while the opponent
+  // remains on a different baseline.
+  if (balancedRecentContext) {
+    applyRecent(home, intel.homeRecent);
+    applyRecent(away, intel.awayRecent);
+  }
+  intel.recentContextBalanced = balancedRecentContext;
+  intel.recentContextHoldReason = balancedRecentContext
+    ? null
+    : "Recent-form adjustment held until both teams have comparable recent-match samples.";
+  home.recentMatchContext = balancedRecentContext ? intel.homeRecent : null;
+  away.recentMatchContext = balancedRecentContext ? intel.awayRecent : null;
   home.marketProfile = intel.homeMarketProfile || null;
   away.marketProfile = intel.awayMarketProfile || null;
   intel.shadowMarketModel = shadowMarketProbabilitiesV40(home.marketProfile, away.marketProfile);
