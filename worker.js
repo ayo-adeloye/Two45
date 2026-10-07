@@ -1414,7 +1414,7 @@ __name(normalizeRecordRowV20, "normalizeRecordRowV20");
 async function recordHistoryV20(env, limit = 250) {
   const rowsRaw = await sb(
     env,
-    `two45_model_forecasts?decision=eq.PICK&selection=neq.NO_BET&select=*&order=kickoff_at.desc&limit=${Math.max(1, Math.min(limit, 1e3))}`
+    `two45_model_forecasts?decision=eq.PICK&selection=neq.NO_BET&select=id,fixture_id,kickoff_at,competition,home_team,away_team,market,selection,sportsbook_odds,probability,confidence_tier,result,score,settled_at,updated_at,created_at&order=kickoff_at.desc&limit=${Math.max(1, Math.min(limit, 1e3))}`
   );
   const rows = Array.isArray(rowsRaw) ? rowsRaw.map((x) => normalizeRecordRowV20(x, "published_pick")) : [];
   const seen = /* @__PURE__ */ new Set();
@@ -7660,11 +7660,10 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
   result.watchdog = await runAnalysisWatchdogV2(env);
-  try {
-    result.learning = await refreshLearningLoopV82(env);
-  } catch (e) {
-    result.maintenance.push({ ok: false, stage: "learning-loop", error: safeRefreshError(e) });
-  }
+  // V115 egress guard: learning is settlement-driven below (every 15 minutes).
+  // Running it every minute re-downloaded up to 1,000 full forecast rows, including
+  // large JSON analysis fields, without improving model freshness.
+  result.learning = { ok: true, deferred: true, cadence: "settlement-15m" };
   try {
     result.ticketLocks = await ensureTicketLocksV70(env);
   } catch (e) {
