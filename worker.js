@@ -5115,6 +5115,52 @@ async function refreshLearningLoopV82(env) {
   return { ok: true, newReviews: Math.max(0, after - before), profiles: Object.keys(next.profiles || {}).length, updatedAt: next.updatedAt };
 }
 __name(refreshLearningLoopV82, "refreshLearningLoopV82");
+async function settleFounderStatMarketsV114(env) {
+  const rows = await sb(env, "two45_founder_picks?status=eq.PUBLISHED&result=is.null&select=id,fixture_id,market,selection,published_odds&limit=25").catch(() => []);
+  let settled = 0;
+  for (const pick of arr2(rows)) {
+    const market = String(pick?.market || "").toUpperCase();
+    if (!["HOME_CARDS", "AWAY_CARDS", "TOTAL_CARDS"].includes(market)) continue;
+    const fixtureId = Math.trunc(num4(pick?.fixture_id, 0));
+    if (!fixtureId) continue;
+    try {
+      const payload = await providerFetchV18(env, "fixtures/statistics", { fixture: String(fixtureId) });
+      const teams = arr2(payload?.response);
+      if (teams.length < 2) continue;
+      const statValue = (team, names) => {
+        const row = arr2(team?.statistics).find((x) => names.includes(String(x?.type || "").toLowerCase()));
+        const n = Number(row?.value);
+        return Number.isFinite(n) ? n : null;
+      };
+      const yellowNames = ["yellow cards"];
+      const redNames = ["red cards"];
+      const cardTotal = (team) => {
+        const y = statValue(team, yellowNames), r = statValue(team, redNames);
+        if (y == null && r == null) return null;
+        return num4(y, 0) + num4(r, 0);
+      };
+      const homeCards = cardTotal(teams[0]), awayCards = cardTotal(teams[1]);
+      const totalCards = homeCards != null && awayCards != null ? homeCards + awayCards : null;
+      const actual = market === "HOME_CARDS" ? homeCards : market === "AWAY_CARDS" ? awayCards : totalCards;
+      if (actual == null) continue;
+      const selection = ticketSelectionKeyV78(pick?.selection);
+      const m = selection.match(/^(OVER|UNDER)_([0-9]+)_([05])$/);
+      if (!m) continue;
+      const line = Number(m[2] + "." + m[3]);
+      const win = m[1] === "OVER" ? actual > line : actual < line;
+      const result = win ? "WIN" : "LOSS";
+      const profit = win ? num4(pick?.published_odds, 1) - 1 : -1;
+      await sb(env, `two45_founder_picks?id=eq.${encodeURIComponent(pick.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "SETTLED", result, profit_units: profit, settled_at: new Date().toISOString() })
+      });
+      settled++;
+    } catch (_) {}
+  }
+  return settled;
+}
+__name(settleFounderStatMarketsV114, "settleFounderStatMarketsV114");
+
 async function settle(env) {
   const result = await sb(
     env,
@@ -5126,13 +5172,14 @@ async function settle(env) {
       })
     }
   );
+  const founderStatsSettled = await settleFounderStatMarketsV114(env).catch(() => 0);
   let learning = null;
   try {
     learning = await refreshLearningLoopV82(env);
   } catch (e) {
     learning = { ok: false, error: String(e?.message || e).slice(0, 240) };
   }
-  return { settlement: result, learning };
+  return { settlement: result, founderStatsSettled, learning };
 }
 __name(settle, "settle");
 async function modelStatus(env) {
