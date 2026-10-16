@@ -1404,7 +1404,7 @@ function normalizeRecordRowV20(row, source) {
     probability: num4(firstDefinedV20(row, ["probability", "model_probability"]), null),
     confidence: firstDefinedV20(row, ["confidence_tier", "band", "confidence"]),
     result,
-    score: firstDefinedV20(row, ["score", "final_score"]),
+    score: row.final_home_score != null && row.final_away_score != null ? `${row.final_home_score}-${row.final_away_score}` : firstDefinedV20(row, ["score", "final_score"]),
     settledAt: firstDefinedV20(row, ["settled_at", "completed_at", "updated_at"]),
     createdAt: firstDefinedV20(row, ["created_at", "published_at", "kickoff_at"]),
     raw: row
@@ -1414,7 +1414,7 @@ __name(normalizeRecordRowV20, "normalizeRecordRowV20");
 async function recordHistoryV20(env, limit = 250) {
   const rowsRaw = await sb(
     env,
-    `two45_model_forecasts?decision=eq.PICK&selection=neq.NO_BET&select=id,fixture_id,kickoff_at,competition,home_team,away_team,market,selection,sportsbook_odds,probability,confidence_tier,result,score,settled_at,updated_at,created_at&order=kickoff_at.desc&limit=${Math.max(1, Math.min(limit, 1e3))}`
+    `two45_model_forecasts?decision=eq.PICK&selection=neq.NO_BET&select=id,fixture_id,kickoff_at,competition,home_team,away_team,market,selection,sportsbook_odds,probability,confidence_tier,outcome,final_home_score,final_away_score,settled_at,created_at&order=kickoff_at.desc,created_at.desc&limit=${Math.max(1, Math.min(limit, 1e3))}`
   );
   const rows = Array.isArray(rowsRaw) ? rowsRaw.map((x) => normalizeRecordRowV20(x, "published_pick")) : [];
   const seen = /* @__PURE__ */ new Set();
@@ -4250,6 +4250,28 @@ async function claimSpecificJob(env, job) {
   return owned;
 }
 __name(claimSpecificJob, "claimSpecificJob");
+// Read-only polling: never sync, claim, process, or call the paid provider.
+async function fixtureAnalysisStatus(request, env, fixtureId) {
+  if (!Number.isSafeInteger(fixtureId) || fixtureId <= 0)
+    return { httpStatus: 400, body: { ok: false, code: "INVALID_FIXTURE", message: "A valid fixture ID is required." } };
+  const user = await authenticatedUser(request, env);
+  if (!user?.id)
+    return { httpStatus: 401, body: { ok: false, code: "SIGN_IN_REQUIRED", message: "Sign in to view analysis." } };
+  const canonical = await currentCanonicalAnalysisV2(env, fixtureId);
+  const forecast = canonicalForecastV2(canonical);
+  if (forecast && !canonical.refreshing)
+    return { httpStatus: 200, body: { ok: true, status: "READY", fixtureId, forecast, source: "canonical-analysis-v2" } };
+  // Only small job metadata is needed when the canonical result is not ready.
+  const jobs = await sb(env, `two45_feature_jobs?fixture_id=eq.${fixtureId}&select=status,kickoff_at&order=requested_at.desc&limit=1`);
+  const job = arr2(jobs)[0];
+  if (job && !dateAllowedV19(dateOfV19(job.kickoff_at)))
+    return { httpStatus: 202, body: { ok: true, status: "WAITING", fixtureId, message: "Tomorrow analysis opens at 8 PM Eastern." } };
+  if (!canonical && !job)
+    return { httpStatus: 404, body: { ok: false, code: "NOT_QUEUED", message: "This fixture is not currently queued for analysis." } };
+  if (canonical?.status === "FAILED" && !canonical.refreshing)
+    return { httpStatus: 200, body: { ok: true, status: "FAILED", fixtureId, message: "Analysis could not finish. Two45 will retry through its background queue." } };
+  return { httpStatus: 202, body: { ok: true, status: "QUEUED", fixtureId, retryAfterSeconds: 15, message: canonical?.status === "PROCESSING" || canonical?.refreshing ? "Analysis is running. This view will update automatically." : "Analysis is queued. This view will update automatically." } };
+}
 async function analyzeFixtureOnDemand(request, env) {
   const user = await authenticatedUser(
     request,
@@ -8108,6 +8130,10 @@ var worker_default = {
       }
       if (url.pathname === "/api/founder/elite-suggest" && request.method === "POST") {
         const result = await founderSuggestEliteV95(request, env);
+        return json(result.body, result.httpStatus);
+      }
+      if (url.pathname === "/api/model/analysis-status" && request.method === "GET") {
+        const result = await fixtureAnalysisStatus(request, env, Number(url.searchParams.get("fixtureId")));
         return json(result.body, result.httpStatus);
       }
       if (url.pathname === "/api/model/analyze" && request.method === "POST") {
