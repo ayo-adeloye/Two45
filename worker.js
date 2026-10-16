@@ -4349,12 +4349,38 @@ async function analyzeFixtureOnDemand(request, env) {
     return { httpStatus: 202, body: { ok: true, status: "WAITING", fixtureId, waitingUntil: "20:00 America/New_York" } };
   }
   if (!job) {
+    // Tier 4 is intentionally excluded from automatic queue discovery.
+    // Only a signed-in Ask Two45 request may create this manual job.
+    for (const date of activeDatesV19()) {
+      const snapshot = await fixtureSnapshotV19(env, date);
+      const fixture = snapshot.fixtures.find((f) => fixtureIdV19(f) === fixtureId);
+      if (!fixture) continue;
+      const tier = competitionTierV21(fixture?.league?.name, fixture?.league?.id);
+      const gameStatus = fixture?.fixture?.status?.short;
+      if (tier !== 4 || dateOfV19(fixture?.fixture?.date) !== date ||
+          !(UPCOMING_STATUSES.has(gameStatus) || LIVE_STATUSES.has(gameStatus)) ||
+          !Number(fixture?.league?.id) || !Number(fixture?.league?.season) ||
+          !Number(fixture?.teams?.home?.id) || !Number(fixture?.teams?.away?.id)) break;
+      const manualJob = jobFromFixtureV19(fixture, date, new Date().toISOString());
+      manualJob.metadata.queued_by = "manual-ask-two45";
+      // Idempotent insert prevents repeated taps from duplicating API work.
+      await sb(env, "two45_feature_jobs?on_conflict=job_key", {
+        method: "POST",
+        prefer: "resolution=ignore-duplicates,return=representation",
+        body: JSON.stringify([manualJob])
+      });
+      job = await jobForFixture(env, fixtureId);
+      if (job) await ensureAnalysisRowsV2(env, [job]);
+      break;
+    }
+  }
+  if (!job) {
     return {
       httpStatus: 404,
       body: {
         ok: false,
         code: "NOT_QUEUED",
-        message: "This fixture is not currently available to the Independent Model."
+        message: "This fixture is not available for a manual review. Check its kickoff time or current status."
       }
     };
   }
