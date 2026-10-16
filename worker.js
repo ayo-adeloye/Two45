@@ -7625,8 +7625,20 @@ function weekendAnchorV70() {
   return null;
 }
 __name(weekendAnchorV70, "weekendAnchorV70");
-async function buildWeekendLockV70(env, satDate, rebuildReason = null) {
+async function buildWeekendLockV70(env, satDate, rebuildReason = null, previousLock = null) {
   const sunDate = datePlusDays(satDate, 1), values = await Promise.all([ticketBoardV70(env, satDate), ticketBoardV70(env, sunDate), getFeedSnapshot(env, oddsKey(satDate)).catch(() => null), getFeedSnapshot(env, oddsKey(sunDate)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), satBoard = values[0], sunBoard = values[1], satOddsRow = values[2], sunOddsRow = values[3], learning = values[4]?.payload || {}, ranked = [...ticketPoolBoardVerifiedV78(satBoard, "Sat", satOddsRow?.payload || {}, false, learning), ...ticketPoolBoardVerifiedV78(sunBoard, "Sun", sunOddsRow?.payload || {}, false, learning)].sort((a, b2) => b2._ticketScore - a._ticketScore).slice(0, 24), dailySnap = await getFeedSnapshot(env, "ticket-lock:daily:" + satDate).catch(() => null), reserved = new Set(arr2(dailySnap?.payload?.ticket?.legs).map((x) => String(x.fixtureId || x.providerMatchId || "")).filter(Boolean)), pool = reserved.size ? ranked.filter((x) => !reserved.has(String(x.fixtureId || x.providerMatchId || ""))) : ranked, fiveTry = ticketOptimizeV70(pool, 5, 4.75, 5.5, 2, 5), tenTry = ticketOptimizeV70(pool, 10, 9, 11, 3, 7), fiftyTry = ticketOptimizeV70(pool, 50, 45, 55, 4, 9), five = fiveTry?.targetMet ? fiveTry : null, ten = tenTry?.targetMet ? tenTry : null, fifty = fiftyTry?.targetMet ? fiftyTry : null, weekendReady = Boolean(five && ten && fifty), at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, [...arr2(five?.legs), ...arr2(ten?.legs), ...arr2(fifty?.legs)]), payload = { ok: true, type: "weekend", saturday: satDate, sunday: sunDate, status: weekendReady ? "LOCKED" : "BUILDING", lockedAt: weekendReady ? at : null, immutable: weekendReady, revision: TICKET_LOCK_REVISION_V78, rebuiltForPricingIntegrity: Boolean(rebuildReason), rebuildReason: rebuildReason || null, saturdayOddsSnapshotUpdatedAt: satOddsRow?.payload?.updatedAt || satOddsRow?.refreshed_at || null, sundayOddsSnapshotUpdatedAt: sunOddsRow?.payload?.updatedAt || sunOddsRow?.refreshed_at || null, tickets: { five: lockTicketV70(five, at, b), ten: lockTicketV70(ten, at, b), fifty: lockTicketV70(fifty, at, b) }, candidateCount: pool.length, eliteReservedCount: reserved.size, rule: "Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder." };
+  // A published rung is immutable even while the other targets keep building.
+  if (!rebuildReason && previousLock?.revision === TICKET_LOCK_REVISION_V78 && previousLock?.saturday === satDate) {
+    for (const rung of ["five", "ten", "fifty"]) {
+      const previous = previousLock.tickets?.[rung];
+      if (previous?.locked && previous?.targetMet && previous?.legs?.length) payload.tickets[rung] = previous;
+    }
+  }
+  const lockedRungs = Object.values(payload.tickets).filter(Boolean);
+  payload.status = lockedRungs.length === 3 ? "LOCKED" : lockedRungs.length ? "PARTIAL" : "BUILDING";
+  payload.lockedAt = lockedRungs.length === 3 ? previousLock?.lockedAt || at : null;
+  payload.immutable = lockedRungs.length === 3;
+  payload.rule = "Each qualified rung freezes independently; missing targets keep building. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder.";
   await saveFeedSnapshot(env, "ticket-lock:weekend:" + satDate, payload, 432e3);
   return payload;
 }
@@ -7651,7 +7663,7 @@ async function ensureTicketLocksV70(env) {
   if (sat && (day === "Sat" && hour >= 6 || day === "Sun") && (!w || weekendStale || w?.payload?.status !== "LOCKED")) {
     if (weekendStale && w?.payload?.status === "LOCKED")
       await archiveTicketLockV78(env, "weekend", sat, w);
-    w = { payload: await buildWeekendLockV70(env, sat, weekendStale ? "quality-revision" : null) };
+    w = { payload: await buildWeekendLockV70(env, sat, weekendStale ? "quality-revision" : null, weekendStale ? null : w?.payload) };
   }
   return { daily: d?.payload || null, weekend: w?.payload || null };
 }
