@@ -1,0 +1,32 @@
+const {chromium}=require('playwright');
+const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
+(async()=>{
+ const browser=await chromium.launch({headless:true,...(process.env.TWO45_BROWSER_PATH?{executablePath:process.env.TWO45_BROWSER_PATH}:{})});
+ const context=await browser.newContext({viewport:{width:390,height:844},permissions:['clipboard-read','clipboard-write']});
+ const page=await context.newPage();let requests=[];
+ const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+ await page.route('**/*',async route=>{requests.push(route.request().url());if(route.request().url()==='https://two45.test/')return route.fulfill({contentType:'text/html',body:html});return route.fulfill({contentType:'application/json',body:'{"games":[],"strongPicks":[]}'});});
+ await page.goto('https://two45.test/');await page.waitForTimeout(100);
+ const leg={fixtureId:42,home:'Alpha <United>',away:'Beta',league:'Test League',kickoff:'2026-10-18T15:00:00Z',market:'TOTAL_GOALS',selection:'OVER_2_5',sportsbookOdds:1.75,_ticketOdds:1.75,bookmaker:'Bet365',decision:'PICK',pickType:'STRONG_PICK'};
+ const original=JSON.stringify(leg);
+ await page.evaluate(leg=>ticketModal('Elite 3',{legs:[leg,{...leg,fixtureId:43,home:'Gamma',market:'HANDICAP',selection:'AWAY_PLUS_1_5'}],locked:true,combined:3.0625}),leg);
+ await page.locator('.sportsbookSelect').selectOption('draftkings');
+ assert.equal(await page.locator('.openSportsbook').getAttribute('href'),'https://sportsbook.draftkings.com/');
+ await page.locator('.copyCompleteTicket').click();
+ const copied=await page.evaluate(()=>navigator.clipboard.readText());
+ for(const value of ['Alpha <United> vs Beta','Fixture ID: 42','2026-10-18T15:00:00Z','Market: TOTAL_GOALS','Selection: OVER_2_5','AWAY_PLUS_1_5','1.75','3.06','DraftKings','does not populate'])assert(copied.includes(value),value);
+ assert.equal(await page.locator('.sportsbookTransfer img').count(),0);
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.reload();await page.waitForTimeout(100);
+ await page.evaluate(leg=>openForecastDetail(leg),leg);
+ assert.equal(await page.locator('.sportsbookSelect').inputValue(),'draftkings');
+ await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async()=>{throw Error('Denied')}}}));
+ await page.locator('.copyCompleteTicket').click();assert(await page.locator('.manualTicket').isVisible());
+ assert((await page.locator('textarea').inputValue()).includes('High Conviction'));
+ for(const title of ['Weekend 5x','Weekend 10x','Weekend 50x']){await page.evaluate(({title,leg})=>ticketModal(title,{legs:[leg],combined:1.75,locked:true}),{title,leg});assert((await page.locator('textarea').inputValue()).includes(title));}
+ await page.evaluate(()=>ticketModal('Elite 3',null));assert.equal(await page.locator('.sportsbookTransfer').count(),0);
+ await page.evaluate(leg=>openForecastDetail({...leg,decision:'NO_BET'}),leg);assert.equal(await page.locator('.sportsbookTransfer').count(),0);
+ assert.equal(JSON.stringify(leg),original);
+ assert(requests.every(url=>url==='https://two45.test/'||url.startsWith('https://two45-live-worker.adekunlasia.workers.dev/api/')));
+ await browser.close();console.log('PASS: mobile transfer, all ticket types, exact tuples, clipboard success/denial, persistent preference, official links, empty/NO_BET states, escaping, no sportsbook API');
+})().catch(e=>{console.error(e);process.exit(1)});
