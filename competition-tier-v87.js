@@ -44,7 +44,7 @@ export function competitionTierV87(value, leagueId) {
       n === "la liga" ||
       n === "serie a" ||
       n === "bundesliga" ||
-      n === "ligue 1" ||
+      (n === "ligue 1" && id === 61) ||
       /\buefa nations league\b/.test(n) ||
       /\bnations league\b/.test(n) ||
       n === "copa america" ||

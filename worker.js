@@ -195,7 +195,7 @@ function competitionTierV87(value, leagueId) {
     return 2;
   if (/\b(frauen bundesliga|serie a women|eredivisie women|womens super league|liga f)\b/.test(n))
     return 2;
-  if (/\buefa champions league\b/.test(n) || n === "la liga" || n === "serie a" || n === "bundesliga" || n === "ligue 1" || /\buefa nations league\b/.test(n) || /\bnations league\b/.test(n) || n === "copa america" || /\bafrica cup of nations\b/.test(n) || n === "afcon")
+  if (/\buefa champions league\b/.test(n) || n === "la liga" || n === "serie a" || n === "bundesliga" || (n === "ligue 1" && id === 61) || /\buefa nations league\b/.test(n) || /\bnations league\b/.test(n) || n === "copa america" || /\bafrica cup of nations\b/.test(n) || n === "afcon")
     return 1;
   if (/\bworld cup qualif/.test(n) || /\bworld cup qualifiers/.test(n) || /\beuro qualif/.test(n) || /\beuropean championship qualif/.test(n))
     return 2;

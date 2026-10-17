@@ -1,6 +1,13 @@
 import { competitionTierV87 } from "./competition-tier-v87.js";
 
 const cases = [
+  ["Ligue 1",61,1],
+  ["Ligue 1",403,4], // Senegal must not inherit France
+  ["Ligue 1",202,4], // Tunisia
+  ["Ligue 1",186,4], // Algeria
+  ["Ligue 1",423,4], // Burkina Faso
+  ["Ligue 1",undefined,4],
+  ["La Liga",140,1],
   ["UEFA Nations League",5,1],
   ["Premier League",39,1],
   ["Mongolia Premier League",9999,4],
