@@ -7221,7 +7221,7 @@ function eliteLegQualityV79(x) {
     score = eliteConfidenceScoreV102(x);
   if (!odds || odds < 1.18 || tier > 2) return false;
   if (dq < (tier === 1 ? 0.64 : 0.72)) return false;
-  if (edge < (tier === 1 ? -0.08 : -0.05)) return false;
+  if (!Number.isFinite(edge) || edge <= 0) return false;
   let probabilityFloor = tier === 1 ? 0.72 : 0.76;
   if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection)) probabilityFloor = tier === 1 ? 0.66 : 0.70;
   else if (market === "TOTAL_GOALS" && selection === "OVER_1_5") probabilityFloor = tier === 1 ? 0.74 : 0.77;
@@ -7450,6 +7450,7 @@ function ticketOptimizeV70(pool, target, low, high, minLegs, maxLegs, requireTie
     if (legs.length >= maxLegs || combined > high * 1.75)
       return;
     for (let i = start; i < pool.length; i++) {
+      if (legs.some((leg) => String(leg.fixtureId ?? leg.providerMatchId) === String(pool[i].fixtureId ?? pool[i].providerMatchId))) continue;
       const next = combined * pool[i]._ticketOdds;
       if (next > Math.max(high * 1.75, target * 1.75))
         continue;
@@ -7593,7 +7594,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
     return payload2;
   }
-  const pool = verifiedPool.filter(eliteLegQualityV79).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3.125, 3, 3.25, 1, 9, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3.125, 3, 3.25, 1, 9, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, t?.legs || []), payload = {
+  const pool = verifiedPool.filter(eliteLegQualityV79).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, t?.legs || []), payload = {
     ok: true,
     type: "daily",
     date,
@@ -7607,8 +7608,8 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
     ticket: lockTicketV70(t, at, b),
     candidateCount: pool.length,
-    pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: pool.length },
-    rule: "Frozen after publication. Every leg is exact Bet365 verified. Elite can use fresh fixture-level Bet365 verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 3.00-3.25 target is genuinely met."
+    pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: pool.length, rejectedQuality: verifiedPool.length - pool.length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
+    rule: "Frozen after publication. Every leg is exact Bet365 verified. Elite can use fresh fixture-level Bet365 verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
   };
   await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload, 259200);
   return payload;
@@ -7652,7 +7653,7 @@ async function ensureTicketLocksV70(env) {
   const hour = easternHour(), date = activeDailyTicketDateV93();
   let d = await getFeedSnapshot(env, "ticket-lock:daily:" + date).catch(() => null);
   const dailyStale = Boolean(d?.payload && d.payload.revision !== TICKET_LOCK_REVISION_V78);
-  if ((!d || dailyStale || d?.payload?.status !== "LOCKED") && hour >= 6) {
+  if (!d || dailyStale || d?.payload?.status !== "LOCKED") {
     if (dailyStale && d?.payload?.status === "LOCKED")
       await archiveTicketLockV78(env, "daily", date, d);
     d = { payload: await buildDailyLockV70(env, date, dailyStale ? "quality-revision" : null) };
@@ -7660,7 +7661,7 @@ async function ensureTicketLocksV70(env) {
   const sat = weekendAnchorV70(), day = easternWeekday();
   let w = sat ? await getFeedSnapshot(env, "ticket-lock:weekend:" + sat).catch(() => null) : null;
   const weekendStale = Boolean(w?.payload && w.payload.revision !== TICKET_LOCK_REVISION_V78);
-  if (sat && (day === "Sat" && hour >= 6 || day === "Sun") && (!w || weekendStale || w?.payload?.status !== "LOCKED")) {
+  if (sat && (day === "Sat" || day === "Sun") && (!w || weekendStale || w?.payload?.status !== "LOCKED")) {
     if (weekendStale && w?.payload?.status === "LOCKED")
       await archiveTicketLockV78(env, "weekend", sat, w);
     w = { payload: await buildWeekendLockV70(env, sat, weekendStale ? "quality-revision" : null, weekendStale ? null : w?.payload) };
