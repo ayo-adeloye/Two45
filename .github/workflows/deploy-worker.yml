@@ -10,7 +10,27 @@ on:
       - '.github/workflows/deploy-worker.yml'
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate selection and publication invariants
+        run: |
+          node selection-v2.test.mjs
+          node tests/publication-v2.cjs
+          node tests/record-ask.cjs
+          node tests/tightening.cjs
+          node tests/weekend-lock.mjs
+          node competition-tier-v87.test.mjs
+          node scripts/bundle-selection-v2.mjs
+          git diff --exit-code worker.js
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,3 +43,13 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+      - name: Prepare frontend
+        run: |
+          mkdir -p public
+          cp index.html public/index.html
+      - name: Deploy publication scope notice
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy public --project-name two45 --branch main
