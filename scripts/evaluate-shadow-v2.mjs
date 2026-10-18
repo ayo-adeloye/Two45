@@ -32,13 +32,13 @@ export function evaluate(rows) {
   const p=r.payload||{}, c=p.primary?.[0];
   if(c?.eligible) {
    const outcome=grade(c.market,c.selection,r.final_home_score,r.final_away_score);
-   if(outcome)selected.push({...c,outcome,sportsbook_odds:c.odds,fixture_id:r.fixture_id});
+   if(outcome)selected.push({...c,legacyProbability:p.legacy?.probabilities?.[c.market]?.[c.selection]??null,outcome,sportsbook_odds:c.odds,fixture_id:r.fixture_id});
   }
   const decision=p.legacyResearchDecision;
   const b=p.candidates?.find(c=>c.market===decision?.market&&c.selection===canonical(decision?.selection));
   if(decision?.decision==='PICK'&&b?.odds>1) {
    const outcome=grade(b.market,b.selection,r.final_home_score,r.final_away_score);
-   if(outcome)legacy.push({...b,outcome,sportsbook_odds:b.odds,fixture_id:r.fixture_id});
+   if(outcome)legacy.push({...b,rawProbability:p.legacy?.probabilities?.[b.market]?.[b.selection]??b.rawProbability,outcome,sportsbook_odds:b.odds,fixture_id:r.fixture_id});
   }
  }
  const paired=selected.filter(c=>c.marketProbability>0&&c.marketProbability<1);
@@ -50,7 +50,7 @@ export function evaluate(rows) {
  if(!(candidate.roi>0&&candidate.roi>baseline.roi))reasons.push('ROI_NOT_ABOVE_ZERO_AND_LEGACY');
  if(!(calibratedOnPaired.brier<rawOnSameSelections.brier&&calibratedOnPaired.brier<market.brier&&calibratedOnPaired.logLoss<rawOnSameSelections.logLoss&&calibratedOnPaired.logLoss<market.logLoss))reasons.push('PROPER_SCORES_NOT_BETTER_THAN_BOTH_BASELINES');
  reasons.push('REQUIRE_FROZEN_HOLDOUT_AND_FIXTURE_DAY_BLOCK_CONFIDENCE_INTERVAL_REVIEW');
- return {snapshotRule:'Latest snapshot at least one hour before kickoff; one primary per fixture',fixtures:frozen.size,candidate,baseline,rawOnSameSelections,calibratedOnPaired,market,paired:paired.length,byMarket:Object.fromEntries([...new Set(selected.map(x=>x.market))].map(m=>[m,scoreRows(selected.filter(x=>x.market===m),c=>c.probability)])),promotion:{allowed:false,reasons}};
+ return {snapshotRule:'Latest snapshot at least one hour before kickoff; one primary per fixture',fixtures:frozen.size,candidate,baseline,legacyOnSameSelections:scoreRows(paired,c=>c.legacyProbability),rawOnSameSelections,calibratedOnPaired,market,paired:paired.length,byMarket:Object.fromEntries([...new Set(selected.map(x=>x.market))].map(m=>[m,scoreRows(selected.filter(x=>x.market===m),c=>c.probability)])),promotion:{allowed:false,reasons}};
 }
 if(process.argv[1]?.endsWith('evaluate-shadow-v2.mjs')) {
  if(!process.argv[2])throw Error('Usage: node scripts/evaluate-shadow-v2.mjs shadow-export.json [report.json]');
