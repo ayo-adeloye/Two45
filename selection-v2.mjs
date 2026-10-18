@@ -65,15 +65,18 @@ export function generateCandidates(analysis, quotes, calibration, context) {
       const cell = calibration?.groups?.[calibrationKey(market,key,context.modelVersion)];
       const probability = rawProbability == null ? null : clip(rawProbability + (cell?.offset || 0));
       const matches = quotes.filter(q => String(q.fixtureId) === String(context.fixtureId) && q.market === market && canonical(q.selection) === key && String(q.bookmaker).replace(/[^a-z0-9]/gi,'').toLowerCase() === 'bet365');
-      const valid = matches.filter(q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const fresh = q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff)
+        && (!context.requireProviderQuoteTime || (Date.parse(q.providerUpdatedAt)<=Date.parse(q.observedAt) && context.now-Date.parse(q.providerUpdatedAt)<=30*60*1000));
+      const valid = matches.filter(fresh);
       const prices = new Set(valid.map(q => Number(q.odds).toFixed(4)));
       const quote = prices.size === 1 ? valid[0] : null;
-      const contemporaneous=quotes.filter(q=>Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const contemporaneous=quotes.filter(fresh);
       const marketProbability=quote ? noVigProbability(quote,contemporaneous) : null;
       const odds = quote ? Number(quote.odds) : null;
       const reasons = [];
       if (!(rawProbability>0 && rawProbability<1)) reasons.push('INVALID_PROBABILITY');
       if (!cell?.ready || !(Date.parse(calibration?.trainedBefore)<context.now)) reasons.push('CALIBRATION_UNVALIDATED');
+      if (cell && (!(Number.isFinite(cell.offset) && Math.abs(cell.offset)<1) || !(cell.uncertainty>0 && cell.uncertainty<=.5) || !(cell.n>=60))) reasons.push('INVALID_CALIBRATION_EVIDENCE');
       if (!quote) reasons.push(prices.size>1 ? 'AMBIGUOUS_PRICE' : 'MISSING_OR_STALE_EXACT_BET365');
       if (![1,2].includes(context.tier)) reasons.push('COMPETITION_TIER');
       if (!(unit(analysis.dataQuality)>=.75)) reasons.push('DATA_QUALITY');
@@ -83,6 +86,7 @@ export function generateCandidates(analysis, quotes, calibration, context) {
       if (analysis.qualityHold || context.contradiction) reasons.push('UNRESOLVED_EVIDENCE');
       // Quarter/integer Asian lines need push-aware distributions; abstain until supported.
       if (market === 'HANDICAP' && !/_(0|1|2|3|4)_5$/.test(key)) reasons.push('UNSUPPORTED_SETTLEMENT');
+      if (['TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS'].includes(market) && !/^(OVER|UNDER)_\d+_5$/.test(key)) reasons.push('UNSUPPORTED_SETTLEMENT');
       if (!['MATCH_RESULT','BTTS','TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS','HANDICAP','DOUBLE_CHANCE'].includes(market)) reasons.push('UNSUPPORTED_MARKET');
       const uncertainty = cell?.uncertainty ?? .15;
       const lowerProbability = probability == null ? null : Math.max(0, probability-1.64*uncertainty);

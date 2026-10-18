@@ -22,6 +22,7 @@ jobs:
       - name: Validate selection and publication invariants
         run: |
           node selection-v2.test.mjs
+          node tests/quote-provenance.cjs
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
           node shadow-evaluation-v2.test.mjs
@@ -31,7 +32,9 @@ jobs:
           node tests/weekend-lock.mjs
           node competition-tier-v87.test.mjs
           node scripts/bundle-selection-v2.mjs
+          node scripts/apply-forecast-core-runtime-v3.mjs
           node scripts/bundle-forecast-core-v3.mjs
+          node scripts/bundle-tier.mjs
           git diff --exit-code worker.js
   deploy:
     needs: test

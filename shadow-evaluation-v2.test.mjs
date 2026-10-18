@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {grade,evaluate} from './scripts/evaluate-shadow-v2.mjs';
+import {grade,evaluate,blockIntervals} from './scripts/evaluate-shadow-v2.mjs';
 assert.equal(grade('TOTAL_GOALS','OVER_2_5',2,1),'WIN');
 assert.equal(grade('TOTAL_GOALS','UNDER_2',1,1),'PUSH');
 assert.equal(grade('HANDICAP','HOME_PLUS_0_5',0,1),'LOSS');
@@ -13,4 +13,9 @@ const report=evaluate([r,{...r,generated_at:'2026-10-17T14:30:00Z',payload:{prim
 assert.equal(report.candidate.n,1,'Late snapshots must not replace the predeclared decision cutoff');
 assert.equal(report.baseline.n,1);assert.equal(report.promotion.allowed,false);
 assert.equal(evaluate([{...r,final_home_score:null}]).candidate.n,0);
+assert.equal(evaluate([r],{protocol:'new-cohort'}).fixtures,0,'Old wrapper probabilities must not contaminate the new independent cohort');
+assert.equal(evaluate([r]).intervals.roi95,null,'One fixture day cannot establish uncertainty');
+const blocks=Array.from({length:20},(_,i)=>({date:'2026-10-'+String(i+1).padStart(2,'0'),odds:2,outcome:i%3?'WIN':'LOSS',y:i%3?1:0,probability:.7,legacyProbability:.5}));
+assert.deepEqual(blockIntervals(blocks,100),blockIntervals(blocks,100),'Block bootstrap must be reproducible');
+assert.equal(blockIntervals(blocks,100).days,20);
 console.log('PASS: independent market grading, unsupported/push handling, fixed decision cutoff, aligned baseline, ungraded exclusion and promotion lock');

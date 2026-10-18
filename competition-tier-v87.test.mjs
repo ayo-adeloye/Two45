@@ -1,6 +1,13 @@
 import { competitionTierV87 } from "./competition-tier-v87.js";
 
 const cases = [
+  ["Serie A",71,2], // Brazil must never inherit Italy's Tier 1
+  ["Serie A",135,1],
+  ["Serie A",undefined,4],
+  ["Serie A",9999,4],
+  ["Bundesliga",218,4],
+  ["Bundesliga",78,1],
+  ["La Liga",9999,4],
   ["Ligue 1",61,1],
   ["Ligue 1",403,4], // Senegal must not inherit France
   ["Ligue 1",202,4], // Tunisia

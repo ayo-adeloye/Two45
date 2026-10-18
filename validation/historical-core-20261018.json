@@ -1,0 +1,149 @@
+{
+  "modelVersion": "two45-independent-core-v3.1",
+  "asOf": "2026-10-18T01:23:23.216Z",
+  "trainingData": {
+    "fixtures": 8468,
+    "fixtureDays": 21,
+    "rejections": {}
+  },
+  "split": {
+    "developmentDate": "2026-10-06",
+    "testDate": "2026-10-12",
+    "selection": "Tune only on development scoreline likelihood; fixed hyperparameters, daily rolling refits on already-observed results during test"
+  },
+  "tuning": [
+    {
+      "config": {
+        "teamPenalty": 12,
+        "halfLifeDays": 90,
+        "rho": 0,
+        "seasonWeight": 1
+      },
+      "provenance": "Frozen configuration from existing independent-core implementation and seeded production artifact; historical replay is exploratory, not an untouched holdout."
+    }
+  ],
+  "chosen": {
+    "teamPenalty": 12,
+    "halfLifeDays": 90,
+    "rho": 0,
+    "seasonWeight": 1
+  },
+  "test": {
+    "fixtures": 2256,
+    "pairedEvents": 266,
+    "baseline": {
+      "n": 266,
+      "brier": 0.13714127835338352,
+      "logLoss": 0.4406246430446682
+    },
+    "core": {
+      "n": 266,
+      "brier": 0.14449172749810837,
+      "logLoss": 0.46272541791273786
+    },
+    "eligibleOnly": {
+      "core": {
+        "n": 13,
+        "brier": 0.1357797877402441,
+        "logLoss": 0.45356099762513125
+      },
+      "baseline": {
+        "n": 13,
+        "brier": 0.13871234554615383,
+        "logLoss": 0.47089459004965495
+      }
+    },
+    "pricedPaired": {
+      "core": {
+        "n": 74,
+        "brier": 0.2225790820003674,
+        "logLoss": 0.6426350174196598
+      },
+      "baseline": {
+        "n": 74,
+        "brier": 0.20435820072297303,
+        "logLoss": 0.603003562823357
+      },
+      "marketRawImplied": {
+        "n": 74,
+        "brier": 0.1899552120996082,
+        "logLoss": 0.5679969285542734
+      },
+      "warning": "Raw single-price implied probability includes bookmaker margin. Complete same-line no-vig benchmarks unavailable historically."
+    },
+    "scoreline": {
+      "paired": 266,
+      "baselineLogLoss": 3.2424359431604324,
+      "coreLogLoss": 3.21489888345683
+    },
+    "byMarket": {
+      "HANDICAP": {
+        "baseline": {
+          "n": 139,
+          "brier": 0.10122587216258995,
+          "logLoss": 0.3512601046597411
+        },
+        "core": {
+          "n": 139,
+          "brier": 0.10102534542155725,
+          "logLoss": 0.3519852815241289
+        }
+      },
+      "MATCH_RESULT": {
+        "baseline": {
+          "n": 30,
+          "brier": 0.22080639311666658,
+          "logLoss": 0.6319157565543894
+        },
+        "core": {
+          "n": 30,
+          "brier": 0.23729507222822016,
+          "logLoss": 0.6693620006992285
+        }
+      },
+      "TOTAL_GOALS": {
+        "baseline": {
+          "n": 97,
+          "brier": 0.16273187647319587,
+          "logLoss": 0.5095209052118151
+        },
+        "core": {
+          "n": 97,
+          "brier": 0.17807653952632752,
+          "logLoss": 0.5575066702263657
+        }
+      }
+    },
+    "coverage": {
+      "eligible": 29,
+      "coldTeam": 2069,
+      "sparseLeague": 2065
+    },
+    "uncertainty": {
+      "days": 3,
+      "replicates": 1500,
+      "brierDifference95": [
+        0.005631888513409721,
+        0.02347615538544205
+      ]
+    }
+  },
+  "promotion": {
+    "allowed": false,
+    "reasons": [
+      "HISTORICAL_EXACT_QUOTE_TIMESTAMPS_AND_COMPLETE_MARKET_OUTCOMES_MISSING",
+      "PROSPECTIVE_SELECTION_ROI_NOT_VALIDATED",
+      "FEWER_THAN_14_HELD_OUT_FIXTURE_DAYS",
+      "BRIER_IMPROVEMENT_NOT_ESTABLISHED",
+      "INSUFFICIENT_TEAM_AND_LEAGUE_COVERAGE"
+    ]
+  },
+  "inputSHA256": {
+    "fixtures": "433688c6c070e75fbb1f3d5ca085c6e0d9077356674963f5dd3b88192d700120",
+    "forecasts": "8d5a43ae3874f6af9a0d31bb6a037b76980938bcdc484d75f51e69cef750c95b",
+    "features": "560a06dae9a2a24b2ae1d36ff1e03373834802223b8742a7621462f0c4632712"
+  },
+  "validationStatus": "Exploratory historical replay: the sparse-history prototype previously consumed this holdout. A new untouched prospective holdout is mandatory for promotion.",
+  "reproduce": "node scripts/evaluate-forecast-core-v3.mjs fixtures.json legacy.json report.json 2026-10-18T01:23:23.216Z features.json frozen-config.json",
+  "configurationSource": "forecast-core-runtime-v3.js GOAL_CORE_CONFIG_V3; no retuning during this replay"
+}

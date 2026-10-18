@@ -1,5 +1,15 @@
 // The configuration is frozen from development scoring. Daily refreshes never retune on test results.
 const GOAL_CORE_CONFIG_V3 = {teamPenalty:12,halfLifeDays:90,rho:0,seasonWeight:1};
+const MIGRATION_PROTOCOL_V2 = 'independent-v2-migration-20261018';
+function modelMigrationStatusV2() {
+  return {state:'BLOCKED_VALIDATION',promotionAllowed:false,protocol:MIGRATION_PROTOCOL_V2,
+    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY',candidateSelection:selectionV2.VERSION,
+    products:['ELITE_3','HIGH_CONVICTION','WEEKEND_LADDER'],recordScope:'official-publication-ledger-v2',
+    blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED'],
+    requirements:{settledSelections:200,fixtureDays:14,perMarketSelections:60,decisionMinutesBeforeKickoff:60,quoteMaxAgeMinutes:30},
+    missingXGPolicy:'Observed xG is unavailable and excluded. Goal expectations are learned from timestamped scores and season features.',
+    cutover:'No runtime activation flag. A validated release must replace all product publishers together, retire legacy writes and retain the publication ledger and historical locks.'};
+}
 
 async function refreshGoalCoreV3(env) {
   const now=new Date(),asOf=now.toISOString(),date=asOf.slice(0,10),statusKey='forecast-core-v3:training-status';
@@ -44,11 +54,11 @@ async function recordGoalForecastV3(env,job,legacyAnalysis,quotes,legacyDecision
   const prediction=forecastCoreV3.predictGoals(contextRow.model,fixture,asOf);
   const {scoreCells,...forecast}=prediction; // Reconstruct cells from immutable artifact + fixture inputs.
   const featureTimes=[fixture.home_features?.observedAt,fixture.away_features?.observedAt].filter(Boolean).map(Date.parse);
-  const context={fixtureId:job.fixture_id,modelVersion:forecastCoreV3.CORE_VERSION,now,kickoff:job.kickoff_at,tier:competitionTierV21(job.competition,job.provider_league_id),
+  const context={fixtureId:job.fixture_id,modelVersion:forecastCoreV3.CORE_VERSION,now,kickoff:job.kickoff_at,tier:competitionTierV21(job.competition,job.provider_league_id),requireProviderQuoteTime:true,
     sampleSize:Math.min(Math.max(prediction.evidence.homeEffectiveMatches,prediction.evidence.homeSeasonMatches),Math.max(prediction.evidence.awayEffectiveMatches,prediction.evidence.awaySeasonMatches)),
     featureAsOf:featureTimes.length?new Date(Math.min(...featureTimes)).toISOString():contextRow.model.trainedBefore};
   const candidates=selectionV2.generateCandidates(forecast,quotes,contextRow.model.calibration,context);
   await sb(env,'two45_goal_forecasts_v3',{method:'POST',prefer:'return=minimal',timeoutMs:4000,body:JSON.stringify({fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,
-    payload:{mode:'SHADOW',promotionAllowed:false,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
+    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
   return {mode:'SHADOW',modelId:contextRow.model_id,version:forecastCoreV3.CORE_VERSION,expectedGoals:forecast.expectedGoals,rejectionReasons:forecast.rejectionReasons,promotionAllowed:false};
 }

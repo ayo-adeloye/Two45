@@ -41,9 +41,9 @@ export function competitionTierV87(value, leagueId) {
   // Tier 1: exact top competitions. Generic "Premier League" is ID-gated to
   // avoid promoting unrelated competitions such as Mongolia Premier League.
   if (/\buefa champions league\b/.test(n) ||
-      n === "la liga" ||
-      n === "serie a" ||
-      n === "bundesliga" ||
+      (n === "la liga" && id === 140) ||
+      (n === "serie a" && id === 135) ||
+      (n === "bundesliga" && id === 78) ||
       (n === "ligue 1" && id === 61) ||
       /\buefa nations league\b/.test(n) ||
       /\bnations league\b/.test(n) ||
