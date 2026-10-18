@@ -15,7 +15,7 @@ ctx.saveFeedSnapshot = async (_env, key, payload) => { saved = payload; };
 const leg = (id, odds) => ({ fixtureId:id, _ticketOdds:odds, sportsbookOdds:odds, _ticketScore:.85, competitionTier:1 });
 const build = previous => ctx.buildWeekendLockV70({}, '2026-10-17', null, previous);
 
-pool = [leg(1,2.2), leg(2,2.2), leg(3,2)];
+pool = [leg(1,2.2), leg(2,2.2), leg(3,2.15), leg(8,2.15), leg(9,2.15)];
 const partial = await build();
 assert.equal(partial.status, 'PARTIAL');
 assert.equal(partial.tickets.five.targetMet, true);
@@ -24,6 +24,7 @@ assert.equal(partial.tickets.fifty, null, 'out-of-target fallback must never pub
 assert.equal(partial.immutable, false);
 assert.equal(partial.lockedAt, null);
 assert.equal(saved, partial);
+assert(!partial.tickets.five.legs.some(x=>partial.tickets.ten.legs.some(y=>String(x.fixtureId)===String(y.fixtureId))));
 
 pool = [];
 const refresh = await build(partial);

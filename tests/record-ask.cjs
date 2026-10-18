@@ -10,8 +10,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
 (async()=>{
 let query;w.sb=async(e,q)=>{query=q;return [{id:'1',fixture_id:1,outcome:'WIN',final_home_score:0,final_away_score:0},{id:'2',fixture_id:2,outcome:'LOSS',final_home_score:1,final_away_score:2},{id:'3',fixture_id:3,outcome:'PUSH'},{id:'4',fixture_id:4,outcome:null}]};
 let history=await w.recordHistoryV20({},50);assert.equal(history.rows[0].score,'0-0');assert.deepEqual(Array.from(history.rows,r=>r.result),['WIN','LOSS','VOID','PENDING']);
-const selected=new URL('https://test/'+query).searchParams.get('select').split(',');for(const absent of ['result','score','updated_at'])assert(!selected.includes(absent));assert(selected.includes('outcome'));
-w.sb=async(e,q)=>{if(q.startsWith('rpc/'))throw Error('unavailable');return [{fixture_id:1,outcome:'WIN'},{fixture_id:2,outcome:'LOSS'}]};const summary=await w.recordSummaryV20({});assert.equal(summary.summary.hitRate,.5);
+assert(query.startsWith('two45_public_record_v2?')); assert(!query.includes('two45_model_forecasts'));
+w.sb=async()=>{throw Error('unavailable')};await assert.rejects(()=>w.recordSummaryV20({}),/unavailable/);
 let calls=0,canonical=null,jobs=[{status:'PENDING',kickoff_at:new Date().toISOString()}];w.authenticatedUser=async()=>({id:'test'});w.currentCanonicalAnalysisV2=async()=>canonical;w.sb=async(e,q,o)=>{assert(!o?.method||o.method==='GET');assert(q.includes('select=status,kickoff_at'));calls++;return jobs};w.dateAllowedV19=()=>true;
 for(const fn of ['processOne','claimSpecificJob','syncFixtureJobsV19','providerRequest'])w[fn]=()=>{throw Error('Paid or mutation path called')};
 const req=new Request('https://test/api/model/analysis-status?fixtureId=1');assert.equal((await w.fixtureAnalysisStatus(req,{},0)).httpStatus,400);assert.equal((await w.fixtureAnalysisStatus(req,{},1)).body.status,'QUEUED');

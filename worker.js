@@ -1,3 +1,110 @@
+// BEGIN GENERATED SELECTION V2
+var selectionV2 = (() => {
+// Independent probabilities enter here before prices. Prices never generate forecasts.
+const VERSION = 'two45-independent-v2-shadow';
+const canonical = s => String(s || '').toUpperCase().replace(/(\d)\.(\d)/g, '$1_$2');
+const unit = x => x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x) > 1 ? Number(x) / 100 : Number(x);
+const clip = p => Math.max(.001, Math.min(.999, p));
+
+function fitCalibration(rows, asOf, minSample = 60) {
+  // Separate market + line + model version; never borrow outcomes from the holdout.
+  const groups = {};
+  const seen = new Set();
+  for (const r of [...rows].sort((a,b) => Date.parse(a.created_at)-Date.parse(b.created_at))) {
+    if (!['WIN','LOSS'].includes(r.outcome) || !(Date.parse(r.created_at) < Date.parse(r.kickoff_at)) || !(Date.parse(r.settled_at) < Date.parse(asOf))) continue;
+    const id = [r.fixture_id,r.market,canonical(r.selection),r.model_version].join('|');
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const p = unit(r.probability);
+    if (!(p > 0 && p < 1)) continue;
+    const key = calibrationKey(r.market,r.selection,r.model_version);
+    const g = groups[key] ||= {n:0,wins:0,sumP:0};
+    g.n++; g.wins += +(r.outcome === 'WIN'); g.sumP += p;
+  }
+  for (const g of Object.values(groups)) {
+    // Shrunk intercept calibration. Small cells remain ineligible for publication.
+    g.offset = (g.wins-g.sumP)/(g.n+100);
+    g.ready = g.n >= minSample;
+    g.uncertainty = Math.sqrt(.25/(g.n+1));
+  }
+  return {version:VERSION, trainedBefore:asOf, minSample, groups};
+}
+function calibrationKey(market,selection,version) {
+  return [version,market,canonical(selection)].join('|');
+}
+
+function generateCandidates(analysis, quotes, calibration, context) {
+  const candidates = [];
+  for (const [market, outcomes] of Object.entries(analysis.probabilities || {})) {
+    for (const [selection, raw] of Object.entries(outcomes)) {
+      const rawProbability = unit(raw), key = canonical(selection);
+      const cell = calibration?.groups?.[calibrationKey(market,key,context.modelVersion)];
+      const probability = rawProbability == null ? null : clip(rawProbability + (cell?.offset || 0));
+      const matches = quotes.filter(q => String(q.fixtureId) === String(context.fixtureId) && q.market === market && canonical(q.selection) === key && String(q.bookmaker).replace(/[^a-z0-9]/gi,'').toLowerCase() === 'bet365');
+      const valid = matches.filter(q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const prices = new Set(valid.map(q => Number(q.odds).toFixed(4)));
+      const quote = prices.size === 1 ? valid[0] : null;
+      const odds = quote ? Number(quote.odds) : null;
+      const reasons = [];
+      if (!(rawProbability>0 && rawProbability<1)) reasons.push('INVALID_PROBABILITY');
+      if (!cell?.ready || !(Date.parse(calibration?.trainedBefore)<context.now)) reasons.push('CALIBRATION_UNVALIDATED');
+      if (!quote) reasons.push(prices.size>1 ? 'AMBIGUOUS_PRICE' : 'MISSING_OR_STALE_EXACT_BET365');
+      if (![1,2].includes(context.tier)) reasons.push('COMPETITION_TIER');
+      if (!(unit(analysis.dataQuality)>=.75)) reasons.push('DATA_QUALITY');
+      if (!(Date.parse(context.featureAsOf)<context.now && context.now-Date.parse(context.featureAsOf)<=24*3600000)) reasons.push('FEATURE_FRESHNESS');
+      if (!(context.now<Date.parse(context.kickoff))) reasons.push('KICKOFF_PASSED');
+      if (!(context.sampleSize>=8)) reasons.push('FEATURE_SAMPLE');
+      if (analysis.qualityHold || context.contradiction) reasons.push('UNRESOLVED_EVIDENCE');
+      // Quarter/integer Asian lines need push-aware distributions; abstain until supported.
+      if (market === 'HANDICAP' && !/_(0|1|2|3|4)_5$/.test(key)) reasons.push('UNSUPPORTED_SETTLEMENT');
+      if (!['MATCH_RESULT','BTTS','TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS','HANDICAP','DOUBLE_CHANCE'].includes(market)) reasons.push('UNSUPPORTED_MARKET');
+      const uncertainty = cell?.uncertainty ?? .15;
+      const lowerProbability = probability == null ? null : Math.max(0, probability-1.64*uncertainty);
+      const ev = odds && probability != null ? probability*odds-1 : null;
+      const lowerEV = odds && lowerProbability != null ? lowerProbability*odds-1 : null;
+      if (!(lowerEV>.02)) reasons.push('UNCERTAINTY_ADJUSTED_VALUE');
+      if (odds && probability && probability-1/odds>.20) reasons.push('PRICE_MODEL_DISAGREEMENT');
+      candidates.push({fixtureId:context.fixtureId,market,selection:key,rawProbability,probability,lowerProbability,uncertainty,odds,ev,lowerEV,tier:context.tier,quote,calibrationN:cell?.n||0,reasons,eligible:reasons.length===0});
+    }
+  }
+  return candidates;
+}
+function primaryPicks(candidates) {
+  const best = new Map();
+  for (const c of candidates.filter(c=>c.eligible).sort((a,b)=>a.tier-b.tier || b.lowerEV-a.lowerEV || b.lowerProbability-a.lowerProbability || (a.market+a.selection).localeCompare(b.market+b.selection))) {
+    if (!best.has(String(c.fixtureId))) best.set(String(c.fixtureId),c);
+  }
+  return [...best.values()];
+}
+function optimizeProduct(pool, {low,high,minLegs,maxLegs,reserved=[]}) {
+  const excluded=new Set(reserved.map(String));
+  const rows=primaryPicks(pool).filter(x=>!excluded.has(String(x.fixtureId)));
+  let best=null;
+  function visit(start,legs,odds,p) {
+    if (legs.length>=minLegs && odds>=low && odds<=high) {
+      const score=p*odds-1;
+      if (score>0 && (!best || score>best.lowerEV)) best={legs:[...legs],odds,lowerProbability:p,lowerEV:score};
+    }
+    if (legs.length>=maxLegs || odds>high) return;
+    for(let i=start;i<rows.length;i++) visit(i+1,[...legs,rows[i]],odds*rows[i].odds,p*rows[i].lowerProbability);
+  }
+  visit(0,[],1,1);
+  return best || {legs:[],rejection:'NO_QUALIFIED_TARGET_COMBINATION'};
+}
+function scoreRows(rows,predict) {
+  let n=0,brier=0,logLoss=0,profit=0,priced=0;
+  for (const r of rows) {
+    const p=predict(r);
+    if (!['WIN','LOSS'].includes(r.outcome) || !(p>0 && p<1)) continue;
+    const y=+(r.outcome==='WIN'); n++; brier+=(p-y)**2; logLoss-=y*Math.log(clip(p))+(1-y)*Math.log(1-clip(p));
+    if (Number(r.sportsbook_odds)>1) {priced++;profit+=y ? Number(r.sportsbook_odds)-1 : -1;}
+  }
+  return {n,brier:n?brier/n:null,logLoss:n?logLoss/n:null,priced,profit,roi:priced?profit/priced:null};
+}
+
+return {VERSION,generateCandidates,primaryPicks,optimizeProduct};
+})();
+// END GENERATED SELECTION V2
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -1411,7 +1518,7 @@ function normalizeRecordRowV20(row, source) {
   };
 }
 __name(normalizeRecordRowV20, "normalizeRecordRowV20");
-async function recordHistoryV20(env, limit = 250) {
+async function researchHistoryV2(env, limit = 250) {
   const rowsRaw = await sb(
     env,
     `two45_model_forecasts?decision=eq.PICK&selection=neq.NO_BET&select=id,fixture_id,kickoff_at,competition,home_team,away_team,market,selection,sportsbook_odds,probability,confidence_tier,outcome,final_home_score,final_away_score,settled_at,created_at&order=kickoff_at.desc,created_at.desc&limit=${Math.max(1, Math.min(limit, 1e3))}`
@@ -1436,40 +1543,17 @@ async function recordHistoryV20(env, limit = 250) {
     rows: deduped.slice(0, limit)
   };
 }
-__name(recordHistoryV20, "recordHistoryV20");
+__name(researchHistoryV2, "researchHistoryV2");
+async function recordHistoryV20(env, limit = 250) {
+  const rows = await sb(env, `two45_public_record_v2?select=*&order=kickoff_at.desc,id.desc&limit=${Math.max(1,Math.min(limit,1000))}`);
+  if (!Array.isArray(rows)) throw new Error("Publication Record unavailable");
+  return {ok:true,source:"official-publication-ledger-v2",scope:"official selections only; research forecasts excluded",total:rows.length,publishedCount:rows.length,forecastCount:0,rows:rows.map(x=>normalizeRecordRowV20(x,x.product))};
+}
+
 async function recordSummaryV20(env) {
-  try {
-    const rpc = await sb(env, "rpc/two45_record_summary", { method: "POST", body: JSON.stringify({}) });
-    if (rpc != null)
-      return { ok: true, source: "rpc", summary: rpc };
-  } catch (_) {
-  }
-  const history = await recordHistoryV20(env, 1e3);
-  const settled = history.rows.filter((x) => ["WIN", "LOSS", "VOID"].includes(x.result));
-  const wins = settled.filter((x) => x.result === "WIN").length;
-  const losses = settled.filter((x) => x.result === "LOSS").length;
-  const voids = settled.filter((x) => x.result === "VOID").length;
-  const live = history.rows.filter((x) => x.result === "LIVE").length;
-  const pendingOnly = history.rows.filter((x) => x.result === "PENDING").length;
-  return {
-    ok: true,
-    source: "computed",
-    summary: {
-      total: history.total,
-      settled: settled.length,
-      wins,
-      losses,
-      pushes: 0,
-      voids,
-      live,
-      pendingOnly,
-      pending: live + pendingOnly,
-      unsettled: live + pendingOnly,
-      hitRate: wins + losses > 0 ? wins / (wins + losses) : null,
-      publishedCount: history.publishedCount,
-      forecastCount: history.forecastCount
-    }
-  };
+  const summary = await sb(env, "rpc/two45_record_summary", {method:"POST",body:JSON.stringify({})});
+  if (summary == null) throw new Error("Publication summary unavailable");
+  return {ok:true,source:"official-publication-ledger-v2",scope:"official selections only; incomplete historical publication evidence is excluded",summary};
 }
 __name(recordSummaryV20, "recordSummaryV20");
 function poisson(k, lambda) {
@@ -1787,7 +1871,7 @@ function analyzeMatch(input) {
   );
   return {
     modelVersion: MODEL_VERSION,
-    coreUsesSportsbookOdds: true,
+    coreUsesSportsbookOdds: false,
     homeTeam: input.homeTeam || null,
     awayTeam: input.awayTeam || null,
     expectedGoals: xg,
@@ -3241,7 +3325,7 @@ async function cachedTeamStatsV56(env, job, side) {
     );
     const row = arr2(cached)[0];
     if (row?.raw_features && typeof row.raw_features === "object" && Object.keys(row.raw_features).length) {
-      return row.raw_features;
+      return {...row.raw_features, _two45AsOf: row.as_of};
     }
   } catch (_) {
   }
@@ -4574,6 +4658,29 @@ async function processOne(env, job) {
       marketOdds,
       competitionTierV21(job.competition, job.provider_league_id)
     );
+    // V2 stays in shadow until a signed validation artifact permits promotion.
+    // Persist every candidate and rejection with point-in-time input/quote evidence.
+    if (Date.now() < Date.parse(job.kickoff_at)) {
+      try {
+        const calibrationRow = await getFeedSnapshot(env, "selection-v2:calibration").catch(()=>null);
+        const now = Date.now(), featureTimes = [hs._two45AsOf,as._two45AsOf].map(Date.parse);
+        const context = {fixtureId:job.fixture_id,modelVersion:MODEL_VERSION,now,kickoff:job.kickoff_at,
+          tier:competitionTierV21(job.competition,job.provider_league_id),
+          sampleSize:Math.min(num4(hf.sampleSize,0),num4(af.sampleSize,0)),
+          featureAsOf:featureTimes.every(Number.isFinite) ? new Date(Math.min(...featureTimes)).toISOString() : null};
+        const quotes = marketOdds.flatMap(g=>arr2(g.outcomes).map(q=>({fixtureId:job.fixture_id,market:g.market,selection:q.selection,
+          bookmaker:g.bookmaker,odds:q.odds,observedAt:odds.updatedAt || null,rawMarket:g.rawMarket,rawSelection:q.rawSelection || null})));
+        const candidates = selectionV2.generateCandidates(analysis,quotes,calibrationRow?.payload,context);
+        await sb(env,"two45_selection_shadow_v2",{method:"POST",prefer:"return=minimal",body:JSON.stringify({fixture_id:job.fixture_id,
+          kickoff_at:job.kickoff_at,generated_at:new Date(now).toISOString(),model_version:selectionV2.VERSION,
+          payload:{context,features:{home:hf,away:af},probabilities:analysis.probabilities,quotes,candidates,
+            primary:selectionV2.primaryPicks(candidates),promotionAllowed:false}})});
+      } catch(e) {
+        analysis.selectionV2ShadowError = safeRefreshError(e);
+        console.error("selection-v2 shadow persistence failed", analysis.selectionV2ShadowError);
+      }
+    }
+
     const verifyCandidateV85 = /* @__PURE__ */ __name((candidate) => {
       if (!candidate || typeof candidate !== "object")
         return null;
@@ -5155,7 +5262,7 @@ function updateLearningAccumulatorV82(current, rows) {
 }
 __name(updateLearningAccumulatorV82, "updateLearningAccumulatorV82");
 async function refreshLearningLoopV82(env) {
-  const history = await recordHistoryV20(env, 1e3);
+  const history = await researchHistoryV2(env, 1e3);
   const settled = arr2(history?.rows).filter((x) => ["WIN", "LOSS"].includes(x.result));
   const current = (await getFeedSnapshot(env, "two45-learning:v82").catch(() => null))?.payload || {};
   const before = Object.keys(current?.processed || {}).length, next = updateLearningAccumulatorV82(current, settled), after = Object.keys(next?.processed || {}).length;
@@ -5264,7 +5371,7 @@ async function modelStatus(env) {
   return {
     ok: true,
     modelVersion: MODEL_VERSION,
-    coreUsesSportsbookOdds: true,
+    coreUsesSportsbookOdds: false,
     forecastCount: forecasts,
     pendingFeatureJobs: pending,
     readyFeatureJobs: ready,
@@ -7150,7 +7257,7 @@ function ticketCompetitionTierV79(board, x) {
 }
 __name(ticketCompetitionTierV79, "ticketCompetitionTierV79");
 function ticketPremiumScoreV80(x) {
-  const probability = ticketNormV70(x?.probability, 0) * 100, dq = ticketNormV70(x?.dataQuality, 0.7) * 100, edgeRaw = x?.valueEdgePct ?? x?.valueEdge, edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0), tier = num4(x?.competitionTier, 4), odds = ticketPriceV70(x) || 0, market = String(x?.market || "").toUpperCase(), selection = ticketSelectionKeyV78(x?.selection);
+  const probability = ticketNormV70(x?.probability, 0) * 100, dq = ticketNormV70(x?.dataQuality, 0.7) * 100, edge = x?.valueEdgePct != null ? num4(x.valueEdgePct, 0) : num4(x?.valueEdge, 0) * 100, tier = num4(x?.competitionTier, 4), odds = ticketPriceV70(x) || 0, market = String(x?.market || "").toUpperCase(), selection = ticketSelectionKeyV78(x?.selection);
   let marketPts = 0;
   if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection))
     marketPts = 6;
@@ -7183,8 +7290,7 @@ __name(ticketPremiumScoreV80, "ticketPremiumScoreV80");
 function eliteConfidenceScoreV102(x) {
   const probability = ticketNormV70(x?.probability, 0) * 100,
     dq = ticketNormV70(x?.dataQuality, 0.7) * 100,
-    edgeRaw = x?.valueEdgePct ?? x?.valueEdge,
-    edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0),
+    edge = x?.valueEdgePct != null ? num4(x.valueEdgePct, 0) : num4(x?.valueEdge, 0) * 100,
     tier = num4(x?.competitionTier, 4),
     odds = ticketPriceV70(x) || 0,
     market = String(x?.market || "").toUpperCase(),
@@ -7209,19 +7315,20 @@ function eliteConfidenceScoreV102(x) {
 }
 __name(eliteConfidenceScoreV102, "eliteConfidenceScoreV102");
 
-function eliteLegQualityV79(x) {
+function eliteRejectionReasonsV2(x) {
+  const reasons = [];
   const odds = ticketPriceV70(x),
     market = String(x?.market || "").toUpperCase(),
     selection = ticketSelectionKeyV78(x?.selection),
     tier = num4(x?.competitionTier, 4),
     p = ticketNormV70(x?.probability, 0),
     dq = ticketNormV70(x?.dataQuality, 0.7),
-    edgeRaw = x?.valueEdgePct ?? x?.valueEdge,
-    edge = (Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0)) / 100,
+    edge = x?.valueEdgePct != null ? num4(x.valueEdgePct, 0) / 100 : num4(x?.valueEdge, 0),
     score = eliteConfidenceScoreV102(x);
-  if (!odds || odds < 1.18 || tier > 2) return false;
-  if (dq < (tier === 1 ? 0.64 : 0.72)) return false;
-  if (!Number.isFinite(edge) || edge <= 0) return false;
+  if (!odds || odds < 1.18) reasons.push("PRICE_FLOOR");
+  if (tier > 2) reasons.push("COMPETITION_TIER");
+  if (dq < (tier === 1 ? 0.64 : 0.72)) reasons.push("DATA_QUALITY");
+  if (!Number.isFinite(edge) || edge <= 0) reasons.push("NON_POSITIVE_VALUE");
   let probabilityFloor = tier === 1 ? 0.72 : 0.76;
   if (market === "MATCH_RESULT" && ["HOME", "AWAY"].includes(selection)) probabilityFloor = tier === 1 ? 0.66 : 0.70;
   else if (market === "TOTAL_GOALS" && selection === "OVER_1_5") probabilityFloor = tier === 1 ? 0.74 : 0.77;
@@ -7231,16 +7338,17 @@ function eliteLegQualityV79(x) {
   else if (market === "DOUBLE_CHANCE") probabilityFloor = tier === 1 ? 0.78 : 0.80;
   else if (market === "TOTAL_GOALS" && selection === "UNDER_4_5") {
     probabilityFloor = tier === 1 ? 0.86 : 0.88;
-    if (odds < 1.45) return false;
+    if (odds < 1.45) reasons.push("LOW_RETURN_UNDER_4_5");
   } else if (market === "HANDICAP" && /(HOME|AWAY)_PLUS_1_5/.test(selection)) {
     probabilityFloor = tier === 1 ? 0.86 : 0.88;
-    if (odds < 1.30) return false;
+    if (odds < 1.30) reasons.push("LOW_RETURN_PLUS_1_5");
   }
-  if (p < probabilityFloor) return false;
-  if (tier === 1 && score < 73.5) return false;
-  if (tier === 2 && score < 77) return false;
-  return true;
+  if (p < probabilityFloor) reasons.push("PROBABILITY_FLOOR");
+  if (tier === 1 && score < 73.5) reasons.push("CONFIDENCE_SCORE");
+  if (tier === 2 && score < 77) reasons.push("CONFIDENCE_SCORE");
+  return reasons;
 }
+function eliteLegQualityV79(x) { return eliteRejectionReasonsV2(x).length === 0; }
 __name(eliteLegQualityV79, "eliteLegQualityV79");
 function ticketSelectionKeyV78(value) {
   return String(value || "").trim().toUpperCase().replace(/(\d)\.(\d)/g, "$1_$2").replace(/[^A-Z0-9_]+/g, "_");
@@ -7292,7 +7400,7 @@ function crossBookCheckV81(oddsPayload, fixtureId, market, selection, bet365Odds
 }
 __name(crossBookCheckV81, "crossBookCheckV81");
 function publishedReasonV81(x) {
-  const market = String(x?.market || "").toUpperCase(), selection = String(x?.selection || "").toUpperCase(), odds = num4(x?.sportsbookOdds, 0), prob = ticketNormV70(x?.probability, 0) * 100, implied = odds > 1 ? 100 / odds : 0, edgeRaw = x?.valueEdgePct ?? x?.valueEdge, edge = Math.abs(num4(edgeRaw, 0)) <= 1 ? num4(edgeRaw, 0) * 100 : num4(edgeRaw, 0), option = selection.replaceAll("_", " ").replace(/\bPLUS\b/g, "+").replace(/\bMINUS\b/g, "-");
+  const market = String(x?.market || "").toUpperCase(), selection = String(x?.selection || "").toUpperCase(), odds = num4(x?.sportsbookOdds, 0), prob = ticketNormV70(x?.probability, 0) * 100, implied = odds > 1 ? 100 / odds : 0, edge = x?.valueEdgePct != null ? num4(x.valueEdgePct, 0) : num4(x?.valueEdge, 0) * 100, option = selection.replaceAll("_", " ").replace(/\bPLUS\b/g, "+").replace(/\bMINUS\b/g, "-");
   let why = "Two45 rates this as the best supported option";
   if (market === "MATCH_RESULT")
     why = "Two45's match model favors " + option;
@@ -7385,6 +7493,7 @@ async function verifyPublicStrongPicksV83(env, date, board) {
     if (tier <= 3 && x.trustScore >= 74)
       verified.push(x);
   }
+  await Promise.all(verified.map(x=>sb(env,"rpc/two45_capture_publication_v2",{method:"POST",body:JSON.stringify({p_product:"HIGH_CONVICTION",p_key:date,p_evidence:"verified-public-board:"+date,p_pick:x,p_at:new Date().toISOString()})})));
   verified.sort((a, b) => num4(a.competitionTier, 4) - num4(b.competitionTier, 4) || num4(b.trustScore, 0) - num4(a.trustScore, 0) || num4(b.premiumScore, 0) - num4(a.premiumScore, 0));
   const ids = new Set(verified.map((x) => String(x.fixtureId || x.providerMatchId || "")));
   return { ...board, strongPicks: verified, picks: arr2(board?.picks).filter((x) => x?.pickType === "RISKY_VALUE" || ids.has(String(x?.fixtureId || x?.providerMatchId || ""))) };
@@ -7571,7 +7680,8 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     headlineStrong: arr2(board?.strongPicks).length,
     strongMarketOptions: arr2(board?.premiumCandidates).length,
     oddsComplete,
-    candidateCoverageReady
+    candidateCoverageReady,
+    rejections: verifiedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:eliteRejectionReasonsV2(x),probability:ticketNormV70(x.probability),confidenceScore:eliteConfidenceScoreV102(x)}))
   };
   if (!oddsComplete && !candidateCoverageReady) {
     const payload2 = {
@@ -7627,7 +7737,8 @@ function weekendAnchorV70() {
 }
 __name(weekendAnchorV70, "weekendAnchorV70");
 async function buildWeekendLockV70(env, satDate, rebuildReason = null, previousLock = null) {
-  const sunDate = datePlusDays(satDate, 1), values = await Promise.all([ticketBoardV70(env, satDate), ticketBoardV70(env, sunDate), getFeedSnapshot(env, oddsKey(satDate)).catch(() => null), getFeedSnapshot(env, oddsKey(sunDate)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), satBoard = values[0], sunBoard = values[1], satOddsRow = values[2], sunOddsRow = values[3], learning = values[4]?.payload || {}, ranked = [...ticketPoolBoardVerifiedV78(satBoard, "Sat", satOddsRow?.payload || {}, false, learning), ...ticketPoolBoardVerifiedV78(sunBoard, "Sun", sunOddsRow?.payload || {}, false, learning)].sort((a, b2) => num4(a.competitionTier, 4) - num4(b2.competitionTier, 4) || b2._ticketScore - a._ticketScore).slice(0, 24), dailySnap = await getFeedSnapshot(env, "ticket-lock:daily:" + satDate).catch(() => null), reserved = new Set(arr2(dailySnap?.payload?.ticket?.legs).map((x) => String(x.fixtureId || x.providerMatchId || "")).filter(Boolean)), pool = reserved.size ? ranked.filter((x) => !reserved.has(String(x.fixtureId || x.providerMatchId || ""))) : ranked, fiveTry = ticketOptimizeV70(pool.filter(x => !new Set(["five","ten","fifty"].flatMap(k => arr2(previousLock?.tickets?.[k]?.locked ? previousLock.tickets[k].legs : []).map(l => String(l.fixtureId || l.providerMatchId)))).has(String(x.fixtureId || x.providerMatchId))), 5, 4.75, 5.5, 2, 5, true), five = previousLock?.tickets?.five?.locked ? previousLock.tickets.five : fiveTry?.targetMet ? fiveTry : null, fiveIds = new Set(arr2(five?.legs).map(x => String(x.fixtureId || x.providerMatchId))), tenPool = pool.filter(x => !fiveIds.has(String(x.fixtureId || x.providerMatchId)) && !arr2(previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty.legs : []).some(l => String(l.fixtureId || l.providerMatchId) === String(x.fixtureId || x.providerMatchId))), tenTry = ticketOptimizeV70(tenPool, 10, 9, 11, 3, 7, true), ten = previousLock?.tickets?.ten?.locked ? previousLock.tickets.ten : tenTry?.targetMet ? tenTry : null, usedIds = new Set([...arr2(five?.legs),...arr2(ten?.legs)].map(x => String(x.fixtureId || x.providerMatchId))), fiftyTry = ticketOptimizeV70(pool.filter(x => !usedIds.has(String(x.fixtureId || x.providerMatchId))), 50, 45, 55, 4, 9, true), fifty = previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty : fiftyTry?.targetMet ? fiftyTry : null, weekendReady = Boolean(five && ten && fifty), at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, [...arr2(five?.legs), ...arr2(ten?.legs), ...arr2(fifty?.legs)]), payload = { ok: true, type: "weekend", saturday: satDate, sunday: sunDate, status: weekendReady ? "LOCKED" : "BUILDING", lockedAt: weekendReady ? at : null, immutable: weekendReady, revision: TICKET_LOCK_REVISION_V78, rebuiltForPricingIntegrity: Boolean(rebuildReason), rebuiltForOneDayOverride: rebuildReason === "one-day-weekend-reset" || Boolean(previousLock?.rebuiltForOneDayOverride), rebuildReason: rebuildReason || null, saturdayOddsSnapshotUpdatedAt: satOddsRow?.payload?.updatedAt || satOddsRow?.refreshed_at || null, sundayOddsSnapshotUpdatedAt: sunOddsRow?.payload?.updatedAt || sunOddsRow?.refreshed_at || null, tickets: { five: lockTicketV70(five, at, b), ten: lockTicketV70(ten, at, b), fifty: lockTicketV70(fifty, at, b) }, candidateCount: pool.length, eliteReservedCount: reserved.size, rule: "Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder." };
+  if (rebuildReason || previousLock?.revision !== TICKET_LOCK_REVISION_V78 || previousLock?.saturday !== satDate) previousLock = null;
+  const sunDate = datePlusDays(satDate, 1), values = await Promise.all([ticketBoardV70(env, satDate), ticketBoardV70(env, sunDate), getFeedSnapshot(env, oddsKey(satDate)).catch(() => null), getFeedSnapshot(env, oddsKey(sunDate)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), satBoard = values[0], sunBoard = values[1], satOddsRow = values[2], sunOddsRow = values[3], learning = values[4]?.payload || {}, ranked = [...ticketPoolBoardVerifiedV78(satBoard, "Sat", satOddsRow?.payload || {}, false, learning), ...ticketPoolBoardVerifiedV78(sunBoard, "Sun", sunOddsRow?.payload || {}, false, learning)].sort((a, b2) => num4(a.competitionTier, 4) - num4(b2.competitionTier, 4) || b2._ticketScore - a._ticketScore).slice(0, 24), dailySnaps = await Promise.all([satDate,sunDate].map(d=>getFeedSnapshot(env,"ticket-lock:daily:"+d).catch(()=>null))), reserved = new Set(dailySnaps.flatMap(s=>arr2(s?.payload?.ticket?.legs)).map((x) => String(x.fixtureId || x.providerMatchId || "")).filter(Boolean)), pool = reserved.size ? ranked.filter((x) => !reserved.has(String(x.fixtureId || x.providerMatchId || ""))) : ranked, fiveTry = ticketOptimizeV70(pool.filter(x => !new Set(["five","ten","fifty"].flatMap(k => arr2(previousLock?.tickets?.[k]?.locked ? previousLock.tickets[k].legs : []).map(l => String(l.fixtureId || l.providerMatchId)))).has(String(x.fixtureId || x.providerMatchId))), 5, 4.75, 5.5, 2, 5, true), five = previousLock?.tickets?.five?.locked ? previousLock.tickets.five : fiveTry?.targetMet ? fiveTry : null, fiveIds = new Set(arr2(five?.legs).map(x => String(x.fixtureId || x.providerMatchId))), tenPool = pool.filter(x => !fiveIds.has(String(x.fixtureId || x.providerMatchId)) && !arr2(previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty.legs : []).some(l => String(l.fixtureId || l.providerMatchId) === String(x.fixtureId || x.providerMatchId))), tenTry = ticketOptimizeV70(tenPool, 10, 9, 11, 3, 7, true), ten = previousLock?.tickets?.ten?.locked ? previousLock.tickets.ten : tenTry?.targetMet ? tenTry : null, usedIds = new Set([...arr2(five?.legs),...arr2(ten?.legs)].map(x => String(x.fixtureId || x.providerMatchId))), fiftyTry = ticketOptimizeV70(pool.filter(x => !usedIds.has(String(x.fixtureId || x.providerMatchId))), 50, 45, 55, 4, 9, true), fifty = previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty : fiftyTry?.targetMet ? fiftyTry : null, weekendReady = Boolean(five && ten && fifty), at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, [...arr2(five?.legs), ...arr2(ten?.legs), ...arr2(fifty?.legs)]), payload = { ok: true, type: "weekend", saturday: satDate, sunday: sunDate, status: weekendReady ? "LOCKED" : "BUILDING", lockedAt: weekendReady ? at : null, immutable: weekendReady, revision: TICKET_LOCK_REVISION_V78, rebuiltForPricingIntegrity: Boolean(rebuildReason), rebuiltForOneDayOverride: rebuildReason === "one-day-weekend-reset" || Boolean(previousLock?.rebuiltForOneDayOverride), rebuildReason: rebuildReason || null, saturdayOddsSnapshotUpdatedAt: satOddsRow?.payload?.updatedAt || satOddsRow?.refreshed_at || null, sundayOddsSnapshotUpdatedAt: sunOddsRow?.payload?.updatedAt || sunOddsRow?.refreshed_at || null, tickets: { five: lockTicketV70(five, at, b), ten: lockTicketV70(ten, at, b), fifty: lockTicketV70(fifty, at, b) }, candidateCount: pool.length, eliteReservedCount: reserved.size, rule: "Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder." };
   // A published rung is immutable even while the other targets keep building.
   if (!rebuildReason && previousLock?.revision === TICKET_LOCK_REVISION_V78 && previousLock?.saturday === satDate) {
     for (const rung of ["five", "ten", "fifty"]) {
@@ -7661,7 +7772,7 @@ async function ensureTicketLocksV70(env) {
   const sat = weekendAnchorV70(), day = easternWeekday();
   let w = sat ? await getFeedSnapshot(env, "ticket-lock:weekend:" + sat).catch(() => null) : null;
   const weekendStale = Boolean(w?.payload && w.payload.revision !== TICKET_LOCK_REVISION_V78);
-  const weekendOneDayReset = sat === "2026-10-17" && Boolean(w?.payload) && !w.payload.rebuiltForOneDayOverride;
+  const weekendOneDayReset = false; // The dated reset has completed; never replay it on retained locks.
   if (sat && (day === "Sat" || day === "Sun") && (!w || weekendStale || weekendOneDayReset || w?.payload?.status !== "LOCKED")) {
     if ((weekendStale || weekendOneDayReset) && w?.payload?.tickets)
       await archiveTicketLockV78(env, "weekend", sat, w);
@@ -7926,6 +8037,9 @@ var worker_default = {
         return json({
           ok: true,
           service: "two45-live-worker",
+          selectionVersion: selectionV2.VERSION,
+          selectionMode: "SHADOW",
+          recordScope: "official-publication-ledger-v2",
           version: WORKER_VERSION,
           modelVersion: MODEL_VERSION,
           modelLoaded: true
@@ -7980,6 +8094,9 @@ var worker_default = {
         return json({
           ok: true,
           service: "two45-live-worker",
+          selectionVersion: selectionV2.VERSION,
+          selectionMode: "SHADOW",
+          recordScope: "official-publication-ledger-v2",
           version: WORKER_VERSION,
           modelVersion: MODEL_VERSION,
           modelLoaded: true,
@@ -8136,6 +8253,9 @@ var worker_default = {
           await recordSummaryV20(env)
         );
       }
+      if (url.pathname === "/api/record/report") {
+        return json({ok:true,report:await sb(env,"rpc/two45_record_report_v2",{method:"POST",body:"{}"})});
+      }
       if (url.pathname === "/api/record/history" || url.pathname === "/api/record") {
         const limit = Math.max(1, Math.min(num4(url.searchParams.get("limit"), 250), 1e3));
         return json(
@@ -8231,6 +8351,9 @@ var worker_default = {
         {
           ok: false,
           service: "two45-live-worker",
+          selectionVersion: selectionV2.VERSION,
+          selectionMode: "SHADOW",
+          recordScope: "official-publication-ledger-v2",
           version: WORKER_VERSION,
           error: e?.message || String(e)
         },
