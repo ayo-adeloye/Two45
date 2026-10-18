@@ -8253,6 +8253,9 @@ var worker_default = {
           await recordSummaryV20(env)
         );
       }
+      if (url.pathname === "/api/record/report") {
+        return json({ok:true,report:await sb(env,"rpc/two45_record_report_v2",{method:"POST",body:"{}"})});
+      }
       if (url.pathname === "/api/record/history" || url.pathname === "/api/record") {
         const limit = Math.max(1, Math.min(num4(url.searchParams.get("limit"), 250), 1e3));
         return json(
