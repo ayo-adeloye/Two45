@@ -6,6 +6,12 @@ const quotes=[{fixtureId:1,market:'TOTAL_GOALS',selection:'OVER_2.5',bookmaker:'
 const calibration={trainedBefore:'2026-10-16T00:00:00Z',groups:Object.fromEntries(['OVER_2_5','UNDER_3_5'].map(s=>[calibrationKey('TOTAL_GOALS',s,'old'),{n:1000,ready:true,offset:0,uncertainty:.005}]))};
 let rows=generateCandidates(analysis,quotes,calibration,context);
 assert(rows.every(x=>x.eligible)); assert.equal(primaryPicks(rows).length,1);
+const strictContext={...context,requireProviderQuoteTime:true};
+assert(generateCandidates(analysis,quotes,calibration,strictContext).every(x=>!x.eligible),'Aggregate timestamps cannot prove provider freshness');
+const sourcedQuotes=quotes.map(q=>({...q,providerUpdatedAt:q.observedAt}));
+assert(generateCandidates(analysis,sourcedQuotes,calibration,strictContext).every(x=>x.eligible));
+assert(generateCandidates(analysis,sourcedQuotes.map(q=>({...q,providerUpdatedAt:'2026-10-17T10:00:00Z'})),calibration,strictContext).every(x=>!x.eligible),'Old provider prices remain stale after a new fetch');
+assert(generateCandidates(analysis,sourcedQuotes.map(q=>({...q,providerUpdatedAt:'2026-10-17T13:00:00Z'})),calibration,strictContext).every(x=>!x.eligible),'Future provider timestamps must abstain');
 assert(generateCandidates(analysis,[],calibration,context).every(x=>x.reasons.includes('MISSING_OR_STALE_EXACT_BET365')));
 assert(generateCandidates(analysis,[...quotes,{...quotes[0],odds:1.7}],calibration,context)[0].reasons.includes('AMBIGUOUS_PRICE'));
 assert(generateCandidates(analysis,quotes,{},context).every(x=>x.reasons.includes('CALIBRATION_UNVALIDATED')));

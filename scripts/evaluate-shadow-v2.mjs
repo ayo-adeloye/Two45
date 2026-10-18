@@ -19,7 +19,26 @@ export function grade(m,s,h,a) {
  }else return null;
  return v>0?'WIN':v<0?'LOSS':'PUSH';
 }
-export function evaluate(rows) {
+export function blockIntervals(rows,replicates=1500) {
+ const days=[...new Set(rows.map(r=>r.date))].sort(),groups=days.map(d=>rows.filter(r=>r.date===d));
+ if(days.length<2)return {days:days.length,roi95:null,brierVsLegacy95:null,logLossVsLegacy95:null};
+ let seed=7331;const rand=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};
+ const values={roi:[],brierVsLegacy:[],logLossVsLegacy:[]};
+ const loss=(p,y)=>-y*Math.log(Math.max(.001,p))-(1-y)*Math.log(Math.max(.001,1-p));
+ for(let i=0;i<replicates;i++) {
+  const sample=days.flatMap(()=>groups[Math.floor(rand()*groups.length)]),priced=sample.filter(r=>r.odds>1),paired=sample.filter(r=>r.legacyProbability>0&&r.legacyProbability<1);
+  if(priced.length)values.roi.push(priced.reduce((n,r)=>n+(r.outcome==='WIN'?r.odds-1:-1),0)/priced.length);
+  if(paired.length) {
+   values.brierVsLegacy.push(paired.reduce((n,r)=>n+(r.probability-r.y)**2-(r.legacyProbability-r.y)**2,0)/paired.length);
+   values.logLossVsLegacy.push(paired.reduce((n,r)=>n+loss(r.probability,r.y)-loss(r.legacyProbability,r.y),0)/paired.length);
+  }
+ }
+ const interval=a=>{a.sort((a,b)=>a-b);return a.length?[a[Math.floor(a.length*.025)],a[Math.floor(a.length*.975)]]:null;};
+ return {days:days.length,replicates,seed:7331,roi95:interval(values.roi),brierVsLegacy95:interval(values.brierVsLegacy),logLossVsLegacy95:interval(values.logLossVsLegacy)};
+}
+export function evaluate(rows,{protocol=null}={}) {
+ const inputRows=rows.length;
+ if(protocol)rows=rows.filter(r=>r.payload?.validationProtocol===protocol);
  const frozen=new Map();
  // Predeclared decision time: last available snapshot at least one hour before kickoff.
  for(const r of rows) {
@@ -32,28 +51,39 @@ export function evaluate(rows) {
   const p=r.payload||{}, c=p.primary?.[0];
   if(c?.eligible) {
    const outcome=grade(c.market,c.selection,r.final_home_score,r.final_away_score);
-   if(outcome)selected.push({...c,outcome,sportsbook_odds:c.odds,fixture_id:r.fixture_id});
+   if(outcome)selected.push({...c,date:r.kickoff_at.slice(0,10),y:+(outcome==='WIN'),legacyProbability:p.legacy?.probabilities?.[c.market]?.[c.selection]??null,outcome,sportsbook_odds:c.odds,fixture_id:r.fixture_id});
   }
   const decision=p.legacyResearchDecision;
   const b=p.candidates?.find(c=>c.market===decision?.market&&c.selection===canonical(decision?.selection));
   if(decision?.decision==='PICK'&&b?.odds>1) {
    const outcome=grade(b.market,b.selection,r.final_home_score,r.final_away_score);
-   if(outcome)legacy.push({...b,outcome,sportsbook_odds:b.odds,fixture_id:r.fixture_id});
+   if(outcome)legacy.push({...b,rawProbability:p.legacy?.probabilities?.[b.market]?.[b.selection]??b.rawProbability,outcome,sportsbook_odds:b.odds,fixture_id:r.fixture_id});
   }
  }
- const paired=selected.filter(c=>c.marketProbability>0&&c.marketProbability<1);
+ const paired=selected.filter(c=>['WIN','LOSS'].includes(c.outcome)&&c.marketProbability>0&&c.marketProbability<1);
  const candidate=scoreRows(selected,c=>c.probability),rawOnSameSelections=scoreRows(paired,c=>c.rawProbability),market=scoreRows(paired,c=>c.marketProbability);
  const calibratedOnPaired=scoreRows(paired,c=>c.probability),baseline=scoreRows(legacy,c=>c.rawProbability);
  const reasons=[];
+ const settled=selected.filter(c=>['WIN','LOSS'].includes(c.outcome)),intervals=blockIntervals(settled);
+ const sameLegacy=paired.filter(c=>c.legacyProbability>0&&c.legacyProbability<1);
+ const legacyScores=scoreRows(sameLegacy,c=>c.legacyProbability),candidateScores=scoreRows(sameLegacy,c=>c.probability);
+ if(intervals.days<14)reasons.push('NEED_14_SETTLED_FIXTURE_DAYS');
+ if(!(intervals.roi95?.[0]>0))reasons.push('POSITIVE_ROI_CONFIDENCE_NOT_ESTABLISHED');
+ if(!(intervals.brierVsLegacy95?.[1]<0&&intervals.logLossVsLegacy95?.[1]<0))reasons.push('PAIRED_LEGACY_IMPROVEMENT_NOT_ESTABLISHED');
+ if(sameLegacy.length!==paired.length)reasons.push('INCOMPLETE_PAIRED_LEGACY_BENCHMARK');
+ if(!(candidateScores.brier<legacyScores.brier&&candidateScores.logLoss<legacyScores.logLoss))reasons.push('PAIRED_SCORES_NOT_BETTER_THAN_LEGACY');
+ const byMarket=Object.fromEntries([...new Set(settled.map(x=>x.market))].map(m=>[m,scoreRows(settled.filter(x=>x.market===m),c=>c.probability)]));
+ if(!Object.keys(byMarket).length||Object.values(byMarket).some(m=>m.n<60))reasons.push('NEED_60_SETTLED_SELECTIONS_PER_PUBLISHED_MARKET');
+ if(!protocol)reasons.push('EXPLICIT_FROZEN_PROTOCOL_REQUIRED');
  if(candidate.n<200)reasons.push('NEED_200_SETTLED_PROSPECTIVE_SELECTIONS');
  if(paired.length!==selected.filter(c=>['WIN','LOSS'].includes(c.outcome)).length)reasons.push('INCOMPLETE_SAME_LINE_MARKET_BENCHMARK');
  if(!(candidate.roi>0&&candidate.roi>baseline.roi))reasons.push('ROI_NOT_ABOVE_ZERO_AND_LEGACY');
  if(!(calibratedOnPaired.brier<rawOnSameSelections.brier&&calibratedOnPaired.brier<market.brier&&calibratedOnPaired.logLoss<rawOnSameSelections.logLoss&&calibratedOnPaired.logLoss<market.logLoss))reasons.push('PROPER_SCORES_NOT_BETTER_THAN_BOTH_BASELINES');
  reasons.push('REQUIRE_FROZEN_HOLDOUT_AND_FIXTURE_DAY_BLOCK_CONFIDENCE_INTERVAL_REVIEW');
- return {snapshotRule:'Latest snapshot at least one hour before kickoff; one primary per fixture',fixtures:frozen.size,candidate,baseline,rawOnSameSelections,calibratedOnPaired,market,paired:paired.length,byMarket:Object.fromEntries([...new Set(selected.map(x=>x.market))].map(m=>[m,scoreRows(selected.filter(x=>x.market===m),c=>c.probability)])),promotion:{allowed:false,reasons}};
+ return {snapshotRule:'Latest snapshot at least one hour before kickoff; one primary per fixture',protocol,inputRows,protocolRows:rows.length,fixtures:frozen.size,roiScope:'Flat one-unit single-selection returns at frozen exact Bet365 quotes; not published ticket ROI',candidate,baseline,legacyOnSameSelections:legacyScores,candidateOnLegacyPaired:candidateScores,rawOnSameSelections,calibratedOnPaired,market,paired:paired.length,intervals,byMarket,promotion:{allowed:false,reasons}};
 }
 if(process.argv[1]?.endsWith('evaluate-shadow-v2.mjs')) {
  if(!process.argv[2])throw Error('Usage: node scripts/evaluate-shadow-v2.mjs shadow-export.json [report.json]');
- const bytes=fs.readFileSync(process.argv[2]),report={inputSHA256:crypto.createHash('sha256').update(bytes).digest('hex'),...evaluate(JSON.parse(bytes))};
+ const bytes=fs.readFileSync(process.argv[2]),report={inputSHA256:crypto.createHash('sha256').update(bytes).digest('hex'),...evaluate(JSON.parse(bytes),{protocol:process.argv[4]||null})};
  const text=JSON.stringify(report,null,2);if(process.argv[3])fs.writeFileSync(process.argv[3],text);else console.log(text);
 }

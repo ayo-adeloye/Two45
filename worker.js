@@ -1,3 +1,264 @@
+// BEGIN GENERATED FORECAST CORE V3
+var forecastCoreV3 = (() => {
+// Odds-free, hierarchical goal model. Training labels are unique regulation-time fixtures.
+const CORE_VERSION='two45-independent-core-v3.1';
+const day=86400000;
+const number=x=>x===null||x===undefined||x===''?null:Number.isFinite(Number(x))?Number(x):null;
+const clip=(x,lo,hi)=>Math.max(lo,Math.min(hi,x));
+const leagueKey=f=>`${f.league_id}:${f.season}`;
+const teamKey=(f,id)=>`${leagueKey(f)}:${id}`;
+const validId=x=>x!=null&&String(x).trim()!==''&&!['undefined','null','nan','0'].includes(String(x).toLowerCase());
+function seasonFeatures(snapshot,fixture,side,at) {
+ if(!snapshot)return null;
+ const team=side==='home'?fixture.home_id:fixture.away_id;
+ if(String(snapshot.provider_team_id)!==String(team)||String(snapshot.provider_league_id)!==String(fixture.league_id)||String(snapshot.season)!==String(fixture.season))return null;
+ if(!(timestamp(snapshot.as_of)<=timestamp(at))||!snapshot.cutoff_date||!(snapshot.cutoff_date<fixture.kickoff_at.slice(0,10)))return null;
+ const played={};for(const venue of ['home','away','total']) {const n=number(snapshot.played?.[venue]);played[venue]=Number.isInteger(n)&&n>=0?n:null;}
+ if(played.total==null||played.home==null||played.away==null||played.total!==played.home+played.away)return null;
+ const forRate={},againstRate={};
+ for(const [name,target] of [['goals_for',forRate],['goals_against',againstRate]])for(const venue of ['home','away','total']) {
+  const goals=number(snapshot[name]?.[venue]),n=played[venue];
+  target[venue]=n>0&&goals!=null&&goals>=0&&goals/n<=8?goals/n:null;
+ }
+ return {snapshotId:snapshot.id||null,teamId:String(team),leagueId:String(fixture.league_id),season:String(fixture.season),observedAt:snapshot.as_of,cutoffDate:snapshot.cutoff_date,played,forRate,againstRate};
+}
+function validFeatures(f,fixture,side,at) {
+ const team=side==='home'?fixture.home_id:fixture.away_id;
+ return f&&String(f.teamId)===String(team)&&String(f.leagueId)===String(fixture.league_id)&&String(f.season)===String(fixture.season)&&timestamp(f.observedAt)<=timestamp(at)&&timestamp(at)-timestamp(f.observedAt)<=30*day&&f.cutoffDate<fixture.kickoff_at.slice(0,10)?f:null;
+}
+function seasonOffsets(f,global,config,at) {
+ const h=validFeatures(f.home_features,f,'home',at),a=validFeatures(f.away_features,f,'away',at);
+ const ratio=(feature,field,venue,prior)=>{
+  const n=feature?.played?.[venue]||0,r=feature?.[field]?.[venue];
+  return r==null||!n?0:Math.log((n*r+config.seasonPriorMatches*prior)/(n+config.seasonPriorMatches)/prior);
+ };
+ return {home:config.seasonWeight*(ratio(h,'forRate','home',global.home)+ratio(a,'againstRate','away',global.home)),away:config.seasonWeight*(ratio(a,'forRate','away',global.away)+ratio(h,'againstRate','home',global.away)),h,a};
+}
+function timestamp(s) {
+ if(typeof s==='number')return Number.isFinite(s)?s:NaN;
+ return Date.parse(String(s||'').replace(' ','T').replace(/([+-]\d\d)$/,'$1:00'));
+}
+function cleanFixtures(rows,asOf) {
+ const before=timestamp(asOf),groups=new Map(),rejected={};
+ const reject=k=>{rejected[k]=(rejected[k]||0)+1;};
+ for(const f of rows) {
+  const h=number(f.home_goals),a=number(f.away_goals),kickoff=timestamp(f.kickoff_at),available=timestamp(f.result_available_at);
+  if(f.final_status!=='FT'){reject('NOT_REGULATION_FULL_TIME');continue;}
+  if(!f.fixture_id||!f.league_id||!f.season||!f.home_id||!f.away_id||String(f.home_id)===String(f.away_id)){reject('IDENTITY');continue;}
+  if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0||h>30||a>30){reject('SCORES');continue;}
+  if(!Number.isFinite(kickoff)||!Number.isFinite(available)||available<kickoff){reject('RESULT_PROVENANCE');continue;}
+  if(!(available<before&&kickoff<before)){reject('NOT_AVAILABLE_BEFORE_CUTOFF');continue;}
+  const copy={...f,home_goals:h,away_goals:a},id=String(f.fixture_id),existing=groups.get(id);
+  if(existing===null){reject('CONFLICTING_DUPLICATE');continue;}
+  if(existing&&(existing.home_goals!==h||existing.away_goals!==a||String(existing.home_id)!==String(f.home_id)||String(existing.away_id)!==String(f.away_id)||leagueKey(existing)!==leagueKey(f)||timestamp(existing.kickoff_at)!==kickoff)){
+    groups.set(id,null);reject('CONFLICTING_DUPLICATE');continue;
+  }
+  if(!existing||available<timestamp(existing.result_available_at))groups.set(id,copy);
+  else reject('EXACT_DUPLICATE');
+ }
+ return {rows:[...groups.values()].filter(Boolean).sort((a,b)=>timestamp(a.kickoff_at)-timestamp(b.kickoff_at)||String(a.fixture_id).localeCompare(String(b.fixture_id))),rejected};
+}
+
+function attachSeasonHistory(fixtures,snapshots) {
+ const groups=new Map();for(const s of snapshots){const key=[s.provider_league_id,s.season,s.provider_team_id].join(':');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(s);}
+ for(const list of groups.values())list.sort((a,b)=>timestamp(a.as_of)-timestamp(b.as_of));
+ return fixtures.map(f=>{
+  const at=timestamp(f.kickoff_at)-3600000,result={...f};
+  for(const side of ['home','away']) {
+   const list=groups.get([f.league_id,f.season,f[side+'_id']].join(':'))||[];
+   for(let i=list.length-1;i>=0;i--) {
+    if(timestamp(list[i].as_of)>at)continue;
+    const feature=seasonFeatures(list[i],f,side,at);if(feature){result[side+'_features']=feature;break;}
+   }
+  }
+  return result;
+ });
+}
+
+function fitGoalModel(fixtures,asOf,options={}) {
+ const config={halfLifeDays:90,teamPenalty:12,leaguePriorMatches:30,seasonPriorMatches:12,seasonWeight:.65,rho:0,iterations:90,...options};
+ if(!(config.halfLifeDays>0&&config.teamPenalty>0&&config.leaguePriorMatches>0&&config.seasonPriorMatches>0&&config.seasonWeight>=0&&config.seasonWeight<=1&&Math.abs(config.rho)<=.2))throw Error('Invalid model configuration');
+ const clean=cleanFixtures(fixtures,asOf),now=timestamp(asOf);
+ if(!Number.isFinite(now))throw Error('Training cutoff must be a valid timestamp');
+ const rows=clean.rows.map(f=>({...f,weight:Math.exp(-Math.LN2*(now-timestamp(f.kickoff_at))/day/config.halfLifeDays)}));
+ const sum=rows.reduce((n,r)=>n+r.weight,0);
+ // Weak global Gamma priors are explicit; league and team terms learn from results.
+ const global={home:(rows.reduce((n,r)=>n+r.home_goals*r.weight,0)+1.4*20)/(sum+20),away:(rows.reduce((n,r)=>n+r.away_goals*r.weight,0)+1.1*20)/(sum+20)};
+ const leagues={},teams={};
+ for(const f of rows) {
+  const l=leagues[leagueKey(f)] ||= {home:Math.log(global.home),away:Math.log(global.away),n:0,weight:0};l.n++;l.weight+=f.weight;
+  for(const id of [f.home_id,f.away_id]) {const t=teams[teamKey(f,id)] ||= {attack:0,defence:0,n:0,weight:0};t.n++;t.weight+=f.weight;}
+ }
+ const observations=rows.flatMap(f=>{
+  const offsets=seasonOffsets(f,global,config,timestamp(f.kickoff_at)-3600000);
+  return [
+   {l:leagueKey(f),venue:'home',attack:teamKey(f,f.home_id),defence:teamKey(f,f.away_id),y:f.home_goals,w:f.weight,offset:offsets.home},
+   {l:leagueKey(f),venue:'away',attack:teamKey(f,f.away_id),defence:teamKey(f,f.home_id),y:f.away_goals,w:f.weight,offset:offsets.away}
+  ];
+ });
+ const groups=new Map();
+ for(const o of observations)for(const key of [`l|${o.l}|${o.venue}`,`a|${o.attack}`,`d|${o.defence}`]) {
+  if(!groups.has(key))groups.set(key,[]);groups.get(key).push(o);
+ }
+ const rate=o=>Math.exp(clip(leagues[o.l][o.venue]+teams[o.attack].attack+teams[o.defence].defence+o.offset,-3,2));
+ let lastStep=Infinity,iterations=0;
+ // Damped coordinate Newton optimization of a penalized weighted Poisson likelihood.
+ for(;iterations<config.iterations;iterations++) {
+  let maximum=0;
+  for(const [key,obs] of groups) {
+   const [type,id,venue]=key.split('|'),object=type==='l'?leagues[id]:teams[id],field=type==='l'?venue:type==='a'?'attack':'defence';
+   const current=object[field];let gradient,hessian;
+   if(type==='l') {
+    const prior=global[venue],penalty=config.leaguePriorMatches;
+    gradient=penalty*(Math.exp(current)-prior);hessian=penalty*Math.exp(current);
+   }else {gradient=config.teamPenalty*current;hessian=config.teamPenalty;}
+   for(const o of obs){const mu=rate(o);gradient+=o.w*(mu-o.y);hessian+=o.w*mu;}
+   const step=clip(gradient/Math.max(hessian,1e-8),-.3,.3);object[field]=clip(current-.8*step,type==='l'?-2.3:-1.5,type==='l'?1.8:1.5);maximum=Math.max(maximum,Math.abs(step));
+  }
+  lastStep=maximum;if(maximum<1e-7)break;
+ }
+ // Diagonal curvature approximations are reported as approximations, not calibrated confidence bounds.
+ for(const [key,obs] of groups) {
+  const [type,id,venue]=key.split('|'),object=type==='l'?leagues[id]:teams[id],field=type==='l'?venue:type==='a'?'attack':'defence';
+  object[field+'Variance']=1/(obs.reduce((n,o)=>n+o.w*rate(o),0)+(type==='l'?config.leaguePriorMatches*Math.exp(object[field]):config.teamPenalty));
+ }
+ return {version:CORE_VERSION,trainedBefore:new Date(now).toISOString(),trainingFixtures:rows.length,firstFixture:rows[0]?.kickoff_at||null,lastFixture:rows.at(-1)?.kickoff_at||null,global,leagues,teams,config,fit:{iterations,lastStep},trainingAudit:clean.rejected};
+}
+
+function poissonVector(lambda) {
+ const p=[Math.exp(-lambda)];let sum=p[0];
+ for(let k=1;k<80;k++){p[k]=p[k-1]*lambda/k;sum+=p[k];if(k>lambda&&1-sum<1e-12)break;}
+ return {p,tail:Math.max(0,1-sum)};
+}
+function scoreMatrix(homeRate,awayRate,rho=0) {
+ if(!(homeRate>0&&awayRate>0&&homeRate<=8&&awayRate<=8))throw Error('Invalid goal rates');
+ const h=poissonVector(homeRate),a=poissonVector(awayRate);
+ const safeRho=clip(rho,Math.max(-1/homeRate,-1/awayRate)+1e-9,Math.min(1/(homeRate*awayRate),1)-1e-9);
+ const cells=[];let mass=0;
+ for(let x=0;x<h.p.length;x++)for(let y=0;y<a.p.length;y++) {
+  const tau=x===0&&y===0?1-homeRate*awayRate*safeRho:x===0&&y===1?1+homeRate*safeRho:x===1&&y===0?1+awayRate*safeRho:x===1&&y===1?1-safeRho:1;
+  const p=h.p[x]*a.p[y]*tau;cells.push([x,y,p]);mass+=p;
+ }
+ return {cells:cells.map(([h,a,p])=>[h,a,p/mass]),discardedTail:1-(1-h.tail)*(1-a.tail),rho:safeRho};
+}
+function marketBoard(cells) {
+ const out={MATCH_RESULT:{HOME:0,DRAW:0,AWAY:0},BTTS:{YES:0,NO:0},TOTAL_GOALS:{},HOME_TEAM_GOALS:{},AWAY_TEAM_GOALS:{},HANDICAP:{}};
+ for(const m of ['TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS'])for(const line of [.5,1.5,2.5,3.5,4.5,5.5]) {const s=String(line).replace('.','_');out[m]['OVER_'+s]=0;out[m]['UNDER_'+s]=0;}
+ for(const team of ['HOME','AWAY'])for(const sign of ['PLUS','MINUS'])for(const line of [.5,1.5,2.5])out.HANDICAP[`${team}_${sign}_${String(line).replace('.','_')}`]=0;
+ for(const [h,a,p] of cells) {
+  out.MATCH_RESULT[h>a?'HOME':h<a?'AWAY':'DRAW']+=p;out.BTTS[h>0&&a>0?'YES':'NO']+=p;
+  for(const [m,total] of [['TOTAL_GOALS',h+a],['HOME_TEAM_GOALS',h],['AWAY_TEAM_GOALS',a]])for(const line of [.5,1.5,2.5,3.5,4.5,5.5])out[m][`${total>line?'OVER':'UNDER'}_${String(line).replace('.','_')}`]+=p;
+  for(const [team,diff] of [['HOME',h-a],['AWAY',a-h]])for(const [sign,mult] of [['PLUS',1],['MINUS',-1]])for(const line of [.5,1.5,2.5])if(diff+mult*line>0)out.HANDICAP[`${team}_${sign}_${String(line).replace('.','_')}`]+=p;
+ }
+ out.DOUBLE_CHANCE={HOME_OR_DRAW:out.MATCH_RESULT.HOME+out.MATCH_RESULT.DRAW,DRAW_OR_AWAY:out.MATCH_RESULT.DRAW+out.MATCH_RESULT.AWAY,HOME_OR_AWAY:out.MATCH_RESULT.HOME+out.MATCH_RESULT.AWAY};
+ return out;
+}
+
+function predictGoals(model,fixture,asOf,context={}) {
+ if(model?.version!==CORE_VERSION)throw Error('Unsupported goal model version');
+ const now=timestamp(asOf),kickoff=timestamp(fixture.kickoff_at),trained=timestamp(model.trainedBefore);
+ if(!Number.isFinite(now)||!Number.isFinite(kickoff)||!(trained<=now&&now<kickoff))throw Error('Prediction violates training/fixture time boundary');
+ if(![fixture.league_id,fixture.season,fixture.home_id,fixture.away_id].every(validId)||String(fixture.home_id)===String(fixture.away_id))throw Error('Fixture identity is incomplete');
+ const l=model.leagues[leagueKey(fixture)],h=model.teams[teamKey(fixture,fixture.home_id)],a=model.teams[teamKey(fixture,fixture.away_id)];
+ const offsets=seasonOffsets(fixture,model.global,model.config,asOf);
+ const homeLog=(l?.home??Math.log(model.global.home))+(h?.attack||0)+(a?.defence||0)+offsets.home,awayLog=(l?.away??Math.log(model.global.away))+(a?.attack||0)+(h?.defence||0)+offsets.away;
+ const homeVariance=(l?.homeVariance??1/20)+(h?.attackVariance??1/model.config.teamPenalty)+(a?.defenceVariance??1/model.config.teamPenalty);
+ const awayVariance=(l?.awayVariance??1/20)+(a?.attackVariance??1/model.config.teamPenalty)+(h?.defenceVariance??1/model.config.teamPenalty);
+ const reasons=[];
+ if(!l||l.weight<20)reasons.push('SPARSE_LEAGUE_HISTORY');
+ const supported=(t,f,venue)=>(t?.weight||0)>=4||((f?.played?.total||0)>=8&&(f?.played?.[venue]||0)>=4&&f?.forRate?.[venue]!=null&&f?.againstRate?.[venue]!=null);
+ if(!supported(h,offsets.h,'home')||!supported(a,offsets.a,'away'))reasons.push('SPARSE_TEAM_HISTORY');
+ if(now-trained>7*day)reasons.push('STALE_TRAINING_ARTIFACT');
+ // Context must have observed measurements and separately validated coefficients;
+ // default lineup/absence/form values never alter independent goal rates.
+ const contextual={used:false,provided:Object.keys(context).length>0,reason:'CONTEXT_COEFFICIENTS_NOT_VALIDATED'};
+ const quadrature=[[-Math.sqrt(3),1/6],[0,2/3],[Math.sqrt(3),1/6]],mixture=new Map(),draws=[];let tail=0;
+ for(const [zh,wh] of quadrature)for(const [za,wa] of quadrature) {
+  const rateH=clip(Math.exp(homeLog+zh*Math.sqrt(homeVariance)),.08,7),rateA=clip(Math.exp(awayLog+za*Math.sqrt(awayVariance)),.08,7);
+  const matrix=scoreMatrix(rateH,rateA,model.config.rho),weight=wh*wa;tail+=weight*matrix.discardedTail;
+  draws.push({weight,home:rateH,away:rateA});
+  for(const [x,y,p] of matrix.cells){const key=`${x}:${y}`;mixture.set(key,(mixture.get(key)||0)+p*weight);}
+ }
+ const cells=[...mixture].map(([key,p])=>[...key.split(':').map(Number),p]),mass=cells.reduce((n,c)=>n+c[2],0);
+ for(const c of cells)c[2]/=mass;
+ return {modelVersion:CORE_VERSION,trainedBefore:model.trainedBefore,generatedAt:new Date(now).toISOString(),fixtureId:fixture.fixture_id,
+  expectedGoals:{home:draws.reduce((n,x)=>n+x.home*x.weight,0),away:draws.reduce((n,x)=>n+x.away*x.weight,0)},
+  probabilities:marketBoard(cells),scoreCells:cells,uncertainty:{method:'penalized-curvature log-rate mixture; diagonal approximation',homeLogSd:Math.sqrt(homeVariance),awayLogSd:Math.sqrt(awayVariance),discardedTail:tail},
+  evidence:{leagueMatches:l?.n||0,homeMatches:h?.n||0,awayMatches:a?.n||0,leagueEffectiveMatches:l?.weight||0,homeEffectiveMatches:h?.weight||0,awayEffectiveMatches:a?.weight||0,homeSeasonSnapshot:offsets.h?.snapshotId||null,awaySeasonSnapshot:offsets.a?.snapshotId||null,homeSeasonMatches:offsets.h?.played?.total||0,awaySeasonMatches:offsets.a?.played?.total||0,contextual},
+  dataQuality:Math.min(1,(l?.weight||0)/30)*.3+Math.min(1,Math.max(h?.weight||0,offsets.h?.played?.total||0)/8)*.35+Math.min(1,Math.max(a?.weight||0,offsets.a?.played?.total||0)/8)*.35,
+  qualityHold:reasons.length>0,rejectionReasons:reasons,coreUsesSportsbookOdds:false,promotionAllowed:false};
+}
+
+return {CORE_VERSION,fitGoalModel,predictGoals,seasonFeatures,attachSeasonHistory};
+})();
+// END GENERATED FORECAST CORE V3
+// BEGIN FORECAST CORE RUNTIME V3
+// The configuration is frozen from development scoring. Daily refreshes never retune on test results.
+const GOAL_CORE_CONFIG_V3 = {teamPenalty:12,halfLifeDays:90,rho:0,seasonWeight:1};
+const MIGRATION_PROTOCOL_V2 = 'independent-v2-migration-20261018';
+function modelMigrationStatusV2() {
+  return {state:'BLOCKED_VALIDATION',promotionAllowed:false,protocol:MIGRATION_PROTOCOL_V2,
+    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY',candidateSelection:selectionV2.VERSION,
+    products:['ELITE_3','HIGH_CONVICTION','WEEKEND_LADDER'],recordScope:'official-publication-ledger-v2',
+    blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED'],
+    requirements:{settledSelections:200,fixtureDays:14,perMarketSelections:60,decisionMinutesBeforeKickoff:60,quoteMaxAgeMinutes:30},
+    missingXGPolicy:'Observed xG is unavailable and excluded. Goal expectations are learned from timestamped scores and season features.',
+    cutover:'No runtime activation flag. A validated release must replace all product publishers together, retire legacy writes and retain the publication ledger and historical locks.'};
+}
+
+async function refreshGoalCoreV3(env) {
+  const now=new Date(),asOf=now.toISOString(),date=asOf.slice(0,10),statusKey='forecast-core-v3:training-status';
+  const status=(await getFeedSnapshot(env,statusKey).catch(()=>null))?.payload;
+  if(status?.date===date&&status?.state==='READY')return {skipped:true,...status};
+  if(status?.state==='RUNNING'&&Date.now()-Date.parse(status.startedAt)<15*60000)return {skipped:true,reason:'TRAINING_IN_PROGRESS'};
+  if(Date.parse(status?.retryAfter)>Date.now())return {skipped:true,reason:'TRAINING_RETRY_BACKOFF'};
+  try {
+    const existing=arr2(await sb(env,'two45_goal_model_artifacts_v3?model_version=eq.'+encodeURIComponent(forecastCoreV3.CORE_VERSION)+'&select=id,trained_before&order=trained_before.desc&limit=1'))[0];
+    if(existing?.trained_before?.slice(0,10)===date) {
+      const result={state:'READY',date,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW'};
+      await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
+    }
+    await saveFeedSnapshot(env,statusKey,{state:'RUNNING',date,startedAt:asOf,mode:'SHADOW'},365*86400);
+    const data=await sb(env,'rpc/two45_goal_training_data_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
+    if(!data||data.truncated)throw Error('Training corpus unavailable or exceeded declared bounds');
+    const inputs=forecastCoreV3.attachSeasonHistory(data.fixtures,data.features);
+    const parameters=forecastCoreV3.fitGoalModel(inputs,asOf,GOAL_CORE_CONFIG_V3);
+    if(parameters.trainingFixtures<100||parameters.fit.lastStep>.001)throw Error('Insufficient training data or optimizer did not converge');
+    parameters.calibration=await sb(env,'rpc/two45_goal_calibration_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf})});
+    const hash=await sb(env,'rpc/two45_goal_dataset_hash_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
+    if(!/^[a-f0-9]{64}$/.test(String(hash)))throw Error('Training dataset hash unavailable');
+    const saved=arr2(await sb(env,'two45_goal_model_artifacts_v3?on_conflict=artifact_key',{method:'POST',prefer:'resolution=ignore-duplicates,return=representation',timeoutMs:15000,
+      body:JSON.stringify({artifact_key:forecastCoreV3.CORE_VERSION+':'+date,model_version:forecastCoreV3.CORE_VERSION,trained_before:asOf,dataset_hash:hash,parameters,
+      validation:{promotionAllowed:false,phase:'PROSPECTIVE_SHADOW',historicalGate:'FAILED_PAIRED_BRIER_AND_LOG_LOSS',configuration:'development-frozen; no automatic retuning'}})}))[0];
+    const result={state:'READY',date,modelId:saved?.id||null,trainedBefore:asOf,trainingFixtures:parameters.trainingFixtures,mode:'SHADOW',datasetHash:hash};
+    await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
+  }catch(e) {
+    const result={state:'FAILED',date,error:safeRefreshError(e),retryAfter:new Date(Date.now()+3600000).toISOString(),mode:'SHADOW'};
+    await saveFeedSnapshot(env,statusKey,result,365*86400).catch(()=>null);return result;
+  }
+}
+
+async function recordGoalForecastV3(env,job,legacyAnalysis,quotes,legacyDecision=null) {
+  const now=Date.now(),asOf=new Date(now).toISOString();
+  if(!(now<Date.parse(job.kickoff_at))||legacyAnalysis.live)return {mode:'SHADOW',skipped:true,reason:'NOT_PREMATCH'};
+  const contextRow=await sb(env,'rpc/two45_goal_context_v3',{method:'POST',timeoutMs:4000,body:JSON.stringify({p_league:String(job.provider_league_id),p_season:String(job.season),p_home:String(job.home_team_id),p_away:String(job.away_team_id),p_as_of:asOf,p_kickoff:job.kickoff_at})});
+  if(!contextRow?.model)return {mode:'SHADOW',skipped:true,reason:'MODEL_ARTIFACT_UNAVAILABLE'};
+  const fixture={fixture_id:job.fixture_id,league_id:String(job.provider_league_id),season:String(job.season),home_id:String(job.home_team_id),away_id:String(job.away_team_id),kickoff_at:job.kickoff_at};
+  fixture.home_features=forecastCoreV3.seasonFeatures(contextRow.home_feature,fixture,'home',asOf);
+  fixture.away_features=forecastCoreV3.seasonFeatures(contextRow.away_feature,fixture,'away',asOf);
+  const prediction=forecastCoreV3.predictGoals(contextRow.model,fixture,asOf);
+  const {scoreCells,...forecast}=prediction; // Reconstruct cells from immutable artifact + fixture inputs.
+  const featureTimes=[fixture.home_features?.observedAt,fixture.away_features?.observedAt].filter(Boolean).map(Date.parse);
+  const context={fixtureId:job.fixture_id,modelVersion:forecastCoreV3.CORE_VERSION,now,kickoff:job.kickoff_at,tier:competitionTierV21(job.competition,job.provider_league_id),requireProviderQuoteTime:true,
+    sampleSize:Math.min(Math.max(prediction.evidence.homeEffectiveMatches,prediction.evidence.homeSeasonMatches),Math.max(prediction.evidence.awayEffectiveMatches,prediction.evidence.awaySeasonMatches)),
+    featureAsOf:featureTimes.length?new Date(Math.min(...featureTimes)).toISOString():contextRow.model.trainedBefore};
+  const candidates=selectionV2.generateCandidates(forecast,quotes,contextRow.model.calibration,context);
+  await sb(env,'two45_goal_forecasts_v3',{method:'POST',prefer:'return=minimal',timeoutMs:4000,body:JSON.stringify({fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,
+    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
+  return {mode:'SHADOW',modelId:contextRow.model_id,version:forecastCoreV3.CORE_VERSION,expectedGoals:forecast.expectedGoals,rejectionReasons:forecast.rejectionReasons,promotionAllowed:false};
+}
+
+// END FORECAST CORE RUNTIME V3
 // BEGIN GENERATED SELECTION V2
 var selectionV2 = (() => {
 // Independent probabilities enter here before prices. Prices never generate forecasts.
@@ -67,15 +328,18 @@ function generateCandidates(analysis, quotes, calibration, context) {
       const cell = calibration?.groups?.[calibrationKey(market,key,context.modelVersion)];
       const probability = rawProbability == null ? null : clip(rawProbability + (cell?.offset || 0));
       const matches = quotes.filter(q => String(q.fixtureId) === String(context.fixtureId) && q.market === market && canonical(q.selection) === key && String(q.bookmaker).replace(/[^a-z0-9]/gi,'').toLowerCase() === 'bet365');
-      const valid = matches.filter(q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const fresh = q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff)
+        && (!context.requireProviderQuoteTime || (Date.parse(q.providerUpdatedAt)<=Date.parse(q.observedAt) && context.now-Date.parse(q.providerUpdatedAt)<=30*60*1000));
+      const valid = matches.filter(fresh);
       const prices = new Set(valid.map(q => Number(q.odds).toFixed(4)));
       const quote = prices.size === 1 ? valid[0] : null;
-      const contemporaneous=quotes.filter(q=>Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const contemporaneous=quotes.filter(fresh);
       const marketProbability=quote ? noVigProbability(quote,contemporaneous) : null;
       const odds = quote ? Number(quote.odds) : null;
       const reasons = [];
       if (!(rawProbability>0 && rawProbability<1)) reasons.push('INVALID_PROBABILITY');
       if (!cell?.ready || !(Date.parse(calibration?.trainedBefore)<context.now)) reasons.push('CALIBRATION_UNVALIDATED');
+      if (cell && (!(Number.isFinite(cell.offset) && Math.abs(cell.offset)<1) || !(cell.uncertainty>0 && cell.uncertainty<=.5) || !(cell.n>=60))) reasons.push('INVALID_CALIBRATION_EVIDENCE');
       if (!quote) reasons.push(prices.size>1 ? 'AMBIGUOUS_PRICE' : 'MISSING_OR_STALE_EXACT_BET365');
       if (![1,2].includes(context.tier)) reasons.push('COMPETITION_TIER');
       if (!(unit(analysis.dataQuality)>=.75)) reasons.push('DATA_QUALITY');
@@ -85,6 +349,7 @@ function generateCandidates(analysis, quotes, calibration, context) {
       if (analysis.qualityHold || context.contradiction) reasons.push('UNRESOLVED_EVIDENCE');
       // Quarter/integer Asian lines need push-aware distributions; abstain until supported.
       if (market === 'HANDICAP' && !/_(0|1|2|3|4)_5$/.test(key)) reasons.push('UNSUPPORTED_SETTLEMENT');
+      if (['TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS'].includes(market) && !/^(OVER|UNDER)_\d+_5$/.test(key)) reasons.push('UNSUPPORTED_SETTLEMENT');
       if (!['MATCH_RESULT','BTTS','TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS','HANDICAP','DOUBLE_CHANCE'].includes(market)) reasons.push('UNSUPPORTED_MARKET');
       const uncertainty = cell?.uncertainty ?? .15;
       const lowerProbability = probability == null ? null : Math.max(0, probability-1.64*uncertainty);
@@ -307,48 +572,96 @@ function buildEliteSlateReview(fixtures = []) {
 __name(buildEliteSlateReview, "buildEliteSlateReview");
 
 // competition-tier-v87.js
-var TIER1_IDS = /* @__PURE__ */ new Set([1, 2, 4, 5, 9, 15, 39, 61, 78, 135, 140]);
-var TIER2_IDS = /* @__PURE__ */ new Set([3, 13, 40, 45, 48, 66, 71, 72, 73, 81, 88, 94, 136, 137, 141, 143, 144, 253]);
-var TIER3_IDS = /* @__PURE__ */ new Set([179, 203, 262]);
-var norm = /* @__PURE__ */ __name((value) => String(value || "").toLowerCase().normalize("NFKD").replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim(), "norm");
+const TIER1_IDS = new Set([1,2,4,5,9,15,39,61,78,135,140]);
+const TIER2_IDS = new Set([3,13,40,45,48,66,71,72,73,81,88,94,136,137,141,143,144,253]);
+const TIER3_IDS = new Set([179,203,262]);
+
+const norm = value => String(value || "")
+  .toLowerCase()
+  .normalize("NFKD")
+  .replace(/[’']/g,"")
+  .replace(/[^a-z0-9]+/g," ")
+  .trim();
+
 function competitionTierV87(value, leagueId) {
   const n = norm(value);
   const id = Number(leagueId);
-  if (!n && !Number.isFinite(id))
-    return 4;
-  if (/\bfriendl/.test(n))
-    return 3;
-  if (/\bliga premier serie a\b/.test(n))
-    return 4;
-  if (/\b2 frauen bundesliga\b/.test(n))
-    return 3;
-  if (/\b(u17|u18|u19)\b/.test(n))
-    return 3;
-  if (/\b(u20|u21|u23)\b/.test(n) && /\b(uefa|caf|afc|concacaf|world|championship|cup of nations|qualif)/.test(n))
-    return 2;
-  if (/\bserie b\b/.test(n) || /\b2 bundesliga\b/.test(n) || /\bchampionship\b/.test(n) || /\bsegunda division\b/.test(n) || /\busl championship\b/.test(n) || /\bnpfl\b/.test(n) || /\bprimera a\b/.test(n) || /\bj league cup\b/.test(n))
-    return 2;
-  if (/\b(frauen bundesliga|serie a women|eredivisie women|womens super league|liga f)\b/.test(n))
-    return 2;
-  if (/\buefa champions league\b/.test(n) || n === "la liga" || n === "serie a" || n === "bundesliga" || (n === "ligue 1" && id === 61) || /\buefa nations league\b/.test(n) || /\bnations league\b/.test(n) || n === "copa america" || /\bafrica cup of nations\b/.test(n) || n === "afcon")
-    return 1;
-  if (/\bworld cup qualif/.test(n) || /\bworld cup qualifiers/.test(n) || /\beuro qualif/.test(n) || /\beuropean championship qualif/.test(n))
-    return 2;
-  if (n === "world cup")
-    return 1;
-  if (/\beuropa league\b/.test(n) || /\bconference league\b/.test(n) || /\bcopa libertadores\b/.test(n) || /\blibertadores\b/.test(n) || /\bcopa sudamericana\b/.test(n) || /\bsudamericana\b/.test(n) || n === "eredivisie" || n === "primeira liga" || /\bbrasileir/.test(n) || /\bliga profesional argentina\b/.test(n) || n === "mls" || /\basian cup\b/.test(n) || /\bafc\b/.test(n) || /\bcaf\b/.test(n) || /\bconcacaf\b/.test(n))
-    return 2;
-  if (/\bscottish premiership\b/.test(n) || /\bbelgian pro league\b/.test(n) || /\bswiss super league\b/.test(n) || /\baustrian bundesliga\b/.test(n) || /\bsuper lig\b/.test(n) || /\bliga mx\b/.test(n) || /\bsaudi pro league\b/.test(n) || /\binternational\b/.test(n))
-    return 3;
-  if (TIER1_IDS.has(id))
-    return 1;
-  if (TIER2_IDS.has(id))
-    return 2;
-  if (TIER3_IDS.has(id))
-    return 3;
+
+  if (!n && !Number.isFinite(id)) return 4;
+
+  // Explicit quality downgrades must run before any broad family or ID rule.
+  if (/\bfriendl/.test(n)) return 3;
+  if (/\bliga premier serie a\b/.test(n)) return 4;
+  if (/\b2 frauen bundesliga\b/.test(n)) return 3;
+  if (/\b(u17|u18|u19)\b/.test(n)) return 3;
+
+  // Approved development competitions: useful for testing, but never Tier 1.
+  if (/\b(u20|u21|u23)\b/.test(n) &&
+      /\b(uefa|caf|afc|concacaf|world|championship|cup of nations|qualif)/.test(n)) return 2;
+
+  // Known second divisions / strong secondary competitions.
+  if (/\bserie b\b/.test(n) ||
+      /\b2 bundesliga\b/.test(n) ||
+      /\bchampionship\b/.test(n) ||
+      /\bsegunda division\b/.test(n) ||
+      /\busl championship\b/.test(n) ||
+      /\bnpfl\b/.test(n) ||
+      /\bprimera a\b/.test(n) ||
+      /\bj league cup\b/.test(n)) return 2;
+
+  // Major women's top flights remain analysable, but do not inherit men's Tier 1.
+  if (/\b(frauen bundesliga|serie a women|eredivisie women|womens super league|liga f)\b/.test(n)) return 2;
+
+  // Tier 1: exact top competitions. Generic "Premier League" is ID-gated to
+  // avoid promoting unrelated competitions such as Mongolia Premier League.
+  if (/\buefa champions league\b/.test(n) ||
+      (n === "la liga" && id === 140) ||
+      (n === "serie a" && id === 135) ||
+      (n === "bundesliga" && id === 78) ||
+      (n === "ligue 1" && id === 61) ||
+      /\buefa nations league\b/.test(n) ||
+      /\bnations league\b/.test(n) ||
+      n === "copa america" ||
+      /\bafrica cup of nations\b/.test(n) ||
+      n === "afcon") return 1;
+
+  if (/\bworld cup qualif/.test(n) ||
+      /\bworld cup qualifiers/.test(n) ||
+      /\beuro qualif/.test(n) ||
+      /\beuropean championship qualif/.test(n)) return 2;
+  if (n === "world cup") return 1;
+
+  // Tier 2 continental / high-quality leagues.
+  if (/\beuropa league\b/.test(n) ||
+      /\bconference league\b/.test(n) ||
+      /\bcopa libertadores\b/.test(n) ||
+      /\blibertadores\b/.test(n) ||
+      /\bcopa sudamericana\b/.test(n) ||
+      /\bsudamericana\b/.test(n) ||
+      n === "eredivisie" ||
+      n === "primeira liga" ||
+      /\bbrasileir/.test(n) ||
+      /\bliga profesional argentina\b/.test(n) ||
+      n === "mls" ||
+      /\basian cup\b/.test(n) ||
+      /\bafc\b/.test(n) ||
+      /\bcaf\b/.test(n) ||
+      /\bconcacaf\b/.test(n)) return 2;
+
+  if (/\bscottish premiership\b/.test(n) ||
+      /\bbelgian pro league\b/.test(n) ||
+      /\bswiss super league\b/.test(n) ||
+      /\baustrian bundesliga\b/.test(n) ||
+      /\bsuper lig\b/.test(n) ||
+      /\bliga mx\b/.test(n) ||
+      /\bsaudi pro league\b/.test(n) ||
+      /\binternational\b/.test(n)) return 3;
+
+  if (TIER1_IDS.has(id)) return 1;
+  if (TIER2_IDS.has(id)) return 2;
+  if (TIER3_IDS.has(id)) return 3;
   return 4;
 }
-__name(competitionTierV87, "competitionTierV87");
 
 // elite-slate-scope-v88.js
 var UPCOMING = /* @__PURE__ */ new Set(["NS", "TBD"]);
@@ -3653,6 +3966,8 @@ function oddsMarketsFromSnapshot(payload, fixtureId) {
           market,
           rawMarket: bet.name || market,
           bookmaker: book.name || null,
+          observedAt: row.observedAt || null,
+          providerUpdatedAt: row.providerUpdatedAt || row.update || null,
           outcomes
         });
       }
@@ -4697,7 +5012,9 @@ async function processOne(env, job) {
           sampleSize:Math.min(num4(hf.sampleSize,0),num4(af.sampleSize,0)),
           featureAsOf:featureTimes.every(Number.isFinite) ? new Date(Math.min(...featureTimes)).toISOString() : null};
         const quotes = marketOdds.flatMap(g=>arr2(g.outcomes).map(q=>({fixtureId:job.fixture_id,market:g.market,selection:q.selection,
-          bookmaker:g.bookmaker,odds:q.odds,observedAt:odds.updatedAt || null,rawMarket:g.rawMarket,rawSelection:q.rawSelection || null})));
+          bookmaker:g.bookmaker,odds:q.odds,observedAt:g.observedAt,providerUpdatedAt:g.providerUpdatedAt,rawMarket:g.rawMarket,rawSelection:q.rawSelection || null})));
+        try { analysis.goalCoreV3 = await recordGoalForecastV3(env,job,analysis,quotes,decision); }
+        catch(e) { analysis.goalCoreV3 = {mode:"SHADOW",error:safeRefreshError(e)}; console.error("goal-core-v3 shadow failed",analysis.goalCoreV3.error); }
         const candidates = selectionV2.generateCandidates(analysis,quotes,calibrationRow?.payload,context);
         await sb(env,"two45_selection_shadow_v2",{method:"POST",prefer:"return=minimal",body:JSON.stringify({fixture_id:job.fixture_id,
           kickoff_at:job.kickoff_at,generated_at:new Date(now).toISOString(),model_version:selectionV2.VERSION,
@@ -5783,6 +6100,9 @@ async function refreshLiveV18(env, date) {
 __name(refreshLiveV18, "refreshLiveV18");
 function slimOddsRowV18(row) {
   return {
+    // Keep fixture-level evidence across page merges. Aggregate refresh time is not quote time.
+    observedAt: row?.observedAt || new Date().toISOString(),
+    providerUpdatedAt: row?.providerUpdatedAt || row?.update || null,
     fixture: {
       id: row?.fixture?.id
     },
@@ -7473,6 +7793,9 @@ function exactBet365QuoteV78(oddsPayload, fixtureId, market, selection) {
     return null;
   const matches = [];
   for (const group of oddsMarketsFromSnapshot(oddsPayload, fixtureId)) {
+    const observed = Date.parse(group.observedAt), updated = Date.parse(group.providerUpdatedAt), now = Date.now();
+    if (!(updated <= observed && observed <= now && now - observed <= 30 * 60000 && now - updated <= 30 * 60000))
+      continue;
     if (String(group?.market || "").toUpperCase() !== wantMarket)
       continue;
     const book = String(group?.bookmaker || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
@@ -7867,6 +8190,7 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
   result.watchdog = await runAnalysisWatchdogV2(env);
+  result.forecastCoreTraining = await refreshGoalCoreV3(env);
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
   // Running it every minute re-downloaded up to 1,000 full forecast rows, including
   // large JSON analysis fields, without improving model freshness.
@@ -8070,6 +8394,8 @@ var worker_default = {
         return json({
           ok: true,
           service: "two45-live-worker",
+          forecastCoreVersion: forecastCoreV3.CORE_VERSION,
+          forecastCoreMode: "SHADOW",
           selectionVersion: selectionV2.VERSION,
           selectionMode: "SHADOW",
           recordScope: "official-publication-ledger-v2",
@@ -8077,6 +8403,12 @@ var worker_default = {
           modelVersion: MODEL_VERSION,
           modelLoaded: true
         });
+      }
+      if (url.pathname === "/api/health/forecast-core") {
+        return json({ok:true,status:await sb(env,"rpc/two45_goal_status_v3",{method:"POST",body:"{}"}),training:(await getFeedSnapshot(env,"forecast-core-v3:training-status").catch(()=>null))?.payload||null});
+      }
+      if (url.pathname === "/api/model-migration") {
+        return json({ok:true,...modelMigrationStatusV2()});
       }
       if (url.pathname === "/api/health/analysis") {
         const healthDate = url.searchParams.get("scope") === "tomorrow" ? tomorrowEasternDate() : easternDate();
@@ -8127,6 +8459,8 @@ var worker_default = {
         return json({
           ok: true,
           service: "two45-live-worker",
+          forecastCoreVersion: forecastCoreV3.CORE_VERSION,
+          forecastCoreMode: "SHADOW",
           selectionVersion: selectionV2.VERSION,
           selectionMode: "SHADOW",
           recordScope: "official-publication-ledger-v2",
@@ -8384,6 +8718,8 @@ var worker_default = {
         {
           ok: false,
           service: "two45-live-worker",
+          forecastCoreVersion: forecastCoreV3.CORE_VERSION,
+          forecastCoreMode: "SHADOW",
           selectionVersion: selectionV2.VERSION,
           selectionMode: "SHADOW",
           recordScope: "official-publication-ledger-v2",

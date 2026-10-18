@@ -1,0 +1,16 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../worker.js'),'utf8');
+const c=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers,AbortSignal,setTimeout,clearTimeout});
+vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);
+const now=Date.now(),stamp=new Date(now-60000).toISOString(),old=new Date(now-3600000).toISOString();
+const raw={fixture:{id:1},update:stamp,bookmakers:[{name:'Bet365',bets:[{name:'Goals Over/Under',values:[{value:'Over 2.5',odd:'2.0'},{value:'Under 2.5',odd:'1.8'}]}]}]};
+const slim=c.slimOddsRowV18(raw);assert.equal(slim.providerUpdatedAt,stamp);assert(Date.parse(slim.observedAt)<=Date.now());
+const retained=c.slimOddsRowV18({...slim,observedAt:old});assert.equal(retained.observedAt,old,'Reprocessing must not refresh quote evidence');
+const groups=c.oddsMarketsFromSnapshot({response:[slim]},1);assert.equal(groups[0].providerUpdatedAt,stamp);
+c.crossBookCheckV81=()=>({ok:true,status:'BET365_ONLY'});
+assert(c.exactBet365QuoteV78({response:[slim]},1,'TOTAL_GOALS','OVER_2_5'));
+assert.equal(c.exactBet365QuoteV78({updatedAt:new Date().toISOString(),response:[{...slim,observedAt:old}]},1,'TOTAL_GOALS','OVER_2_5'),null,'Aggregate refresh cannot renew an old quote');
+assert.equal(c.exactBet365QuoteV78({response:[{...slim,providerUpdatedAt:null}]},1,'TOTAL_GOALS','OVER_2_5'),null);
+assert.equal(c.competitionTierV21('Serie A',71),2,'Worker bundle must classify Brazil independently from Italy');
+assert.equal(c.modelMigrationStatusV2().promotionAllowed,false);
+console.log('PASS: provider and observation timestamps survive parsing/merging, stale/missing evidence blocks publication, bundled Brazil tier and migration blocker');
