@@ -11,5 +11,13 @@ assert(c.publishedReasonV81(pick).includes('edge 0.9%')||c.publishedReasonV81(pi
 assert.equal(c.eliteConfidenceScoreV102(pick),c.eliteConfidenceScoreV102({...pick,valueEdgePct:undefined}));
 assert(c.eliteRejectionReasonsV2({...pick,probability:.3}).includes('PROBABILITY_FLOOR'));
 assert.equal(c.selectionV2.VERSION,'two45-independent-v2-shadow');
+c.ticketUpcomingV70=()=>true;c.ticketCompetitionTierV79=()=>1;
+c.exactBet365QuoteV78=()=>({bookmaker:'Bet365',odds:1.5,oddsVerification:{ok:true,status:'BET365_ONLY'}});
+const inherited={fixtureId:10,decision:'PICK',market:'TOTAL_GOALS',selection:'UNDER_4_5',probability:.6,dataQuality:.9,valueEdge:-.2,valueEdgePct:-20,alternatives:[{market:'TOTAL_GOALS',selection:'OVER_2_5',probability:.8,valueEdge:.1}]};
+const pool=c.ticketPoolBoardVerifiedV78({strongPicks:[inherited]},'Today',{},true);
+assert.equal(pool.length,1);assert.equal(pool[0].selection,'OVER_2_5');
+assert(Math.abs(pool[0].valueEdge-(.8-1/1.5))<1e-10);
+assert.equal(pool[0].valueEdgePct,pool[0].valueEdge*100);
+assert.equal(c.eliteLegQualityV79(pool[0]),true,'An independently eligible alternative must use its own verified price edge');
 console.log('PASS: publication-only query, 0-0 scores, failure visibility, explicit edge units, reason codes, shadow bundle');
 })().catch(e=>{console.error(e);process.exitCode=1});
