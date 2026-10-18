@@ -604,7 +604,7 @@ function buildEliteSlateReview(fixtures = []) {
 __name(buildEliteSlateReview, "buildEliteSlateReview");
 
 // competition-tier-v87.js
-const TIER1_IDS = new Set([1,2,4,5,9,15,39,61,78,135,140]);
+const TIER1_IDS = new Set([1,2,4,5,9,15,39,61,78,135,140,536]);
 const TIER2_IDS = new Set([3,13,40,45,48,66,71,72,73,81,88,94,136,137,141,143,144,253]);
 const TIER3_IDS = new Set([179,203,262]);
 
@@ -643,25 +643,17 @@ function competitionTierV87(value, leagueId) {
 
   // Major women's top flights remain analysable, but do not inherit men's Tier 1.
   if (/\b(frauen bundesliga|serie a women|eredivisie women|womens super league|liga f)\b/.test(n)) return 2;
+  if (/\b(women|womens|femenina|femenil|feminine|femminile)\b/.test(n)) return 2;
 
-  // Tier 1: exact top competitions. Generic "Premier League" is ID-gated to
-  // avoid promoting unrelated competitions such as Mongolia Premier League.
-  if (/\buefa champions league\b/.test(n) ||
-      (n === "la liga" && id === 140) ||
-      (n === "serie a" && id === 135) ||
-      (n === "bundesliga" && id === 78) ||
-      (n === "ligue 1" && id === 61) ||
-      /\buefa nations league\b/.test(n) ||
-      /\bnations league\b/.test(n) ||
-      n === "copa america" ||
-      /\bafrica cup of nations\b/.test(n) ||
-      n === "afcon") return 1;
+  // Tier 1 always requires a canonical provider identity. Names alone cannot
+  // promote unrelated leagues, women's variants or unknown international cups.
+  if (TIER1_IDS.has(id) && !/\bqualif/.test(n)) return 1;
 
   if (/\bworld cup qualif/.test(n) ||
       /\bworld cup qualifiers/.test(n) ||
       /\beuro qualif/.test(n) ||
       /\beuropean championship qualif/.test(n)) return 2;
-  if (n === "world cup") return 1;
+  if (n === "world cup") return 4;
 
   // Tier 2 continental / high-quality leagues.
   if (/\beuropa league\b/.test(n) ||

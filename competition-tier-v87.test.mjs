@@ -1,6 +1,12 @@
 import { competitionTierV87 } from "./competition-tier-v87.js";
 
 const cases = [
+  ["UEFA Champions League Women",525,2],
+  ["UEFA Champions League",undefined,4],
+  ["UEFA Champions League",2,1],
+  ["Nations League",9999,4],
+  ["World Cup",9999,4],
+  ["World Cup",1,1],
   ["Serie A",71,2], // Brazil must never inherit Italy's Tier 1
   ["Serie A",135,1],
   ["Serie A",undefined,4],
