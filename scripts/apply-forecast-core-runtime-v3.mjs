@@ -25,6 +25,9 @@ if(!source.includes('url.pathname === "/api/health/forecast-core"')) {
       }
 `+needle);
 }
+if(!source.includes('result.forecastCoreSweep =')) {
+ source=source.replace('  result.forecastCoreTraining = await refreshGoalCoreV3(env);','  result.forecastCoreTraining = await refreshGoalCoreV3(env);\n  result.forecastCoreSweep = await runGoalCoreSweepV3(env);');
+}
 source=source.replaceAll('selectionVersion: selectionV2.VERSION,','forecastCoreVersion: forecastCoreV3.CORE_VERSION,\n          forecastCoreMode: "SHADOW",\n          selectionVersion: selectionV2.VERSION,');
 // Idempotency across regenerations.
 source=source.replace(/(forecastCoreVersion: forecastCoreV3.CORE_VERSION,\n          forecastCoreMode: "SHADOW",\n          )+/g,'forecastCoreVersion: forecastCoreV3.CORE_VERSION,\n          forecastCoreMode: "SHADOW",\n          ');

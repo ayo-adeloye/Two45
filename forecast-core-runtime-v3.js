@@ -5,10 +5,42 @@ function modelMigrationStatusV2() {
   return {state:'BLOCKED_VALIDATION',promotionAllowed:false,protocol:MIGRATION_PROTOCOL_V2,
     activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY',candidateSelection:selectionV2.VERSION,
     products:['ELITE_3','HIGH_CONVICTION','WEEKEND_LADDER'],recordScope:'official-publication-ledger-v2',
-    blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED'],
+    blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED','PUBLIC_RECORD_RESULT_SOURCE_REQUIRES_CUTOVER'],
     requirements:{settledSelections:200,fixtureDays:14,perMarketSelections:60,decisionMinutesBeforeKickoff:60,quoteMaxAgeMinutes:30},
     missingXGPolicy:'Observed xG is unavailable and excluded. Goal expectations are learned from timestamped scores and season features.',
     cutover:'No runtime activation flag. A validated release must replace all product publishers together, retire legacy writes and retain the publication ledger and historical locks.'};
+}
+
+async function runGoalCoreSweepV3(env) {
+  // Raw inference must not depend on legacy job completion or provider calls.
+  const started=Date.now(),low=new Date(started+3600000).toISOString(),high=new Date(started+48*3600000).toISOString();
+  try {
+    const jobs=arr2(await sb(env,'two45_feature_jobs?kickoff_at=gt.'+encodeURIComponent(low)+'&kickoff_at=lt.'+encodeURIComponent(high)+
+      '&select=fixture_id,provider_league_id,season,home_team_id,away_team_id,home_team,away_team,competition,kickoff_at&order=kickoff_at.asc,fixture_id.asc&limit=60',{timeoutMs:3000}));
+    if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES_BEFORE_PROTOCOL_CUTOFF'};
+    const ids=jobs.map(j=>Number(j.fixture_id)).filter(Number.isFinite).join(',');
+    const recent=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}));
+    const seen=new Set(recent.map(r=>String(r.fixture_id))),results=[],daily=new Map();
+    for(const job of jobs.filter(j=>!seen.has(String(j.fixture_id))).slice(0,2)) {
+      if(Date.now()-started>10000)break;
+      try {
+        const date=dateOfV19(job.kickoff_at);
+        if(!daily.has(date))daily.set(date,await getFeedSnapshot(env,oddsKey(date)).catch(()=>null));
+        const direct=await getFeedSnapshot(env,'fixture-odds:'+job.fixture_id).catch(()=>null);
+        const payloads=[daily.get(date)?.payload,direct?.payload].filter(Boolean);
+        const rows=payloads.flatMap(p=>arr2(p.response)).filter(r=>String(r.fixture?.id)===String(job.fixture_id));
+        // Choose the latest retained fixture observation, never an aggregate refresh.
+        rows.sort((a,b)=>(Date.parse(b.observedAt)||0)-(Date.parse(a.observedAt)||0));
+        const groups=oddsMarketsFromSnapshot({response:rows.slice(0,1)},job.fixture_id);
+        const quotes=groups.flatMap(g=>arr2(g.outcomes).map(q=>({fixtureId:job.fixture_id,market:g.market,selection:q.selection,bookmaker:g.bookmaker,odds:q.odds,observedAt:g.observedAt,providerUpdatedAt:g.providerUpdatedAt,rawMarket:g.rawMarket,rawSelection:q.rawSelection||null})));
+        const old=await existingForecast(env,job.fixture_id).catch(()=>null);
+        const legacy=old&&Date.parse(old.created_at)<=started?{modelVersion:old.model_version,expectedGoals:old.feature_snapshot?.expectedGoals,probabilities:old.probability_snapshot||{}}:{};
+        const decision=old&&Date.parse(old.created_at)<=started?{decision:old.decision,market:old.market,selection:old.selection}:null;
+        results.push({fixtureId:job.fixture_id,...await recordGoalForecastV3(env,job,legacy,quotes,decision)});
+      }catch(e){results.push({fixtureId:job.fixture_id,error:safeRefreshError(e)});}
+    }
+    return {ok:results.every(r=>!r.error),processed:results.length,eligibleJobs:jobs.length,results};
+  }catch(e){return {ok:false,processed:0,error:safeRefreshError(e)};}
 }
 
 async function refreshGoalCoreV3(env) {
