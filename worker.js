@@ -7483,7 +7483,9 @@ async function verifyPublicStrongPicksV83(env, date, board) {
     if (!quote)
       continue;
     const tier = num4(p?.competitionTier, 4), x = { ...p, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, convictionLabel: "Two45 High Conviction" };
-    x.premiumScore = num4(x.premiumScore, ticketPremiumScoreV80(x));
+    x.valueEdge = ticketNormV70(x.probability,0) - 1/quote.odds;
+    x.valueEdgePct = x.valueEdge * 100;
+    x.premiumScore = ticketPremiumScoreV80(x);
     const rels = [profiles[learningProfileKeyV82(x.home, x.market, x.selection)], profiles[learningProfileKeyV82(x.away, x.market, x.selection)]].filter(Boolean).sort((a, b) => num4(b?.reliability?.bonus, 0) - num4(a?.reliability?.bonus, 0));
     const rel = rels[0] || null;
     x.teamMarketReliability = rel ? { team: rel.team, settled: rel.settled, wins: rel.wins, losses: rel.losses, hitRate: rel.hitRate, label: rel.reliability?.label || null, bonus: clamp4(num4(rel?.reliability?.bonus, 0), -4, 6) } : null;
@@ -7511,6 +7513,9 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
       if (!quote)
         continue;
       const verified = { ...x, fixtureId: p.fixtureId, providerMatchId: p.providerMatchId, home: p.home, away: p.away, league: p.league, kickoff: p.kickoff, competitionTier: tier, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, _ticketOdds: quote.odds, _ticketDay: day };
+      // A merged alternative must never inherit the headline market's edge.
+      verified.valueEdge = ticketNormV70(verified.probability,0) - 1/quote.odds;
+      verified.valueEdgePct = verified.valueEdge * 100;
       if (!ticketPriceCoherentV70(verified))
         continue;
       verified.premiumScore = ticketPremiumScoreV80(verified);
@@ -7681,7 +7686,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     strongMarketOptions: arr2(board?.premiumCandidates).length,
     oddsComplete,
     candidateCoverageReady,
-    rejections: verifiedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:eliteRejectionReasonsV2(x),probability:ticketNormV70(x.probability),confidenceScore:eliteConfidenceScoreV102(x)}))
+    rejections: verifiedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:eliteRejectionReasonsV2(x),probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
   };
   if (!oddsComplete && !candidateCoverageReady) {
     const payload2 = {
