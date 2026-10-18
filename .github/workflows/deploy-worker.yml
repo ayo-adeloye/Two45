@@ -22,6 +22,7 @@ jobs:
       - name: Validate selection and publication invariants
         run: |
           node selection-v2.test.mjs
+          node shadow-evaluation-v2.test.mjs
           node tests/publication-v2.cjs
           node tests/record-ask.cjs
           node tests/tightening.cjs
