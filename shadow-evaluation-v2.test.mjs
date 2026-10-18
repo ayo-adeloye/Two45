@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {grade,evaluate} from './scripts/evaluate-shadow-v2.mjs';
+assert.equal(grade('TOTAL_GOALS','OVER_2_5',2,1),'WIN');
+assert.equal(grade('TOTAL_GOALS','UNDER_2',1,1),'PUSH');
+assert.equal(grade('HANDICAP','HOME_PLUS_0_5',0,1),'LOSS');
+assert.equal(grade('HANDICAP','AWAY_MINUS_0_25',0,1),null);
+assert.equal(grade('BTTS','NO',0,0),'WIN');
+assert.equal(grade('MATCH_RESULT','DRAW',0,0),'WIN');
+assert.equal(grade('TOTAL_CORNERS','OVER_8_5',2,1),null);
+const c={fixtureId:1,eligible:true,market:'TOTAL_GOALS',selection:'OVER_2_5',probability:.7,rawProbability:.8,marketProbability:.6,odds:1.7};
+const r={fixture_id:1,kickoff_at:'2026-10-17T15:00:00Z',generated_at:'2026-10-17T13:00:00Z',final_home_score:2,final_away_score:1,payload:{primary:[c],candidates:[c],legacyResearchDecision:{decision:'PICK',market:c.market,selection:c.selection}}};
+const report=evaluate([r,{...r,generated_at:'2026-10-17T14:30:00Z',payload:{primary:[]}}]);
+assert.equal(report.candidate.n,1,'Late snapshots must not replace the predeclared decision cutoff');
+assert.equal(report.baseline.n,1);assert.equal(report.promotion.allowed,false);
+assert.equal(evaluate([{...r,final_home_score:null}]).candidate.n,0);
+console.log('PASS: independent market grading, unsupported/push handling, fixed decision cutoff, aligned baseline, ungraded exclusion and promotion lock');

@@ -6,6 +6,32 @@ const canonical = s => String(s || '').toUpperCase().replace(/(\d)\.(\d)/g, '$1_
 const unit = x => x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x) > 1 ? Number(x) / 100 : Number(x);
 const clip = p => Math.max(.001, Math.min(.999, p));
 
+function noVigProbability(quote, quotes) {
+  // Normalize only exhaustive outcomes at the SAME line, never all totals lines.
+  const s=canonical(quote.selection),m=quote.market;
+  let wanted,multiplier=1;
+  if(m==='MATCH_RESULT') wanted=['HOME','DRAW','AWAY'];
+  else if(m==='BTTS') wanted=['YES','NO'];
+  else if(m==='DOUBLE_CHANCE') {wanted=['HOME_OR_DRAW','DRAW_OR_AWAY','HOME_OR_AWAY'];multiplier=2;}
+  else if(['TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS'].includes(m)) {
+    const match=s.match(/^(OVER|UNDER)_(\d+(?:_\d+)?)$/);
+    if(match) wanted=['OVER_'+match[2],'UNDER_'+match[2]];
+  } else if(m==='HANDICAP') {
+    const match=s.match(/^(HOME|AWAY)_(PLUS|MINUS)_(\d+(?:_\d+)?)$/);
+    if(match) wanted=[s,(match[1]==='HOME'?'AWAY':'HOME')+'_'+(match[2]==='PLUS'?'MINUS':'PLUS')+'_'+match[3]];
+  }
+  if(!wanted || !wanted.includes(s)) return null;
+  const odds=[];
+  for(const selection of wanted) {
+    const matches=quotes.filter(q=>String(q.fixtureId)===String(quote.fixtureId) && q.market===m && q.bookmaker===quote.bookmaker && canonical(q.selection)===selection && Number(q.odds)>1);
+    const prices=[...new Set(matches.map(q=>Number(q.odds)))];
+    if(prices.length!==1) return null;
+    odds.push(prices[0]);
+  }
+  const p=(1/Number(quote.odds))/odds.reduce((n,o)=>n+1/o,0)*multiplier;
+  return p>0 && p<1 ? p : null;
+}
+
 function fitCalibration(rows, asOf, minSample = 60) {
   // Separate market + line + model version; never borrow outcomes from the holdout.
   const groups = {};
@@ -44,6 +70,8 @@ function generateCandidates(analysis, quotes, calibration, context) {
       const valid = matches.filter(q => Number(q.odds)>1 && Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
       const prices = new Set(valid.map(q => Number(q.odds).toFixed(4)));
       const quote = prices.size === 1 ? valid[0] : null;
+      const contemporaneous=quotes.filter(q=>Date.parse(q.observedAt)<=context.now && context.now-Date.parse(q.observedAt)<=30*60*1000 && Date.parse(q.observedAt)<Date.parse(context.kickoff));
+      const marketProbability=quote ? noVigProbability(quote,contemporaneous) : null;
       const odds = quote ? Number(quote.odds) : null;
       const reasons = [];
       if (!(rawProbability>0 && rawProbability<1)) reasons.push('INVALID_PROBABILITY');
@@ -64,7 +92,7 @@ function generateCandidates(analysis, quotes, calibration, context) {
       const lowerEV = odds && lowerProbability != null ? lowerProbability*odds-1 : null;
       if (!(lowerEV>.02)) reasons.push('UNCERTAINTY_ADJUSTED_VALUE');
       if (odds && probability && probability-1/odds>.20) reasons.push('PRICE_MODEL_DISAGREEMENT');
-      candidates.push({fixtureId:context.fixtureId,market,selection:key,rawProbability,probability,lowerProbability,uncertainty,odds,ev,lowerEV,tier:context.tier,quote,calibrationN:cell?.n||0,reasons,eligible:reasons.length===0});
+      candidates.push({fixtureId:context.fixtureId,market,selection:key,rawProbability,probability,marketProbability,lowerProbability,uncertainty,odds,ev,lowerEV,tier:context.tier,quote,calibrationN:cell?.n||0,reasons,eligible:reasons.length===0});
     }
   }
   return candidates;
@@ -4673,7 +4701,7 @@ async function processOne(env, job) {
         const candidates = selectionV2.generateCandidates(analysis,quotes,calibrationRow?.payload,context);
         await sb(env,"two45_selection_shadow_v2",{method:"POST",prefer:"return=minimal",body:JSON.stringify({fixture_id:job.fixture_id,
           kickoff_at:job.kickoff_at,generated_at:new Date(now).toISOString(),model_version:selectionV2.VERSION,
-          payload:{context,features:{home:hf,away:af},probabilities:analysis.probabilities,quotes,candidates,
+          payload:{context,features:{home:hf,away:af},probabilities:analysis.probabilities,quotes,candidates,legacyResearchDecision:decision,
             primary:selectionV2.primaryPicks(candidates),promotionAllowed:false}})});
       } catch(e) {
         analysis.selectionV2ShadowError = safeRefreshError(e);

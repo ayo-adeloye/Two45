@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {fitCalibration,generateCandidates,primaryPicks,optimizeProduct,calibrationKey} from './selection-v2.mjs';
+import {fitCalibration,generateCandidates,primaryPicks,optimizeProduct,calibrationKey,noVigProbability} from './selection-v2.mjs';
 const now=Date.parse('2026-10-17T12:00:00Z'), context={fixtureId:1,modelVersion:'old',now,kickoff:'2026-10-17T15:00:00Z',featureAsOf:'2026-10-17T10:00:00Z',sampleSize:20,tier:1};
 const analysis={probabilities:{TOTAL_GOALS:{OVER_2_5:.8,UNDER_3_5:.85}},dataQuality:.9};
 const quotes=[{fixtureId:1,market:'TOTAL_GOALS',selection:'OVER_2.5',bookmaker:'Bet365',odds:1.6,observedAt:'2026-10-17T11:50:00Z'},{fixtureId:1,market:'TOTAL_GOALS',selection:'UNDER_3_5',bookmaker:'Bet365',odds:1.5,observedAt:'2026-10-17T11:50:00Z'}];
@@ -21,4 +21,8 @@ const second=optimizeProduct(pool,{low:5,high:6,minLegs:3,maxLegs:4,reserved:fir
 assert.equal(first.legs.length,2);assert.equal(second.legs.length,3);
 assert(!second.legs.some(x=>first.legs.some(y=>x.fixtureId===y.fixtureId)));
 assert.equal(optimizeProduct(pool,{low:100,high:101,minLegs:2,maxLegs:2}).rejection,'NO_QUALIFIED_TARGET_COMBINATION');
-console.log('PASS: temporal calibration, duplicate isolation, exact/stale/ambiguous quotes, evidence gates, primary picks, disjoint targets, abstention');
+const q={fixtureId:1,market:'TOTAL_GOALS',selection:'OVER_2_5',bookmaker:'Bet365',odds:2};
+const complement={...q,selection:'UNDER_2_5',odds:1.8};
+assert.equal(noVigProbability(q,[q]),null,'Incomplete books cannot create a no-vig benchmark');
+assert(Math.abs(noVigProbability(q,[q,complement,{...q,selection:'OVER_3_5',odds:4}])-(.5/(.5+1/1.8)))<1e-10,'Other lines must not dilute market implied probability');
+console.log('PASS: temporal calibration, duplicate isolation, exact/stale/ambiguous quotes, evidence gates, primary picks, disjoint targets, same-line no-vig, abstention');
