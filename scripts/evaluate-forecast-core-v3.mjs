@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import {fitGoalModel,predictGoals,cleanFixtures,timestamp,scoreMatrix,marketBoard,CORE_VERSION} from '../forecast-core-v3.mjs';
+import {fitGoalModel,predictGoals,cleanFixtures,timestamp,attachSeasonHistory,marketBoard,CORE_VERSION} from '../forecast-core-v3.mjs';
 import {grade} from './evaluate-shadow-v2.mjs';
 const clip=p=>Math.max(1e-12,Math.min(1-1e-12,p));
 const average=a=>a.length?a.reduce((n,x)=>n+x,0)/a.length:null;
@@ -17,13 +17,14 @@ function bootstrap(rows,replicates=1500) {
  for(let i=0;i<replicates;i++){let total=0,n=0;for(let d=0;d<days.length;d++){for(const r of groups[Math.floor(random()*days.length)]){total+=(r.core-r.y)**2-(r.baseline-r.y)**2;n++;}}if(n)diffs.push(total/n);}
  diffs.sort((a,b)=>a-b);return {days:days.length,replicates,brierDifference95:[diffs[Math.floor(diffs.length*.025)],diffs[Math.floor(diffs.length*.975)]]};
 }
-export function evaluateCore(fixtures,forecasts,asOf) {
+export function evaluateCore(fixtures,forecasts,asOf,snapshots=[],locked=null) {
+ fixtures=attachSeasonHistory(fixtures,snapshots);
  const audit=cleanFixtures(fixtures,asOf),all=audit.rows,dates=[...new Set(all.map(f=>f.kickoff_at.slice(0,10)))].sort();
  if(dates.length<10)throw Error('At least ten chronological fixture days required');
  const developmentDate=dates[Math.floor(dates.length*.6)],testDate=dates[Math.floor(dates.length*.8)],developmentCut=developmentDate+'T00:00:00Z',testCut=testDate+'T00:00:00Z';
  const development=all.filter(f=>f.kickoff_at.slice(0,10)>=developmentDate&&f.kickoff_at.slice(0,10)<testDate&&timestamp(f.result_available_at)<timestamp(testCut));
- const configs=[];for(const teamPenalty of [6,12,24])for(const halfLifeDays of [45,90])for(const rho of [0,-.08])configs.push({teamPenalty,halfLifeDays,rho});
- const tuning=configs.map(config=>{
+ const configs=[];for(const teamPenalty of [6,12,24])for(const seasonWeight of [.35,.65,1])for(const rho of [0,-.08])configs.push({teamPenalty,halfLifeDays:90,rho,seasonWeight});
+ const tuning=locked?.tuning||configs.map(config=>{
   const model=fitGoalModel(all,developmentCut,config),losses=[];
   for(const f of development) {const at=timestamp(f.kickoff_at)-3600000;if(at<timestamp(model.trainedBefore))continue;losses.push(scorelineLoss(predictGoals(model,f,at),f));}
   return {config,n:losses.length,scorelineLogLoss:average(losses)};
@@ -61,12 +62,14 @@ export function evaluateCore(fixtures,forecasts,asOf) {
  if(coverage.eligible<100)reasons.push('INSUFFICIENT_TEAM_AND_LEAGUE_COVERAGE');
  const artifact=fitGoalModel(all,asOf,chosen);
  return {modelVersion:CORE_VERSION,asOf,trainingData:{fixtures:all.length,fixtureDays:dates.length,rejections:audit.rejected},split:{developmentDate,testDate,selection:'Tune only on development scoreline likelihood; fixed hyperparameters, daily rolling refits on already-observed results during test'},tuning,chosen,
-  test:{fixtures:scorelines.length,pairedEvents:paired.length,baseline:metric(paired,'baseline'),core:metric(paired,'core'),pricedPaired:{core:metric(priced,'core'),baseline:metric(priced,'baseline'),marketRawImplied:metric(priced,'marketRawImplied'),warning:'Raw single-price implied probability includes bookmaker margin. Complete same-line no-vig benchmarks unavailable historically.'},scoreline:{paired:comparable.length,baselineLogLoss:average(comparable.map(x=>x.baselineNLL)),coreLogLoss:average(comparable.map(x=>x.coreNLL))},byMarket:Object.fromEntries([...new Set(paired.map(x=>x.market))].map(m=>[m,{baseline:metric(paired.filter(x=>x.market===m),'baseline'),core:metric(paired.filter(x=>x.market===m),'core')}])),coverage,uncertainty:ci},
+  test:{fixtures:scorelines.length,pairedEvents:paired.length,baseline:metric(paired,'baseline'),core:metric(paired,'core'),eligibleOnly:{core:metric(paired.filter(x=>x.eligible),'core'),baseline:metric(paired.filter(x=>x.eligible),'baseline')},pricedPaired:{core:metric(priced,'core'),baseline:metric(priced,'baseline'),marketRawImplied:metric(priced,'marketRawImplied'),warning:'Raw single-price implied probability includes bookmaker margin. Complete same-line no-vig benchmarks unavailable historically.'},scoreline:{paired:comparable.length,baselineLogLoss:average(comparable.map(x=>x.baselineNLL)),coreLogLoss:average(comparable.map(x=>x.coreNLL))},byMarket:Object.fromEntries([...new Set(paired.map(x=>x.market))].map(m=>[m,{baseline:metric(paired.filter(x=>x.market===m),'baseline'),core:metric(paired.filter(x=>x.market===m),'core')}])),coverage,uncertainty:ci},
   promotion:{allowed:false,reasons},artifact,pairedObservations:paired};
 }
 if(process.argv[1]?.endsWith('evaluate-forecast-core-v3.mjs')) {
- const [fixturePath,forecastPath,out,asOf]=process.argv.slice(2);if(!asOf)throw Error('Usage: node scripts/evaluate-forecast-core-v3.mjs fixtures.json forecasts.json report.json ISO_CUTOFF');
- const fixtureBytes=fs.readFileSync(fixturePath),forecastBytes=fs.readFileSync(forecastPath),report=evaluateCore(JSON.parse(fixtureBytes),JSON.parse(forecastBytes),asOf);
+ const [fixturePath,forecastPath,out,asOf,featurePath,lockedPath]=process.argv.slice(2);if(!asOf)throw Error('Usage: node scripts/evaluate-forecast-core-v3.mjs fixtures.json forecasts.json report.json ISO_CUTOFF [feature-snapshots.json] [locked-development-report.json]');
+ const fixtureBytes=fs.readFileSync(fixturePath),forecastBytes=fs.readFileSync(forecastPath),featureBytes=featurePath?fs.readFileSync(featurePath):null,report=evaluateCore(JSON.parse(fixtureBytes),JSON.parse(forecastBytes),asOf,featureBytes?JSON.parse(featureBytes):[],lockedPath?JSON.parse(fs.readFileSync(lockedPath)):null);
  report.inputSHA256={fixtures:crypto.createHash('sha256').update(fixtureBytes).digest('hex'),forecasts:crypto.createHash('sha256').update(forecastBytes).digest('hex')};
+ if(featureBytes)report.inputSHA256.features=crypto.createHash('sha256').update(featureBytes).digest('hex');
+ report.validationStatus='Exploratory historical replay: the sparse-history prototype previously consumed this holdout. A new untouched prospective holdout is mandatory for promotion.';
  fs.writeFileSync(out,JSON.stringify(report,null,2));console.log(JSON.stringify({split:report.split,chosen:report.chosen,test:report.test,promotion:report.promotion}));
 }
