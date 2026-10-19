@@ -24,6 +24,8 @@ jobs:
           node selection-v2.test.mjs
           node tests/quote-provenance.cjs
           node tests/elite-automation.cjs
+          node model-review-v1.test.mjs
+          node tests/model-review-runtime.cjs
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs
@@ -37,6 +39,8 @@ jobs:
           node scripts/apply-forecast-core-runtime-v3.mjs
           node scripts/bundle-forecast-core-v3.mjs
           node scripts/bundle-tier.mjs
+          node scripts/bundle-model-review-runtime-v1.mjs
+          node scripts/bundle-model-review-v1.mjs
           git diff --exit-code worker.js
   deploy:
     needs: test

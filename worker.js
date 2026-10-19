@@ -1,3 +1,81 @@
+// BEGIN GENERATED MODEL REVIEW V1
+var modelReviewV1 = (() => {
+const REVIEW_VERSION='two45-independent-review-v1';
+const canonical=s=>String(s||'').trim().toUpperCase().replace(/(\d)\.(\d)/g,'$1_$2');
+const numeric=x=>x==null||x===''||!Number.isFinite(Number(x))?null:Number(x);
+const probability=x=>{const n=numeric(x);return n==null?null:n>1?n/100:n;};
+
+// A conservative evidence-review policy, not fitted calibration or model promotion.
+function compareModelPick(pick,row,now=Date.now()) {
+ const payload=row?.payload||row||{},forecast=payload.forecast||{},context=payload.context||{};
+ const market=String(pick.market||'').toUpperCase(),selection=canonical(pick.selection),legacy=probability(pick.probability);
+ const core=probability(forecast.probabilities?.[market]?.[selection]),odds=numeric(pick.sportsbookOdds ?? pick.odds);
+ const base={version:REVIEW_VERSION,fixtureId:pick.fixtureId ?? pick.providerMatchId,market,selection,
+  coreForecastId:row?.id||null,coreModelId:row?.model_id||null,coreGeneratedAt:row?.generated_at||null,
+  legacyProbability:legacy,independentProbability:core,odds,independentEV:core!=null&&odds>1?core*odds-1:null,
+  coreValidated:false,confidenceBoost:0,policy:'REVIEW_ONLY_NO_NEW_PICKS',hold:false};
+ const unreviewed=reason=>({...base,status:'UNREVIEWED',reason});
+ if(!row)return unreviewed('INDEPENDENT_FORECAST_MISSING');
+ const kickoff=Date.parse(pick.kickoff ?? pick.kickoffAt ?? pick.kickoff_at),generated=Date.parse(row.generated_at);
+ if(String(row.fixture_id)!==String(base.fixtureId)||Date.parse(row.kickoff_at)!==kickoff)return unreviewed('FIXTURE_IDENTITY_MISMATCH');
+ if(!(generated<=now && now-generated<=3600000 && now<kickoff))return unreviewed('STALE_OR_NON_PREMATCH_COMPARISON');
+ if(forecast.modelVersion!=='two45-independent-core-v3.1'||!/^[a-f0-9]{64}$/.test(payload.datasetHash||''))return unreviewed('INDEPENDENT_PROVENANCE_MISSING');
+ const trained=Date.parse(forecast.trainedBefore),features=Date.parse(context.featureAsOf);
+ if(!(trained<=generated && now-trained<=7*86400000 && features<=generated && now-features<=86400000))return unreviewed('STALE_OR_FUTURE_MODEL_INPUTS');
+ if(forecast.qualityHold || !(forecast.dataQuality>=.75 && context.sampleSize>=8 && forecast.evidence?.leagueEffectiveMatches>=20))return unreviewed('INSUFFICIENT_INDEPENDENT_EVIDENCE');
+ if(!(legacy>0&&legacy<1&&core>0&&core<1&&odds>1))return unreviewed('EXACT_MARKET_PROBABILITY_OR_PRICE_MISSING');
+ const observed=Date.parse(pick.priceObservedAt),updated=Date.parse(pick.providerUpdatedAt);
+ if(!(updated<=observed&&observed<=now&&now-observed<=1800000&&now-updated<=1800000))return unreviewed('FRESH_EXACT_PRICE_EVIDENCE_MISSING');
+ const difference=legacy-core,ev=base.independentEV;
+ // Material negative-value disagreement sends an already-qualified legacy candidate back for review.
+ if(difference>=.10 && ev<=-.05)return {...base,status:'HOLD',reason:'MATERIAL_INDEPENDENT_DISAGREEMENT',hold:true};
+ if(ev>0 && Math.abs(difference)<.10)return {...base,status:'SUPPORTS',reason:'SAME_MARKET_POSITIVE_VALUE'};
+ return {...base,status:'DIFFERS',reason:'REVIEW_DIFFERENCE_WITHOUT_STRONG_HOLD'};
+}
+
+function summarizeReviews(rows) {
+ const counts={SUPPORTS:0,DIFFERS:0,HOLD:0,UNREVIEWED:0};
+ for(const row of rows)counts[row.modelReview?.status||'UNREVIEWED']++;
+ return {version:REVIEW_VERSION,mode:'CONSERVATIVE_REVIEW',coreValidated:false,counts};
+}
+
+return {REVIEW_VERSION,compareModelPick,summarizeReviews};
+})();
+// END GENERATED MODEL REVIEW V1
+// BEGIN MODEL REVIEW RUNTIME V1
+var modelReviewCacheV1=new Map();
+var modelReviewHoldReceiptsV1=new Set();
+function presentModelReviewV1(pick,review) {
+  const match=[...review.pool,...review.holds].find(x=>String(x.fixtureId ?? x.providerMatchId)===String(pick.fixtureId ?? pick.providerMatchId) && x.market===pick.market && ticketSelectionKeyV78(x.selection)===ticketSelectionKeyV78(pick.selection));
+  if(!match)return pick;
+  return match.modelReview.hold ? {...pick,modelReview:match.modelReview,decision:'NO_BET',qualityHold:true,reasons:['Held for independent-model disagreement review.']} : {...pick,modelReview:match.modelReview};
+}
+async function reviewModelPoolV1(env,picks) {
+  const now=Date.now(),ids=[...new Set(arr2(picks).filter(p=>Number(p.fixtureId ?? p.providerMatchId)>0 && Number.isFinite(Date.parse(p.kickoff ?? p.kickoffAt ?? p.kickoff_at))).map(p=>String(p.fixtureId ?? p.providerMatchId)))].sort();
+  let rows=[],error=null;
+  if(ids.length) {
+    const key=String(supa(env).url||'')+'|'+ids.join(','),cached=modelReviewCacheV1.get(key);
+    if(cached && now-cached.at<30000)rows=cached.rows;
+    else try {
+      rows=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids.join(',')+')&generated_at=gte.'+encodeURIComponent(new Date(now-3600000).toISOString())+
+        '&select=id,fixture_id,model_id,generated_at,kickoff_at,forecast:payload->forecast,context:payload->context,datasetHash:payload->>datasetHash&order=generated_at.desc,id.desc&limit=500',{timeoutMs:2500}));
+      if(modelReviewCacheV1.size>=8)modelReviewCacheV1.delete(modelReviewCacheV1.keys().next().value);
+      modelReviewCacheV1.set(key,{at:now,rows});
+    }catch(e){error=safeRefreshError(e);}
+  }
+  const latest=new Map();for(const row of rows)if(!latest.has(String(row.fixture_id)))latest.set(String(row.fixture_id),row);
+  const reviewed=arr2(picks).map(p=>({...p,modelReview:modelReviewV1.compareModelPick(p,latest.get(String(p.fixtureId ?? p.providerMatchId)),now)}));
+  const holds=reviewed.filter(p=>p.modelReview.hold);let receiptError=null;
+  const pending=holds.map(p=>({pick:p,key:JSON.stringify([p.fixtureId ?? p.providerMatchId,p.market,ticketSelectionKeyV78(p.selection),p.modelReview.coreForecastId,p.sportsbookOdds,p.priceObservedAt])})).filter(x=>!modelReviewHoldReceiptsV1.has(x.key));
+  if(pending.length)try {
+    await sb(env,'two45_selection_shadow_v2',{method:'POST',prefer:'return=minimal',timeoutMs:2500,body:JSON.stringify(pending.map(({pick:p})=>({fixture_id:p.fixtureId ?? p.providerMatchId,kickoff_at:p.kickoff ?? p.kickoffAt ?? p.kickoff_at,generated_at:new Date(now).toISOString(),model_version:modelReviewV1.REVIEW_VERSION,
+      payload:{mode:'REVIEW_HOLD',validationProtocol:modelReviewV1.REVIEW_VERSION,promotionAllowed:false,candidate:p,review:p.modelReview}})))});
+    for(const x of pending){if(modelReviewHoldReceiptsV1.size>=256)modelReviewHoldReceiptsV1.delete(modelReviewHoldReceiptsV1.values().next().value);modelReviewHoldReceiptsV1.add(x.key);}
+  }catch(e){receiptError=safeRefreshError(e);}
+  return {pool:reviewed.filter(p=>!p.modelReview.hold),holds,summary:{...modelReviewV1.summarizeReviews(reviewed),error,receiptError}};
+}
+
+// END MODEL REVIEW RUNTIME V1
 // BEGIN GENERATED FORECAST CORE V3
 var forecastCoreV3 = (() => {
 // Odds-free, hierarchical goal model. Training labels are unique regulation-time fixtures.
@@ -198,7 +276,8 @@ const GOAL_CORE_CONFIG_V3 = {teamPenalty:12,halfLifeDays:90,rho:0,seasonWeight:1
 const MIGRATION_PROTOCOL_V2 = 'independent-v2-migration-20261018';
 function modelMigrationStatusV2() {
   return {state:'BLOCKED_VALIDATION',promotionAllowed:false,protocol:MIGRATION_PROTOCOL_V2,
-    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY',candidateSelection:selectionV2.VERSION,
+    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY_WITH_INDEPENDENT_REVIEW',candidateSelection:selectionV2.VERSION,
+    independentReview:{version:modelReviewV1.REVIEW_VERSION,mode:'CONSERVATIVE_REVIEW',createsPicks:false,confidenceBoost:0},
     products:['ELITE_3','HIGH_CONVICTION','WEEKEND_LADDER'],recordScope:'official-publication-ledger-v2',
     blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED','PUBLIC_RECORD_RESULT_SOURCE_REQUIRES_CUTOVER'],
     requirements:{settledSelections:200,fixtureDays:14,perMarketSelections:60,decisionMinutesBeforeKickoff:60,quoteMaxAgeMinutes:30},
@@ -214,7 +293,13 @@ async function runGoalCoreSweepV3(env) {
       '&select=fixture_id,provider_league_id,season,home_team_id,away_team_id,home_team,away_team,competition,kickoff_at&order=kickoff_at.asc,fixture_id.asc&limit=60',{timeoutMs:3000}));
     if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES_BEFORE_PROTOCOL_CUTOFF'};
     const ids=jobs.map(j=>Number(j.fixture_id)).filter(Number.isFinite).join(',');
-    const recent=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}));
+    let priorityError=null;
+    const [recentRows,priorityRows]=await Promise.all([
+      sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}),
+      sb(env,'two45_analysis_state?fixture_id=in.('+ids+')&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&decision=eq.PICK&status=eq.COMPLETE&select=fixture_id&limit=120',{timeoutMs:2500}).catch(e=>{priorityError=safeRefreshError(e);return [];})
+    ]);
+    const recent=arr2(recentRows),priority=new Set(arr2(priorityRows).map(r=>String(r.fixture_id)));
+    jobs.sort((a,b)=>Number(priority.has(String(b.fixture_id)))-Number(priority.has(String(a.fixture_id))) || Date.parse(a.kickoff_at)-Date.parse(b.kickoff_at));
     const seen=new Set(recent.map(r=>String(r.fixture_id))),results=[],daily=new Map();
     for(const job of jobs.filter(j=>!seen.has(String(j.fixture_id))).slice(0,2)) {
       if(Date.now()-started>10000)break;
@@ -234,7 +319,7 @@ async function runGoalCoreSweepV3(env) {
         results.push({fixtureId:job.fixture_id,...await recordGoalForecastV3(env,job,legacy,quotes,decision)});
       }catch(e){results.push({fixtureId:job.fixture_id,error:safeRefreshError(e)});}
     }
-    return {ok:results.every(r=>!r.error),processed:results.length,eligibleJobs:jobs.length,results};
+    return {ok:results.every(r=>!r.error),processed:results.length,eligibleJobs:jobs.length,priorityFixtures:priority.size,priorityError,results};
   }catch(e){return {ok:false,processed:0,error:safeRefreshError(e)};}
 }
 
@@ -285,8 +370,13 @@ async function recordGoalForecastV3(env,job,legacyAnalysis,quotes,legacyDecision
     sampleSize:Math.min(Math.max(prediction.evidence.homeEffectiveMatches,prediction.evidence.homeSeasonMatches),Math.max(prediction.evidence.awayEffectiveMatches,prediction.evidence.awaySeasonMatches)),
     featureAsOf:featureTimes.length?new Date(Math.min(...featureTimes)).toISOString():contextRow.model.trainedBefore};
   const candidates=selectionV2.generateCandidates(forecast,quotes,contextRow.model.calibration,context);
+  const target=quotes.filter(q=>q.market===legacyDecision?.market && ticketSelectionKeyV78(q.selection)===ticketSelectionKeyV78(legacyDecision?.selection) && String(q.bookmaker).replace(/[^a-z0-9]/gi,'').toLowerCase()==='bet365');
+  const quote=new Set(target.map(q=>Number(q.odds))).size===1?target[0]:null;
+  const comparison=legacyDecision?.decision==='PICK'?modelReviewV1.compareModelPick({fixtureId:job.fixture_id,kickoff:job.kickoff_at,market:legacyDecision.market,selection:legacyDecision.selection,
+    probability:legacyAnalysis.probabilities?.[legacyDecision.market]?.[ticketSelectionKeyV78(legacyDecision.selection)],sportsbookOdds:quote?.odds,priceObservedAt:quote?.observedAt,providerUpdatedAt:quote?.providerUpdatedAt},
+    {fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,forecast,context,datasetHash:contextRow.dataset_hash},now):{version:modelReviewV1.REVIEW_VERSION,status:'NO_LEGACY_PICK',hold:false};
   await sb(env,'two45_goal_forecasts_v3',{method:'POST',prefer:'return=minimal',timeoutMs:4000,body:JSON.stringify({fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,
-    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
+    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),comparison,legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
   return {mode:'SHADOW',modelId:contextRow.model_id,version:forecastCoreV3.CORE_VERSION,expectedGoals:forecast.expectedGoals,rejectionReasons:forecast.rejectionReasons,promotionAllowed:false};
 }
 
@@ -7836,7 +7926,7 @@ function exactBet365QuoteV78(oddsPayload, fixtureId, market, selection) {
       const odds = Number(outcome?.odds);
       if (!(odds >= 1.15) || suspiciousBet365PriceV100(wantMarket, wantSelection, odds))
         continue;
-      matches.push({ odds, bookmaker: group.bookmaker || "Bet365", rawMarket: group.rawMarket || null, rawSelection: outcome.rawSelection || null, groupKey: group.groupKey || null, exactMarket: true, exactSelection: true, priceSuspicious: false });
+      matches.push({ odds, bookmaker: group.bookmaker || "Bet365", observedAt:group.observedAt,providerUpdatedAt:group.providerUpdatedAt, rawMarket: group.rawMarket || null, rawSelection: outcome.rawSelection || null, groupKey: group.groupKey || null, exactMarket: true, exactSelection: true, priceSuspicious: false });
     }
   }
   if (!matches.length)
@@ -7861,7 +7951,7 @@ async function verifyPublicStrongPicksV83(env, date, board) {
     const fixtureId = p?.fixtureId ?? p?.providerMatchId, quote = exactBet365QuoteV78(oddsPayload, fixtureId, p?.market, p?.selection);
     if (!quote)
       continue;
-    const tier = num4(p?.competitionTier, 4), x = { ...p, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, convictionLabel: "Two45 High Conviction" };
+    const tier = num4(p?.competitionTier, 4), x = { ...p, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds, priceObservedAt:quote.observedAt,providerUpdatedAt:quote.providerUpdatedAt, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, convictionLabel: "Two45 High Conviction" };
     x.valueEdge = ticketNormV70(x.probability,0) - 1/quote.odds;
     x.valueEdgePct = x.valueEdge * 100;
     x.premiumScore = ticketPremiumScoreV80(x);
@@ -7874,10 +7964,16 @@ async function verifyPublicStrongPicksV83(env, date, board) {
     if (tier <= 3 && x.trustScore >= 74)
       verified.push(x);
   }
-  await Promise.all(verified.map(x=>sb(env,"rpc/two45_capture_publication_v2",{method:"POST",body:JSON.stringify({p_product:"HIGH_CONVICTION",p_key:date,p_evidence:"verified-public-board:"+date,p_pick:x,p_at:new Date().toISOString()})})));
+  const review=await reviewModelPoolV1(env,verified);
+  verified.splice(0,verified.length,...review.pool);
   verified.sort((a, b) => num4(a.competitionTier, 4) - num4(b.competitionTier, 4) || num4(b.trustScore, 0) - num4(a.trustScore, 0) || num4(b.premiumScore, 0) - num4(a.premiumScore, 0));
+  const primary=new Map();for(const x of verified)if(!primary.has(String(x.fixtureId ?? x.providerMatchId)))primary.set(String(x.fixtureId ?? x.providerMatchId),x);
+  verified.splice(0,verified.length,...primary.values());
+  await Promise.all(verified.map(x=>sb(env,"rpc/two45_capture_publication_v2",{method:"POST",body:JSON.stringify({p_product:"HIGH_CONVICTION",p_key:date,p_evidence:"verified-public-board:"+date,p_pick:x,p_at:new Date().toISOString()})})));
   const ids = new Set(verified.map((x) => String(x.fixtureId || x.providerMatchId || "")));
-  return { ...board, strongPicks: verified, picks: arr2(board?.picks).filter((x) => x?.pickType === "RISKY_VALUE" || ids.has(String(x?.fixtureId || x?.providerMatchId || ""))) };
+  return { ...board, strongPicks: verified, independentReview:review.summary,independentReviewHolds:review.holds,
+    independentForecasts:arr2(board?.independentForecasts).map(f=>presentModelReviewV1(f,review)),
+    picks: arr2(board?.picks).filter((x) => x?.pickType === "RISKY_VALUE" || ids.has(String(x?.fixtureId || x?.providerMatchId || ""))).map(f=>presentModelReviewV1(f,review)) };
 }
 __name(verifyPublicStrongPicksV83, "verifyPublicStrongPicksV83");
 function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learning = null, deduplicateFixtures = true) {
@@ -7891,7 +7987,7 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
       const x = { ...p, ...c }, fixtureId = p.fixtureId ?? p.providerMatchId, quote = exactBet365QuoteV78(oddsPayload, fixtureId, x.market, x.selection);
       if (!quote)
         continue;
-      const verified = { ...x, fixtureId: p.fixtureId, providerMatchId: p.providerMatchId, home: p.home, away: p.away, league: p.league, kickoff: p.kickoff, competitionTier: tier, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, _ticketOdds: quote.odds, _ticketDay: day };
+      const verified = { ...x, fixtureId: p.fixtureId, providerMatchId: p.providerMatchId, home: p.home, away: p.away, league: p.league, kickoff: p.kickoff, competitionTier: tier, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds,priceObservedAt:quote.observedAt,providerUpdatedAt:quote.providerUpdatedAt, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, _ticketOdds: quote.odds, _ticketDay: day };
       // A merged alternative must never inherit the headline market's edge.
       verified.valueEdge = ticketNormV70(verified.probability,0) - 1/quote.odds;
       verified.valueEdgePct = verified.valueEdge * 100;
@@ -8073,19 +8169,22 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
   const oddsComplete = Boolean(oddsRow) && oddsPayload?.paging?.complete !== false && !oddsPayload?.repairInProgress;
   const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload);
   const researchFixtureIds = new Set([...arr2(board?.strongPicks),...arr2(board?.premiumCandidates)].filter(p=>p?.decision==='PICK' && ticketCompetitionTierV79(board,p)<=2 && ticketUpcomingV70(board,p)).map(p=>String(p.fixtureId ?? p.providerMatchId)));
-  const verifiedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
-  const verifiedFixtureIds = new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
-  const candidateCoverageReady = new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size >= 2;
+  const pricedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
+  const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool;
+  const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
+  const candidateCoverageReady = verifiedFixtureIds.size >= 2;
   const pipelineBase = {
     analyzed: num4(board?.analyzedCount, 0),
     headlineStrong: arr2(board?.strongPicks).length,
     strongMarketOptions: arr2(board?.premiumCandidates).length,
     oddsComplete,
     candidateCoverageReady,
+    independentReview:review.summary,
+    independentReviewHolds:review.holds.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,modelReview:x.modelReview})),
     researchFixtureCount: researchFixtureIds.size,
     pendingVerificationFixtures: [...researchFixtureIds].filter(id=>!verifiedFixtureIds.has(id)),
     exactVerifiedFixtures: new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size,
-    rejections: verifiedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:eliteRejectionReasonsV2(x),probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
+    rejections: pricedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:[...eliteRejectionReasonsV2(x),...(review.holds.some(h=>String(h.fixtureId)===String(x.fixtureId)&&h.market===x.market&&h.selection===x.selection)?['INDEPENDENT_REVIEW_HOLD']:[])],probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
   };
   if (!candidateCoverageReady && (!oddsComplete || researchFixtureIds.size>verifiedFixtureIds.size)) {
     const payload2 = {
@@ -8102,7 +8201,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
       oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
       ticket: null,
       candidateCount: 0,
-      pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: 0 },
+      pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: 0 },
       rule: "Elite no longer waits for unrelated sportsbook pages. It proceeds only when at least two Tier 1/2 STRONG independent-model candidates have exact verified Bet365 prices; otherwise it keeps building."
     };
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
@@ -8119,11 +8218,11 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     revision: TICKET_LOCK_REVISION_V78,
     rebuiltForPricingIntegrity: Boolean(rebuildReason),
     rebuildReason: rebuildReason || null,
-    waitingFor: publish ? null : t ? "06:00_ET_REVIEW" : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
+    waitingFor: publish ? null : t ? "06:00_ET_REVIEW" : review.holds.length ? "INDEPENDENT_REVIEW" : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
     oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
     ticket: publish ? lockTicketV70(t, at, b) : t ? {...t,locked:false,draftAt:at,legs:arr2(t.legs).map(x=>({...x,locked:false}))} : null,
     candidateCount: pool.length,
-    pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: pool.length, rejectedQuality: verifiedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: verifiedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
+    pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: pool.length, rejectedQuality: pricedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: pricedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
     rule: "Frozen after publication. Every leg is exact Bet365 verified. Elite can use fresh fixture-level Bet365 verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
   };
   await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload, 259200);
@@ -8143,7 +8242,7 @@ function weekendAnchorV70() {
 __name(weekendAnchorV70, "weekendAnchorV70");
 async function buildWeekendLockV70(env, satDate, rebuildReason = null, previousLock = null) {
   if (rebuildReason || previousLock?.revision !== TICKET_LOCK_REVISION_V78 || previousLock?.saturday !== satDate) previousLock = null;
-  const sunDate = datePlusDays(satDate, 1), values = await Promise.all([ticketBoardV70(env, satDate), ticketBoardV70(env, sunDate), getFeedSnapshot(env, oddsKey(satDate)).catch(() => null), getFeedSnapshot(env, oddsKey(sunDate)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), satBoard = values[0], sunBoard = values[1], satOddsRow = values[2], sunOddsRow = values[3], learning = values[4]?.payload || {}, ranked = [...ticketPoolBoardVerifiedV78(satBoard, "Sat", satOddsRow?.payload || {}, false, learning), ...ticketPoolBoardVerifiedV78(sunBoard, "Sun", sunOddsRow?.payload || {}, false, learning)].sort((a, b2) => num4(a.competitionTier, 4) - num4(b2.competitionTier, 4) || b2._ticketScore - a._ticketScore).slice(0, 24), dailySnaps = await Promise.all([satDate,sunDate].map(d=>getFeedSnapshot(env,"ticket-lock:daily:"+d).catch(()=>null))), reserved = new Set(dailySnaps.flatMap(s=>arr2(s?.payload?.ticket?.legs)).map((x) => String(x.fixtureId || x.providerMatchId || "")).filter(Boolean)), pool = reserved.size ? ranked.filter((x) => !reserved.has(String(x.fixtureId || x.providerMatchId || ""))) : ranked, fiveTry = ticketOptimizeV70(pool.filter(x => !new Set(["five","ten","fifty"].flatMap(k => arr2(previousLock?.tickets?.[k]?.locked ? previousLock.tickets[k].legs : []).map(l => String(l.fixtureId || l.providerMatchId)))).has(String(x.fixtureId || x.providerMatchId))), 5, 4.75, 5.5, 2, 5, true), five = previousLock?.tickets?.five?.locked ? previousLock.tickets.five : fiveTry?.targetMet ? fiveTry : null, fiveIds = new Set(arr2(five?.legs).map(x => String(x.fixtureId || x.providerMatchId))), tenPool = pool.filter(x => !fiveIds.has(String(x.fixtureId || x.providerMatchId)) && !arr2(previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty.legs : []).some(l => String(l.fixtureId || l.providerMatchId) === String(x.fixtureId || x.providerMatchId))), tenTry = ticketOptimizeV70(tenPool, 10, 9, 11, 3, 7, true), ten = previousLock?.tickets?.ten?.locked ? previousLock.tickets.ten : tenTry?.targetMet ? tenTry : null, usedIds = new Set([...arr2(five?.legs),...arr2(ten?.legs)].map(x => String(x.fixtureId || x.providerMatchId))), fiftyTry = ticketOptimizeV70(pool.filter(x => !usedIds.has(String(x.fixtureId || x.providerMatchId))), 50, 45, 55, 4, 9, true), fifty = previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty : fiftyTry?.targetMet ? fiftyTry : null, weekendReady = Boolean(five && ten && fifty), at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, [...arr2(five?.legs), ...arr2(ten?.legs), ...arr2(fifty?.legs)]), payload = { ok: true, type: "weekend", saturday: satDate, sunday: sunDate, status: weekendReady ? "LOCKED" : "BUILDING", lockedAt: weekendReady ? at : null, immutable: weekendReady, revision: TICKET_LOCK_REVISION_V78, rebuiltForPricingIntegrity: Boolean(rebuildReason), rebuiltForOneDayOverride: rebuildReason === "one-day-weekend-reset" || Boolean(previousLock?.rebuiltForOneDayOverride), rebuildReason: rebuildReason || null, saturdayOddsSnapshotUpdatedAt: satOddsRow?.payload?.updatedAt || satOddsRow?.refreshed_at || null, sundayOddsSnapshotUpdatedAt: sunOddsRow?.payload?.updatedAt || sunOddsRow?.refreshed_at || null, tickets: { five: lockTicketV70(five, at, b), ten: lockTicketV70(ten, at, b), fifty: lockTicketV70(fifty, at, b) }, candidateCount: pool.length, eliteReservedCount: reserved.size, rule: "Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder." };
+  const sunDate = datePlusDays(satDate, 1), values = await Promise.all([ticketBoardV70(env, satDate), ticketBoardV70(env, sunDate), getFeedSnapshot(env, oddsKey(satDate)).catch(() => null), getFeedSnapshot(env, oddsKey(sunDate)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), satBoard = values[0], sunBoard = values[1], satOddsRow = values[2], sunOddsRow = values[3], learning = values[4]?.payload || {}, rankedUnreviewed = [...ticketPoolBoardVerifiedV78(satBoard, "Sat", satOddsRow?.payload || {}, false, learning), ...ticketPoolBoardVerifiedV78(sunBoard, "Sun", sunOddsRow?.payload || {}, false, learning)].sort((a, b2) => num4(a.competitionTier, 4) - num4(b2.competitionTier, 4) || b2._ticketScore - a._ticketScore).slice(0, 24), review = await reviewModelPoolV1(env,rankedUnreviewed), ranked = review.pool, dailySnaps = await Promise.all([satDate,sunDate].map(d=>getFeedSnapshot(env,"ticket-lock:daily:"+d).catch(()=>null))), reserved = new Set(dailySnaps.flatMap(s=>arr2(s?.payload?.ticket?.legs)).map((x) => String(x.fixtureId || x.providerMatchId || "")).filter(Boolean)), pool = reserved.size ? ranked.filter((x) => !reserved.has(String(x.fixtureId || x.providerMatchId || ""))) : ranked, fiveTry = ticketOptimizeV70(pool.filter(x => !new Set(["five","ten","fifty"].flatMap(k => arr2(previousLock?.tickets?.[k]?.locked ? previousLock.tickets[k].legs : []).map(l => String(l.fixtureId || l.providerMatchId)))).has(String(x.fixtureId || x.providerMatchId))), 5, 4.75, 5.5, 2, 5, true), five = previousLock?.tickets?.five?.locked ? previousLock.tickets.five : fiveTry?.targetMet ? fiveTry : null, fiveIds = new Set(arr2(five?.legs).map(x => String(x.fixtureId || x.providerMatchId))), tenPool = pool.filter(x => !fiveIds.has(String(x.fixtureId || x.providerMatchId)) && !arr2(previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty.legs : []).some(l => String(l.fixtureId || l.providerMatchId) === String(x.fixtureId || x.providerMatchId))), tenTry = ticketOptimizeV70(tenPool, 10, 9, 11, 3, 7, true), ten = previousLock?.tickets?.ten?.locked ? previousLock.tickets.ten : tenTry?.targetMet ? tenTry : null, usedIds = new Set([...arr2(five?.legs),...arr2(ten?.legs)].map(x => String(x.fixtureId || x.providerMatchId))), fiftyTry = ticketOptimizeV70(pool.filter(x => !usedIds.has(String(x.fixtureId || x.providerMatchId))), 50, 45, 55, 4, 9, true), fifty = previousLock?.tickets?.fifty?.locked ? previousLock.tickets.fifty : fiftyTry?.targetMet ? fiftyTry : null, weekendReady = Boolean(five && ten && fifty), at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, [...arr2(five?.legs), ...arr2(ten?.legs), ...arr2(fifty?.legs)]), payload = { ok: true, type: "weekend", saturday: satDate, sunday: sunDate, status: weekendReady ? "LOCKED" : "BUILDING", lockedAt: weekendReady ? at : null, immutable: weekendReady, revision: TICKET_LOCK_REVISION_V78, rebuiltForPricingIntegrity: Boolean(rebuildReason), rebuiltForOneDayOverride: rebuildReason === "one-day-weekend-reset" || Boolean(previousLock?.rebuiltForOneDayOverride), rebuildReason: rebuildReason || null, saturdayOddsSnapshotUpdatedAt: satOddsRow?.payload?.updatedAt || satOddsRow?.refreshed_at || null, sundayOddsSnapshotUpdatedAt: sunOddsRow?.payload?.updatedAt || sunOddsRow?.refreshed_at || null, tickets: { five: lockTicketV70(five, at, b), ten: lockTicketV70(ten, at, b), fifty: lockTicketV70(fifty, at, b) }, candidateCount: pool.length, independentReview:review.summary, independentReviewHolds:review.holds, eliteReservedCount: reserved.size, rule: "Saturday and Sunday legs freeze together. Every leg is exact-tuple Bet365 verified and cross-checked against DraftKings/FanDuel when available; Elite fixtures are never reused by Weekend Ladder." };
   // A published rung is immutable even while the other targets keep building.
   if (!rebuildReason && previousLock?.revision === TICKET_LOCK_REVISION_V78 && previousLock?.saturday === satDate) {
     for (const rung of ["five", "ten", "fifty"]) {

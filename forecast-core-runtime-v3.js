@@ -3,7 +3,8 @@ const GOAL_CORE_CONFIG_V3 = {teamPenalty:12,halfLifeDays:90,rho:0,seasonWeight:1
 const MIGRATION_PROTOCOL_V2 = 'independent-v2-migration-20261018';
 function modelMigrationStatusV2() {
   return {state:'BLOCKED_VALIDATION',promotionAllowed:false,protocol:MIGRATION_PROTOCOL_V2,
-    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY',candidateSelection:selectionV2.VERSION,
+    activeRawModel:MODEL_VERSION,candidateRawModel:forecastCoreV3.CORE_VERSION,activeSelection:'LEGACY_WITH_INDEPENDENT_REVIEW',candidateSelection:selectionV2.VERSION,
+    independentReview:{version:modelReviewV1.REVIEW_VERSION,mode:'CONSERVATIVE_REVIEW',createsPicks:false,confidenceBoost:0},
     products:['ELITE_3','HIGH_CONVICTION','WEEKEND_LADDER'],recordScope:'official-publication-ledger-v2',
     blockers:['HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','UNTOUCHED_PROSPECTIVE_HOLDOUT_REQUIRED','EXACT_PRICE_SELECTION_ROI_NOT_VALIDATED','PUBLIC_RECORD_RESULT_SOURCE_REQUIRES_CUTOVER'],
     requirements:{settledSelections:200,fixtureDays:14,perMarketSelections:60,decisionMinutesBeforeKickoff:60,quoteMaxAgeMinutes:30},
@@ -19,7 +20,13 @@ async function runGoalCoreSweepV3(env) {
       '&select=fixture_id,provider_league_id,season,home_team_id,away_team_id,home_team,away_team,competition,kickoff_at&order=kickoff_at.asc,fixture_id.asc&limit=60',{timeoutMs:3000}));
     if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES_BEFORE_PROTOCOL_CUTOFF'};
     const ids=jobs.map(j=>Number(j.fixture_id)).filter(Number.isFinite).join(',');
-    const recent=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}));
+    let priorityError=null;
+    const [recentRows,priorityRows]=await Promise.all([
+      sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}),
+      sb(env,'two45_analysis_state?fixture_id=in.('+ids+')&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&decision=eq.PICK&status=eq.COMPLETE&select=fixture_id&limit=120',{timeoutMs:2500}).catch(e=>{priorityError=safeRefreshError(e);return [];})
+    ]);
+    const recent=arr2(recentRows),priority=new Set(arr2(priorityRows).map(r=>String(r.fixture_id)));
+    jobs.sort((a,b)=>Number(priority.has(String(b.fixture_id)))-Number(priority.has(String(a.fixture_id))) || Date.parse(a.kickoff_at)-Date.parse(b.kickoff_at));
     const seen=new Set(recent.map(r=>String(r.fixture_id))),results=[],daily=new Map();
     for(const job of jobs.filter(j=>!seen.has(String(j.fixture_id))).slice(0,2)) {
       if(Date.now()-started>10000)break;
@@ -39,7 +46,7 @@ async function runGoalCoreSweepV3(env) {
         results.push({fixtureId:job.fixture_id,...await recordGoalForecastV3(env,job,legacy,quotes,decision)});
       }catch(e){results.push({fixtureId:job.fixture_id,error:safeRefreshError(e)});}
     }
-    return {ok:results.every(r=>!r.error),processed:results.length,eligibleJobs:jobs.length,results};
+    return {ok:results.every(r=>!r.error),processed:results.length,eligibleJobs:jobs.length,priorityFixtures:priority.size,priorityError,results};
   }catch(e){return {ok:false,processed:0,error:safeRefreshError(e)};}
 }
 
@@ -90,7 +97,12 @@ async function recordGoalForecastV3(env,job,legacyAnalysis,quotes,legacyDecision
     sampleSize:Math.min(Math.max(prediction.evidence.homeEffectiveMatches,prediction.evidence.homeSeasonMatches),Math.max(prediction.evidence.awayEffectiveMatches,prediction.evidence.awaySeasonMatches)),
     featureAsOf:featureTimes.length?new Date(Math.min(...featureTimes)).toISOString():contextRow.model.trainedBefore};
   const candidates=selectionV2.generateCandidates(forecast,quotes,contextRow.model.calibration,context);
+  const target=quotes.filter(q=>q.market===legacyDecision?.market && ticketSelectionKeyV78(q.selection)===ticketSelectionKeyV78(legacyDecision?.selection) && String(q.bookmaker).replace(/[^a-z0-9]/gi,'').toLowerCase()==='bet365');
+  const quote=new Set(target.map(q=>Number(q.odds))).size===1?target[0]:null;
+  const comparison=legacyDecision?.decision==='PICK'?modelReviewV1.compareModelPick({fixtureId:job.fixture_id,kickoff:job.kickoff_at,market:legacyDecision.market,selection:legacyDecision.selection,
+    probability:legacyAnalysis.probabilities?.[legacyDecision.market]?.[ticketSelectionKeyV78(legacyDecision.selection)],sportsbookOdds:quote?.odds,priceObservedAt:quote?.observedAt,providerUpdatedAt:quote?.providerUpdatedAt},
+    {fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,forecast,context,datasetHash:contextRow.dataset_hash},now):{version:modelReviewV1.REVIEW_VERSION,status:'NO_LEGACY_PICK',hold:false};
   await sb(env,'two45_goal_forecasts_v3',{method:'POST',prefer:'return=minimal',timeoutMs:4000,body:JSON.stringify({fixture_id:job.fixture_id,model_id:contextRow.model_id,generated_at:asOf,kickoff_at:job.kickoff_at,
-    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
+    payload:{mode:'SHADOW',promotionAllowed:false,validationProtocol:MIGRATION_PROTOCOL_V2,datasetHash:contextRow.dataset_hash,fixture,forecast,context,quotes,candidates,primary:selectionV2.primaryPicks(candidates),comparison,legacy:{modelVersion:legacyAnalysis.modelVersion,expectedGoals:legacyAnalysis.expectedGoals,probabilities:legacyAnalysis.probabilities,decision:legacyDecision}}})});
   return {mode:'SHADOW',modelId:contextRow.model_id,version:forecastCoreV3.CORE_VERSION,expectedGoals:forecast.expectedGoals,rejectionReasons:forecast.rejectionReasons,promotionAllowed:false};
 }
