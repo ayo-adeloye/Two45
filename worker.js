@@ -3190,6 +3190,7 @@ async function completeCanonicalAnalysisV2(env, job, forecast, analysis, decisio
       forecast,
       probabilityBoard: analysis?.probabilities || {},
       marketOptions: decision?.topMarkets || [],
+      researchMarketOptions: decision?.researchMarketOptions || [],
       intelligence: analysis?.intelligence || null,
       shadowContext: {
         homeTeamId: Number(job.home_team_id),
@@ -5456,7 +5457,7 @@ async function processOne(env, job) {
         valueEdge: edge
       };
     }, "verifyCandidateV85");
-    const verifiedTopMarketsV85 = arr2(decision?.topMarkets).map(verifyCandidateV85).filter(Boolean);
+    // Preserve original independently evaluated alternatives for later research-only\n    // repricing. These are NOT approved picks and never bypass Bet365 verification.\n    const researchMarketOptionsV116 = decision?.decision === "PICK"\n      ? arr2(decision?.topMarkets).filter(x => x && typeof x === "object").slice(0, 20)\n      : [];\n    const verifiedTopMarketsV85 = arr2(decision?.topMarkets).map(verifyCandidateV85).filter(Boolean);
     if (decision?.decision === "PICK") {
       const verifiedMainV85 = verifyCandidateV85(decision);
       const verifiedFallbackV101 =
@@ -5499,7 +5500,7 @@ async function processOne(env, job) {
       decision
     );
     await saveLatestAnalysisV19(env, job, analysis, decision);
-    await completeCanonicalAnalysisV2(env, job, clientForecast, analysis, decision);
+    await completeCanonicalAnalysisV2(env, job, clientForecast, analysis, { ...decision, researchMarketOptions: researchMarketOptionsV116 });
     await patchJob(
       env,
       job.id,
