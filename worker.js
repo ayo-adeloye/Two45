@@ -6992,6 +6992,16 @@ async function selectFeedJobV18(env, date, force = false) {
       run: () => oddsSnapshot ? repairDailyOddsFromFixturesV68(env, date) : refreshOddsPageV18(env, date)
     };
   }
+  // Retry unpublished Elite candidates with missing exact Bet365 quotes after 06:00.
+  // A fresh aggregate odds page does not prove that candidate markets are priced.
+  if (date === activeDailyTicketDateV93()) {
+    const dailyLock = await getFeedSnapshot(env, "ticket-lock:daily:" + date).catch(() => null);
+    const pending = arr2(dailyLock?.payload?.pipeline?.pendingVerificationFixtures).map(String);
+    if (dailyLock?.payload?.status === "BUILDING" && pending.some(id =>
+        Date.now() - Date.parse(oddsSnapshot?.payload?.repairAttempts?.[id] || 0) >= 10 * 60000)) {
+      return {key:oddsKey(date),ttl:900,savesItself:true,run:()=>repairDailyOddsFromFixturesV68(env,date)};
+    }
+  }
   for (const futureDate of fourDayFixtureDatesV20().slice(1)) {
     const missing = !await getFeedSnapshot(env, fixtureKey(futureDate));
     if (missing) {
