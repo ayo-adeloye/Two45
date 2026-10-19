@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {buildMatchEvidence,cleanEvidenceResults} from './match-evidence-v1.mjs';
+const job={fixture_id:99,home_team_id:'1',away_team_id:'2',provider_league_id:'135',season:2026,kickoff_at:'2026-10-20T12:00:00Z'},asOf='2026-10-19T12:00:00Z';
+const result=(id,home='1',away='3',goals=2)=>({fixture_id:id,home_id:home,away_id:away,league_id:'135',season:2026,kickoff_at:'2026-10-10T12:00:00Z',result_available_at:'2026-10-10T15:00:00Z',home_goals:goals,away_goals:1,final_status:'FT'});
+const rows=[result(1),result(2,'3','2'),result(3,'2','3'),{...result(4),home_goals:null},{...result(5),result_available_at:'2026-10-21T00:00:00Z'},{...result(6),final_status:'AET'},result(7),result(7,'1','3',0),result(8),result(8)];
+const clean=cleanEvidenceResults(rows,job,asOf,[2]);assert.deepEqual(clean.map(r=>r.fixture_id).sort(),[1,3,8]);
+const c={market:'TOTAL_GOALS',selection:'OVER_2_5',probability:.72,exactPrice:{odds:1.45},modelReview:{status:'UNREVIEWED'},gateReasons:['DATA_QUALITY']};
+const r=buildMatchEvidence({job,asOf,results:rows,conflicts:[2],candidates:[c]});assert.equal(r.home.venue.matches,2);assert.equal(r.away.venue.matches,0);assert.equal(r.away.venue.goalsFor,null);assert.equal(r.markets[0].homeVenueEvent.successes,2);assert.equal(r.markets[0].homeVenueEvent.matches,2);assert.equal(r.markets[0].awayVenueEvent.rate,null);assert.equal(r.lineupsConfirmed,false);assert.equal(r.injuryCoverage,'UNKNOWN');assert.equal(r.confidenceBoost,0);assert.equal(r.createsPicks,false);assert(r.markets[0].counterCase.some(x=>x.includes('five-percentage')));assert(Math.abs(r.markets[0].stressEV-(.67*1.45-1))<1e-12);
+assert(r.markets[0].homeVenueEvent.interval95[0]<1,'Two wins in two cannot imply certainty');
+const unpriced=buildMatchEvidence({job,asOf,candidates:[{...c,exactPrice:null}]});assert.equal(unpriced.markets[0].estimatedEV,null);assert.equal(unpriced.markets[0].breakEven,null);
+console.log('PASS: point-in-time history, null/future/extra-time exclusion, conflicts and deduplication, venue alignment, small-sample uncertainty and price sensitivity');

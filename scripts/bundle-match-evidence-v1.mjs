@@ -1,0 +1,15 @@
+import fs from 'node:fs';
+const file=new URL('../worker.js',import.meta.url);
+let worker=fs.readFileSync(file,'utf8').replace(/\r\n/g,'\n').replace(/\/\/ BEGIN GENERATED MATCH EVIDENCE V1[\s\S]*?\/\/ END GENERATED MATCH EVIDENCE V1\n/g,'');
+const pure=fs.readFileSync(new URL('../match-evidence-v1.mjs',import.meta.url),'utf8').replace(/^export /gm,'');
+const runtime=fs.readFileSync(new URL('../match-evidence-runtime-v1.js',import.meta.url),'utf8');
+const block='// BEGIN GENERATED MATCH EVIDENCE V1\nvar matchEvidenceV1 = (()=>{\n'+pure+'\nreturn {EVIDENCE_VERSION,cleanEvidenceResults,buildMatchEvidence,evidenceOutcome,eliteEvidenceRequirements};\n})();\n'+runtime+'\n// END GENERATED MATCH EVIDENCE V1\n';
+if(!worker.includes('url.pathname === "/api/match-evidence"'))worker=worker.replace('      if (url.pathname === "/api/model-validation") {','      if (url.pathname === "/api/match-evidence" && request.method === "GET") {\n        const id=Number(url.searchParams.get("fixtureId"));\n        if(!Number.isSafeInteger(id)||id<=0)return json({ok:false,error:"A valid fixture is required"},400);\n        const evidence=await getMatchEvidenceV1(env,id);\n        return json({ok:true,evidence,createsPicks:false},evidence?200:404);\n      }\n      if (url.pathname === "/api/model-validation") {');
+if(!worker.includes('result.matchEvidence ='))worker=worker.replace('  result.providerBurst = {','  try { result.matchEvidence = await runMatchEvidenceSweepV1(env); }\n  catch(e) { result.matchEvidence = {ok:false,error:safeRefreshError(e)}; }\n  result.providerBurst = {');
+// Attach the cached dossier even when no pick qualified.
+if(!worker.includes('review.evidenceReview ='))worker=worker.replace('  return { httpStatus: analysis.httpStatus === 500 ? 202 : 200, body: {','  try { review.evidenceReview = await getMatchEvidenceV1(env,fixtureId,{force:true}); }\n  catch(e) { review.evidenceReview = {sourceErrors:[safeRefreshError(e)],markets:[],risks:["Evidence review could not be completed."]}; }\n  if(review.decision!=="PICK") { review.probability=null;review.premiumScore=null; }\n  return { httpStatus: analysis.httpStatus === 500 ? 202 : 200, body: {');
+if(!worker.includes('const reviewedPrimaryV1='))worker=worker.replace('  if(review.decision!=="PICK") { review.probability=null;review.premiumScore=null; }',`  const reviewedPrimaryV1=review.evidenceReview?.markets?.find(m=>m.primary);
+  if(reviewedPrimaryV1?.modelReview?.hold) { status="REJECTED";review.eliteQualified=false;review.reason="Held for independent-model disagreement review."; }
+  if(review.decision!=="PICK") { review.probability=null;review.premiumScore=null; }
+  await sb(env,"two45_founder_elite_suggestions?user_id=eq."+encodeURIComponent(user.id)+"&fixture_id=eq."+fixtureId+"&fixture_date=eq."+fixtureDate,{method:"PATCH",prefer:"return=minimal",body:JSON.stringify({status,review})});`);
+fs.writeFileSync(file,block+worker);

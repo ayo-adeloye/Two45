@@ -15,6 +15,10 @@ on:
       - 'scripts/bundle-validation-routine-v1.mjs'
       - 'supabase/functions/two45-football-gateway/index.ts'
       - 'tests/football-gateway.cjs'
+      - 'match-evidence-*.mjs'
+      - 'match-evidence-*.js'
+      - 'scripts/bundle-match-evidence-v1.mjs'
+      - 'tests/match-evidence-*.cjs'
       - '.github/workflows/deploy-worker.yml'
 
 jobs:
@@ -36,6 +40,9 @@ jobs:
           node player-props-v1.test.mjs
           node tests/player-research-runtime.cjs
           node tests/football-gateway.cjs
+          node match-evidence-v1.test.mjs
+          node tests/match-evidence-runtime.cjs
+          node tests/match-evidence-ui.cjs
           node tests/model-validation-runtime.cjs
           node tests/model-review-runtime.cjs
           node forecast-core-v3.test.mjs
@@ -55,6 +62,7 @@ jobs:
           node scripts/bundle-model-review-v1.mjs
           node scripts/bundle-player-research-v1.mjs
           node scripts/bundle-validation-routine-v1.mjs
+          node scripts/bundle-match-evidence-v1.mjs
           git diff --exit-code worker.js
   deploy:
     needs: test
