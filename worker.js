@@ -8519,6 +8519,11 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     independentReview:review.summary,
     independentReviewHolds:review.holds.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,modelReview:x.modelReview})),
     researchFixtureCount: researchFixtureIds.size,
+    researchMarketCount: arr2(board?.premiumCandidates).length + arr2(board?.strongPicks).length,
+    priceVerifiedMarketCount: pricedPool.length,
+    qualifiedBeforeIndependentReview: pricedPool.filter(eliteLegQualityV79).length,
+    independentlyHeldCount: review.holds.length,
+    noPickDiagnostic: researchFixtureIds.size === 0 ? "NO_CURRENT_STRONG_RESEARCH" : pricedPool.length === 0 ? "NO_EXACT_BET365_QUOTES" : pricedPool.every(x => !eliteLegQualityV79(x)) ? "ELITE_QUALITY_REJECTION" : review.holds.length && verifiedPool.every(x => x.modelReview?.hold) ? "INDEPENDENT_REVIEW_HOLD" : "NO_QUALIFIED_ODDS_COMBINATION",
     pendingVerificationFixtures: [...researchFixtureIds].filter(id=>!verifiedFixtureIds.has(id)),
     exactVerifiedFixtures: new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size,
     rejections: pricedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:[...eliteRejectionReasonsV2(x),...(review.holds.some(h=>String(h.fixtureId)===String(x.fixtureId)&&h.market===x.market&&h.selection===x.selection)?['INDEPENDENT_REVIEW_HOLD']:[])],probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
