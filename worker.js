@@ -9000,7 +9000,17 @@ var worker_default = {
         const id=Number(url.searchParams.get("fixtureId"));
         if(!Number.isSafeInteger(id)||id<=0)return json({ok:false,error:"A valid fixture is required"},400);
         const evidence=await getMatchEvidenceV1(env,id);
-        return json({ok:true,evidence,createsPicks:false},evidence?200:404);
+        if(!evidence)return json({ok:false,evidence:null,createsPicks:false},404);
+        // Separate source provenance from the independent forecasting output.
+        // Never inject third-party notes into model probabilities, eligibility, or settlement.
+        let externalReview={status:"UNAVAILABLE",usedByModel:false,records:[],expiredCount:0};
+        try {
+          const sourceRows=arr2(await sb(env,'two45_fixture_evidence?fixture_id=eq.'+id+'&select=evidence_type,source_name,fact_text,captured_at,expires_at,effective_at,status&order=captured_at.desc&limit=30',{timeoutMs:3000}));
+          const t=Date.now();
+          const fresh=sourceRows.filter(row=>row.status==='ACTIVE'&&Number.isFinite(Date.parse(row.captured_at))&&Date.parse(row.captured_at)<=t&&Number.isFinite(Date.parse(row.expires_at))&&Date.parse(row.expires_at)>t&&(!row.effective_at||Date.parse(row.effective_at)<=t));
+          externalReview={status:fresh.length?"FRESH_RESEARCH":"NO_FRESH_RESEARCH",usedByModel:false,records:fresh.slice(0,8).map(row=>({type:row.evidence_type,source:row.source_name,note:String(row.fact_text||"").slice(0,300),capturedAt:row.captured_at,expiresAt:row.expires_at})),expiredCount:sourceRows.length-fresh.length};
+        }catch(_error){externalReview={status:"UNAVAILABLE",usedByModel:false,records:[],expiredCount:0};}
+        return json({ok:true,evidence:{...evidence,externalReview},createsPicks:false},200);
       }
       if (url.pathname === "/api/model-validation") {
         return json({ok:true,promotionAllowed:false,status:(await getFeedSnapshot(env,"model-validation-v1:status"))?.payload||null});
