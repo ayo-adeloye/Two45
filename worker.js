@@ -6224,7 +6224,7 @@ async function saveFeedSnapshot(env, key, payload, ttlSeconds) {
   try {
     await promise;
   } finally {
-    if (snapshotPendingWritesV117.get(key) === entry) snapshotPendingWritesV117.delete(signature);
+    if (snapshotPendingWritesV117.get(signature) === entry) snapshotPendingWritesV117.delete(signature);
   }
 }
 __name(saveFeedSnapshot, "saveFeedSnapshot");
