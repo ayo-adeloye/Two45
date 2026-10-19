@@ -1,6 +1,6 @@
 # One official pick stream with routine independent-model review
 
-The scheduled independent raw model now prioritizes fixtures carrying a current legacy PICK and records an exact-market comparison alongside its immutable forecast. It still generates probabilities without bookmaker inputs. Comparisons and research forecasts do not create a second ticket or enter the official Record.
+The scheduled independent raw model now prioritizes fixtures carrying a current legacy PICK and records an exact-market comparison alongside its immutable forecast. Routine refreshes can continue until five minutes before kickoff; prospective evaluation still freezes the last snapshot at least one hour before kickoff and excludes later updates. It still generates probabilities without bookmaker inputs. Comparisons and research forecasts do not create a second ticket or enter the official Record.
 
 Fresh candidates for High Conviction, Elite 3 and Weekend Ladder pass through the same review policy before publication/combination. The existing model must independently qualify the candidate first; the review cannot manufacture eligibility, raise a probability/confidence score, lower quality thresholds, or introduce a market the legacy process did not qualify. High Conviction returns one primary per fixture; Elite and Ladder retain their fixture/rung exclusion rules.
 

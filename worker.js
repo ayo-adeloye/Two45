@@ -287,11 +287,11 @@ function modelMigrationStatusV2() {
 
 async function runGoalCoreSweepV3(env) {
   // Raw inference must not depend on legacy job completion or provider calls.
-  const started=Date.now(),low=new Date(started+3600000).toISOString(),high=new Date(started+48*3600000).toISOString();
+  const started=Date.now(),low=new Date(started+5*60000).toISOString(),high=new Date(started+48*3600000).toISOString();
   try {
     const jobs=arr2(await sb(env,'two45_feature_jobs?kickoff_at=gt.'+encodeURIComponent(low)+'&kickoff_at=lt.'+encodeURIComponent(high)+
       '&select=fixture_id,provider_league_id,season,home_team_id,away_team_id,home_team,away_team,competition,kickoff_at&order=kickoff_at.asc,fixture_id.asc&limit=60',{timeoutMs:3000}));
-    if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES_BEFORE_PROTOCOL_CUTOFF'};
+    if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES'};
     const ids=jobs.map(j=>Number(j.fixture_id)).filter(Number.isFinite).join(',');
     let priorityError=null;
     const [recentRows,priorityRows]=await Promise.all([

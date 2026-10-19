@@ -13,6 +13,7 @@ vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,'
  assert.equal(Object.keys(calls[0].legacy).length,0,'Missing legacy analysis must not prevent independent inference');
  assert.equal(calls[0].quotes.length,0,'Missing prices remain missing');
  assert(queries[0].includes('kickoff_at=gt.')&&queries[0].includes('kickoff_at=lt.')&&queries[0].includes('limit=60'));
+ const lower=Date.parse(decodeURIComponent(queries[0].match(/kickoff_at=gt\.([^&]+)/)[1]));assert(lower<=Date.now()+6*60000,'Routine checks must continue near kickoff; prospective scoring freezes the earlier snapshot separately');
  assert(queries[1].includes('generated_at=gte.'));
  c.sb=async()=>{throw Error('offline');};assert.equal((await c.runGoalCoreSweepV3({})).ok,false);
  console.log('PASS: bounded independent cron inference, no legacy/provider dependency, recent-observation exclusion, no fabricated prices and visible storage failure');
