@@ -7,6 +7,12 @@ on:
     paths:
       - 'worker.js'
       - 'wrangler.toml'
+      - 'player-*.mjs'
+      - 'player-*.js'
+      - 'tests/player-*.cjs'
+      - 'scripts/bundle-player-research-v1.mjs'
+      - 'model-validation-runtime-v1.js'
+      - 'scripts/bundle-validation-routine-v1.mjs'
       - '.github/workflows/deploy-worker.yml'
 
 jobs:
@@ -25,6 +31,9 @@ jobs:
           node tests/quote-provenance.cjs
           node tests/elite-automation.cjs
           node model-review-v1.test.mjs
+          node player-props-v1.test.mjs
+          node tests/player-research-runtime.cjs
+          node tests/model-validation-runtime.cjs
           node tests/model-review-runtime.cjs
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
@@ -41,6 +50,8 @@ jobs:
           node scripts/bundle-tier.mjs
           node scripts/bundle-model-review-runtime-v1.mjs
           node scripts/bundle-model-review-v1.mjs
+          node scripts/bundle-player-research-v1.mjs
+          node scripts/bundle-validation-routine-v1.mjs
           git diff --exit-code worker.js
   deploy:
     needs: test

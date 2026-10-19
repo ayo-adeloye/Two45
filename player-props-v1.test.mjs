@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {forecastPlayerProp,normalizePlayerStats,isPlayerMarket} from './player-props-v1.mjs';
+const asOf='2026-10-19T12:00:00Z',kickoff='2026-10-19T13:00:00Z';
+const history=Array.from({length:12},(_,i)=>({fixtureId:i+1,playerId:9,teamId:1,started:true,minutes:i===0?12:80,kickoff:`2026-10-${String(i+1).padStart(2,'0')}T12:00:00Z`,availableAt:`2026-10-${String(i+1).padStart(2,'0')}T15:00:00Z`,goals:i<3?1:0,assists:i<5?1:0,shotsOnTarget:i<8?2:0}));
+const input={history,playerId:9,teamId:1,fixtureId:99,kickoff,asOf,market:'PLAYER_TO_SCORE_OR_ASSIST',line:0.5,lineup:{confirmed:true,starting:true,playerId:9,teamId:1,fixtureId:99,observedAt:asOf},quote:{bookmaker:'Bet365',fixtureId:99,playerId:9,teamId:1,market:'PLAYER_TO_SCORE_OR_ASSIST',line:0.5,selection:'OVER',odds:2.1,observedAt:asOf,providerUpdatedAt:asOf,settlementRulesVerified:true}};
+const r=forecastPlayerProp(input);assert.equal(r.successes,5,'Union must not double count matches with both a goal and assist');assert.equal(r.sampleSize,12,'Early substitutions must remain in denominator');assert.equal(r.probability,5.5/13);assert.equal(r.officialEligible,false);assert.equal(r.promotionAllowed,false);
+assert.equal(forecastPlayerProp({...input,lineup:null}).probability,null);
+assert.equal(forecastPlayerProp({...input,quote:{...input.quote,playerId:8}}).probability,null);
+assert.equal(forecastPlayerProp({...input,quote:{...input.quote,providerUpdatedAt:'2026-10-19T10:00:00Z'}}).probability,null);
+assert.equal(forecastPlayerProp({...input,history:history.map(x=>({...x,availableAt:'2026-10-20T00:00:00Z'}))}).sampleSize,0);
+assert.equal(forecastPlayerProp({...input,history:[...history,...history]}).sampleSize,0,'Conflicting duplicate fixture evidence is excluded');
+assert.equal(forecastPlayerProp({...input,history:history.map(x=>({...x,teamId:2}))}).sampleSize,0);
+const missing=normalizePlayerStats([{team:{id:1},players:[{player:{id:9},statistics:[{games:{minutes:90,substitute:false},shots:{on:null},goals:{total:0,assists:null}}]}]}],{fixture_id:1,kickoff_at:kickoff},asOf)[0];
+assert.equal(missing.shotsOnTarget,null);assert.equal(missing.assists,null);assert.equal(missing.goals,0);
+assert(isPlayerMarket('Home Player Shots On Target'));assert(isPlayerMarket('Anytime Goalscorer'));assert(!isPlayerMarket('Total Shots On Target'));
+console.log('PASS: player union events, substitutions, exact identities/prices, stale/future evidence, duplicate exclusion and missing statistics');

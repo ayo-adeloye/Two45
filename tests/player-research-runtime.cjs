@@ -1,0 +1,23 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../worker.js'),'utf8');
+const c=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers,AbortSignal,setTimeout,clearTimeout});
+vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);
+for(const name of ['Home Player Shots On Target','Player Shots On Target','Anytime Goalscorer','Player To Score Or Assist'])assert.equal(c.providerMarketName(name),null,name);
+assert.equal(c.providerMarketName('Total Shots On Target'),'TOTAL_SHOTS_ON_TARGET');
+const raw=c.slimOddsRowV18({fixture:{id:1},bookmakers:[{name:'Bet365',bets:[{name:'Player Shots On Target',values:[{value:'A Over 0.5',odd:'2'}]}]}]});
+assert.equal(raw.bookmakers[0].bets.length,1,'Raw player offers survive retention');
+assert.equal(c.oddsMarketsFromSnapshot({response:[raw]},1).length,0,'Raw player prices cannot become team prices');
+let writes=[],calls=0;
+c.easternDate=()=> '2026-10-18';c.tomorrowEasternDate=()=> '2026-10-19';
+c.getFeedSnapshot=async(_,key)=> key.startsWith('odds:')?{payload:{response:[{fixture:{id:1},observedAt:'2026-10-18T12:00:00Z',bookmakers:[{name:'Bet365',bets:[{name:'Player Shots On Target',values:[{value:'A',odd:'2'}]}]}]}]}}:null;
+c.sb=async(_,path,opts)=>{if(opts?.method==='POST'){writes.push({path,opts});return [];}if(path.startsWith('two45_feed_snapshots'))return [];return [{fixture_id:1,league_id:'39',competition:'Premier League',kickoff_at:'2026-10-17T12:00:00Z'}];};
+c.saveFeedSnapshot=async(_,key,payload)=>{writes.push({key,payload});};
+c.football=async()=>{calls++;return {response:[{team:{id:1},players:[{player:{id:9},statistics:[{games:{minutes:80,substitute:false},shots:{on:2},goals:{total:1,assists:0}}]}]}]};};
+(async()=>{
+ c.providerBurstV69={calls:0,maxCalls:4};
+ let result=await c.runPlayerResearchV1({});assert.equal(result.ok,true);assert.equal(result.collectedFixtureId,1);assert.equal(result.playerRows,1);assert.equal(calls,1);assert.equal(result.officialPicksCreated,0);
+ assert(writes.some(w=>w.opts?.prefer==='resolution=ignore-duplicates,return=minimal'));assert(writes.every(w=>!w.path||!w.path.includes('publication')));
+ c.providerBurstV69={calls:4,maxCalls:4};result=await c.runPlayerResearchV1({});assert.equal(calls,1);assert.equal(result.collectionDeferred,'PROVIDER_BUDGET_RESERVED_FOR_PRODUCTION');
+ c.getFeedSnapshot=async()=>({payload:{asOf:new Date().toISOString()}});result=await c.runPlayerResearchV1({});assert.equal(result.skipped,true);assert.equal(calls,1);
+ console.log('PASS: player markets isolated from team totals, bounded research collection, immutable evidence, provider budget and no publication writes');
+})().catch(e=>{console.error(e);process.exitCode=1;});

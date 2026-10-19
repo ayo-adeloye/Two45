@@ -1,3 +1,101 @@
+// BEGIN GENERATED PLAYER RESEARCH V1
+var playerPropsV1 = (()=>{
+// Research only. No player market can enter an official publisher through this module.
+const PLAYER_RESEARCH_VERSION = 'two45-player-research-v1';
+const PLAYER_MARKETS = ['PLAYER_SHOTS_ON_TARGET','PLAYER_TO_SCORE','PLAYER_TO_ASSIST','PLAYER_TO_SCORE_OR_ASSIST'];
+function isPlayerMarket(name) {
+  return /player|scorer|to score|to assist|score or assist/i.test(String(name));
+}
+function normalizePlayerStats(response, fixture, observedAt) {
+  const rows=[];
+  const count=v=>typeof v==='number'&&Number.isInteger(v)&&v>=0?v:null;
+  for(const team of response||[]) for(const p of team.players||[]) {
+    // A fixture response must have one statistics entry. Ambiguity stays missing.
+    const s=p.statistics?.length===1?p.statistics[0]:null;
+    if(!s||!Number.isSafeInteger(p.player?.id)||!Number.isSafeInteger(team.team?.id))continue;
+    rows.push({fixtureId:Number(fixture.fixture_id),playerId:p.player.id,teamId:team.team.id,name:p.player.name||null,
+      kickoff:fixture.kickoff_at,availableAt:observedAt,minutes:count(s.games?.minutes),
+      started:typeof s.games?.substitute==='boolean'?!s.games.substitute:null,
+      shotsOnTarget:count(s.shots?.on),goals:count(s.goals?.total),assists:count(s.goals?.assists)});
+  }
+  return rows;
+}
+function forecastPlayerProp({history=[],playerId,teamId,fixtureId,kickoff,asOf,lineup,market,line=0.5,quote}) {
+  const reasons=[],now=Date.parse(asOf),ko=Date.parse(kickoff);
+  if(!(now<ko))reasons.push('NOT_PREMATCH');
+  if(!PLAYER_MARKETS.includes(market)||!(line===0.5||(market==='PLAYER_SHOTS_ON_TARGET'&&line===1.5)))reasons.push('UNSUPPORTED_EXACT_MARKET');
+  if(!(lineup?.confirmed===true&&lineup.playerId===playerId&&lineup.teamId===teamId&&lineup.fixtureId===fixtureId&&lineup.starting===true&&Date.parse(lineup.observedAt)<=now&&now-Date.parse(lineup.observedAt)<=60*60000))reasons.push('CONFIRMED_START_REQUIRED');
+  const groups=new Map();
+  for(const r of history) {
+    if(r.playerId!==playerId||r.teamId!==teamId||r.fixtureId===fixtureId||r.started!==true||!(r.minutes>0&&r.minutes<=120)||!(Date.parse(r.availableAt)<=now&&Date.parse(r.kickoff)<now&&now-Date.parse(r.kickoff)<=180*86400000))continue;
+    if(!groups.has(r.fixtureId))groups.set(r.fixtureId,[]);groups.get(r.fixtureId).push(r);
+  }
+  const valid=v=>Number.isInteger(v)&&v>=0;
+  const rows=[...groups.values()].filter(a=>a.length===1).map(a=>a[0]).filter(r=>market==='PLAYER_SHOTS_ON_TARGET'?valid(r.shotsOnTarget):market==='PLAYER_TO_SCORE'?valid(r.goals):market==='PLAYER_TO_ASSIST'?valid(r.assists):valid(r.goals)&&valid(r.assists));
+  const minutes=rows.reduce((n,r)=>n+r.minutes,0);
+  if(rows.length<10||minutes<600)reasons.push('INSUFFICIENT_PLAYER_STARTS_AND_MINUTES');
+  const wins=rows.filter(r=>market==='PLAYER_SHOTS_ON_TARGET'?r.shotsOnTarget>line:market==='PLAYER_TO_SCORE'?r.goals>0:market==='PLAYER_TO_ASSIST'?r.assists>0:r.goals>0||r.assists>0).length;
+  // Empirical start-level probability with Jeffreys smoothing. Includes early substitutions.
+  // Score-or-assist uses the observed union, never an independence assumption.
+  const probability=rows.length?(wins+0.5)/(rows.length+1):null;
+  const fresh=t=>Date.parse(t)<=now&&now-Date.parse(t)<=30*60000;
+  if(!(quote?.bookmaker==='Bet365'&&quote.fixtureId===fixtureId&&quote.playerId===playerId&&quote.teamId===teamId&&quote.market===market&&quote.line===line&&quote.selection==='OVER'&&Number.isFinite(quote.odds)&&quote.odds>1&&fresh(quote.observedAt)&&fresh(quote.providerUpdatedAt)&&quote.settlementRulesVerified===true))reasons.push('EXACT_FRESH_PLAYER_PRICE_AND_RULES_REQUIRED');
+  return {version:PLAYER_RESEARCH_VERSION,mode:'RESEARCH_ONLY',promotionAllowed:false,fixtureId,playerId,teamId,market,line,
+    probability:reasons.length?null:probability,sampleSize:rows.length,minutes,successes:wins,
+    method:'Empirical confirmed-start event frequency; Jeffreys smoothing; no opponent adjustment or validated edge',
+    blockers:[...reasons,'PLAYER_CHRONOLOGICAL_VALIDATION_REQUIRED'],officialEligible:false};
+}
+
+return {PLAYER_RESEARCH_VERSION,PLAYER_MARKETS,isPlayerMarket,normalizePlayerStats,forecastPlayerProp};
+})();
+async function runPlayerResearchV1(env) {
+  const key='player-research-v1:status',now=Date.now(),stamp=new Date(now).toISOString();
+  const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
+  if(now-Date.parse(previous?.asOf)<14*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
+  const status={version:playerPropsV1.PLAYER_RESEARCH_VERSION,asOf:stamp,mode:'RESEARCH_ONLY',promotionAllowed:false,
+    markets:playerPropsV1.PLAYER_MARKETS,officialPicksCreated:0,providerCalls:0,
+    blockers:['PLAYER_HISTORY_ACCUMULATING','EXACT_PLAYER_ID_PRICE_MAPPING_REQUIRED','BOOKMAKER_PLAYER_SETTLEMENT_RULES_REQUIRED','PLAYER_CHRONOLOGICAL_VALIDATION_REQUIRED']};
+  try {
+    // Archive raw player prices with original timestamps; names are never guessed into player IDs.
+    let rawMarkets=0;
+    for(const date of [...new Set([easternDate(),tomorrowEasternDate()])]) {
+      const snapshot=(await getFeedSnapshot(env,oddsKey(date)))?.payload;
+      const fixtures=arr2(snapshot?.response).map(r=>({...r,bookmakers:arr2(r.bookmakers).filter(b=>String(b.name).replace(/[^a-z0-9]/gi,'').toLowerCase()==='bet365').map(b=>({...b,bets:arr2(b.bets).filter(m=>playerPropsV1.isPlayerMarket(m.name))})).filter(b=>b.bets.length)})).filter(r=>r.bookmakers.length);
+      rawMarkets+=fixtures.reduce((n,r)=>n+r.bookmakers.reduce((s,b)=>s+b.bets.length,0),0);
+      if(fixtures.length)await archivePlayerResearchV1(env,'player-research-v1:quotes:'+stamp+':'+date,{asOf:stamp,fixtures,mode:'RESEARCH_ONLY'});
+    }
+    status.rawPlayerMarkets=rawMarkets;
+    if(!rawMarkets)status.blockers.push('NO_RETAINED_BET365_PLAYER_MARKETS');
+    // One settled fixture per run, only with spare provider capacity, after production work.
+    if(!providerBurstV69||providerBurstV69.calls>=providerBurstV69.maxCalls)status.collectionDeferred='PROVIDER_BUDGET_RESERVED_FOR_PRODUCTION';
+    else {
+      const finals=arr2(await sb(env,'two45_goal_results_v3?kickoff_at=gte.'+encodeURIComponent(new Date(now-7*86400000).toISOString())+'&final_status=eq.FT&select=fixture_id,league_id,kickoff_at,competition&order=kickoff_at.desc&limit=50',{timeoutMs:3000}));
+      const eligible=finals.filter(f=>competitionTierV21(f.competition,f.league_id)===1);
+      const keys=eligible.map(f=>'player-research-v1:stats:'+f.fixture_id);
+      const retained=keys.length?arr2(await sb(env,'two45_feed_snapshots?snapshot_key=in.('+keys.map(encodeURIComponent).join(',')+')&select=snapshot_key',{timeoutMs:3000})):[];
+      const seen=new Set(retained.map(r=>r.snapshot_key));
+      const selected=eligible.find(f=>!seen.has('player-research-v1:stats:'+f.fixture_id));
+      status.collectionWindowCandidates=eligible.length;
+      if(selected) {
+        const raw=await football(env,'/fixtures/players',{fixture:selected.fixture_id});status.providerCalls=1;
+        if(raw.errors&&Object.keys(raw.errors).length)throw Error('Player statistics provider returned errors');
+        const observedAt=new Date().toISOString(),rows=playerPropsV1.normalizePlayerStats(raw.response,selected,observedAt);
+        if(!rows.length)throw Error('No unambiguous player statistics available; retry later');
+        await archivePlayerResearchV1(env,'player-research-v1:stats:'+selected.fixture_id,{fixture:selected,observedAt,rows,source:'/fixtures/players',mode:'RESEARCH_ONLY'});
+        status.collectedFixtureId=selected.fixture_id;status.playerRows=rows.length;
+        status.completeStatRows=rows.filter(r=>r.shotsOnTarget!==null&&r.goals!==null&&r.assists!==null).length;
+      }else status.collectionDeferred='NO_UNCOLLECTED_TIER1_FINAL_IN_WINDOW';
+    }
+    status.ok=true;
+  }catch(e){status.ok=false;status.error=safeRefreshError(e);}
+  await saveFeedSnapshot(env,key,status,365*86400);return status;
+}
+async function archivePlayerResearchV1(env,key,payload) {
+  // Existing feed storage, immutable first observation; no publication/Record writes.
+  await sb(env,'two45_feed_snapshots?on_conflict=snapshot_key',{method:'POST',prefer:'resolution=ignore-duplicates,return=minimal',body:JSON.stringify({snapshot_key:key,payload,refreshed_at:new Date().toISOString(),expires_at:new Date(Date.now()+3650*86400000).toISOString(),request_count:0})});
+}
+
+// END GENERATED PLAYER RESEARCH V1
 // BEGIN GENERATED MODEL REVIEW V1
 var modelReviewV1 = (() => {
 const REVIEW_VERSION='two45-independent-review-v1';
@@ -517,7 +615,7 @@ function scoreRows(rows,predict) {
   return {n,brier:n?brier/n:null,logLoss:n?logLoss/n:null,priced,profit,roi:priced?profit/priced:null};
 }
 
-return {VERSION,generateCandidates,primaryPicks,optimizeProduct};
+return {VERSION,generateCandidates,primaryPicks,optimizeProduct,canonical,scoreRows};
 })();
 // END GENERATED SELECTION V2
 var __defProp = Object.defineProperty;
@@ -3890,6 +3988,7 @@ function thresholdSelection(raw) {
 }
 __name(thresholdSelection, "thresholdSelection");
 function providerMarketName(name) {
+  if (playerPropsV1.isPlayerMarket(name)) return null; // Player identities cannot enter team-total markets.
   const n = String(
     name || ""
   ).toLowerCase();
@@ -6209,7 +6308,7 @@ function slimOddsRowV18(row) {
         ).filter(
           (b) => SCORING_MARKETS.has(
             b?.name
-          ) || providerMarketName(
+          ) || playerPropsV1.isPlayerMarket(b?.name) || providerMarketName(
             b?.name
           )
         ).map(
@@ -8519,11 +8618,137 @@ async function scheduledAnalysisV2(event, env) {
       }
     }
   }
+  if (minute % 15 === 0) {
+    try { result.playerResearch = pendingBacklog ? {skipped:true,reason:"PRODUCTION_BACKLOG_FIRST"} : await runPlayerResearchV1(env); }
+    catch(e) { result.playerResearch = {ok:false,error:safeRefreshError(e)}; }
+  }
+  if (minute % 15 === 0) {
+    try { result.modelValidation = await runModelValidationV1(env); }
+    catch(e) { result.modelValidation = {ok:false,error:safeRefreshError(e)}; }
+  }
   result.providerBurst = { calls: providerBurstV69?.calls || 0, maxCalls: PROVIDER_BURST_MAX_CALLS_V69 };
   providerBurstV69 = null;
   return result;
 }
 __name(scheduledAnalysisV2, "scheduledAnalysisV2");
+// BEGIN GENERATED VALIDATION ROUTINE V1
+var shadowEvaluationV1 = (()=>{
+const {canonical,scoreRows}=selectionV2;
+
+function grade(m,s,h,a) {
+ if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0)return null;
+ s=canonical(s);let v,match;
+ if(m==='MATCH_RESULT')return (s==='HOME'?h>a:s==='AWAY'?a>h:s==='DRAW'?h===a:null)===true?'WIN':['HOME','AWAY','DRAW'].includes(s)?'LOSS':null;
+ if(m==='BTTS'&&['YES','NO'].includes(s))return ((h>0&&a>0)===(s==='YES'))?'WIN':'LOSS';
+ if(m==='DOUBLE_CHANCE')return ({HOME_OR_DRAW:h>=a,DRAW_OR_AWAY:a>=h,HOME_OR_AWAY:h!==a}[s])===true?'WIN':['HOME_OR_DRAW','DRAW_OR_AWAY','HOME_OR_AWAY'].includes(s)?'LOSS':null;
+ if(['TOTAL_GOALS','HOME_TEAM_GOALS','AWAY_TEAM_GOALS'].includes(m)) {
+   match=s.match(/^(OVER|UNDER)_(\d+(?:_\d+)?)$/);if(!match)return null;
+   const line=Number(match[2].replace('_','.'));if((line*100)%50!==0)return null;
+   v=(m==='TOTAL_GOALS'?h+a:m==='HOME_TEAM_GOALS'?h:a)-line;if(match[1]==='UNDER')v=-v;
+ }else if(m==='HANDICAP') {
+   match=s.match(/^(HOME|AWAY)_(PLUS|MINUS)_(\d+(?:_\d+)?)$/);if(!match)return null;
+   const line=Number(match[3].replace('_','.'));if((line*100)%50!==0)return null;
+   v=(match[1]==='HOME'?h-a:a-h)+(match[2]==='PLUS'?line:-line);
+ }else return null;
+ return v>0?'WIN':v<0?'LOSS':'PUSH';
+}
+function blockIntervals(rows,replicates=1500) {
+ const days=[...new Set(rows.map(r=>r.date))].sort(),groups=days.map(d=>rows.filter(r=>r.date===d));
+ if(days.length<2)return {days:days.length,roi95:null,brierVsLegacy95:null,logLossVsLegacy95:null};
+ let seed=7331;const rand=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};
+ const values={roi:[],brierVsLegacy:[],logLossVsLegacy:[]};
+ const loss=(p,y)=>-y*Math.log(Math.max(.001,p))-(1-y)*Math.log(Math.max(.001,1-p));
+ for(let i=0;i<replicates;i++) {
+  const sample=days.flatMap(()=>groups[Math.floor(rand()*groups.length)]),priced=sample.filter(r=>r.odds>1),paired=sample.filter(r=>r.legacyProbability>0&&r.legacyProbability<1);
+  if(priced.length)values.roi.push(priced.reduce((n,r)=>n+(r.outcome==='WIN'?r.odds-1:-1),0)/priced.length);
+  if(paired.length) {
+   values.brierVsLegacy.push(paired.reduce((n,r)=>n+(r.probability-r.y)**2-(r.legacyProbability-r.y)**2,0)/paired.length);
+   values.logLossVsLegacy.push(paired.reduce((n,r)=>n+loss(r.probability,r.y)-loss(r.legacyProbability,r.y),0)/paired.length);
+  }
+ }
+ const interval=a=>{a.sort((a,b)=>a-b);return a.length?[a[Math.floor(a.length*.025)],a[Math.floor(a.length*.975)]]:null;};
+ return {days:days.length,replicates,seed:7331,roi95:interval(values.roi),brierVsLegacy95:interval(values.brierVsLegacy),logLossVsLegacy95:interval(values.logLossVsLegacy)};
+}
+function evaluate(rows,{protocol=null}={}) {
+ const inputRows=rows.length;
+ if(protocol)rows=rows.filter(r=>r.payload?.validationProtocol===protocol);
+ const frozen=new Map();
+ // Predeclared decision time: last available snapshot at least one hour before kickoff.
+ for(const r of rows) {
+  if(!(Date.parse(r.generated_at)<=Date.parse(r.kickoff_at)-3600000))continue;
+  const prior=frozen.get(String(r.fixture_id));
+  if(!prior||Date.parse(prior.generated_at)<Date.parse(r.generated_at))frozen.set(String(r.fixture_id),r);
+ }
+ const selected=[],legacy=[];
+ for(const r of frozen.values()) {
+  const p=r.payload||{}, c=p.primary?.[0];
+  if(c?.eligible) {
+   const outcome=grade(c.market,c.selection,r.final_home_score,r.final_away_score);
+   if(outcome)selected.push({...c,date:r.kickoff_at.slice(0,10),y:+(outcome==='WIN'),legacyProbability:p.legacy?.probabilities?.[c.market]?.[c.selection]??null,outcome,sportsbook_odds:c.odds,fixture_id:r.fixture_id});
+  }
+  const decision=p.legacyResearchDecision;
+  const b=p.candidates?.find(c=>c.market===decision?.market&&c.selection===canonical(decision?.selection));
+  if(decision?.decision==='PICK'&&b?.odds>1) {
+   const outcome=grade(b.market,b.selection,r.final_home_score,r.final_away_score);
+   if(outcome)legacy.push({...b,rawProbability:p.legacy?.probabilities?.[b.market]?.[b.selection]??b.rawProbability,outcome,sportsbook_odds:b.odds,fixture_id:r.fixture_id});
+  }
+ }
+ const paired=selected.filter(c=>['WIN','LOSS'].includes(c.outcome)&&c.marketProbability>0&&c.marketProbability<1);
+ const candidate=scoreRows(selected,c=>c.probability),rawOnSameSelections=scoreRows(paired,c=>c.rawProbability),market=scoreRows(paired,c=>c.marketProbability);
+ const calibratedOnPaired=scoreRows(paired,c=>c.probability),baseline=scoreRows(legacy,c=>c.rawProbability);
+ const reasons=[];
+ const settled=selected.filter(c=>['WIN','LOSS'].includes(c.outcome)),intervals=blockIntervals(settled);
+ const sameLegacy=paired.filter(c=>c.legacyProbability>0&&c.legacyProbability<1);
+ const legacyScores=scoreRows(sameLegacy,c=>c.legacyProbability),candidateScores=scoreRows(sameLegacy,c=>c.probability);
+ if(intervals.days<14)reasons.push('NEED_14_SETTLED_FIXTURE_DAYS');
+ if(!(intervals.roi95?.[0]>0))reasons.push('POSITIVE_ROI_CONFIDENCE_NOT_ESTABLISHED');
+ if(!(intervals.brierVsLegacy95?.[1]<0&&intervals.logLossVsLegacy95?.[1]<0))reasons.push('PAIRED_LEGACY_IMPROVEMENT_NOT_ESTABLISHED');
+ if(sameLegacy.length!==paired.length)reasons.push('INCOMPLETE_PAIRED_LEGACY_BENCHMARK');
+ if(!(candidateScores.brier<legacyScores.brier&&candidateScores.logLoss<legacyScores.logLoss))reasons.push('PAIRED_SCORES_NOT_BETTER_THAN_LEGACY');
+ const byMarket=Object.fromEntries([...new Set(settled.map(x=>x.market))].map(m=>[m,scoreRows(settled.filter(x=>x.market===m),c=>c.probability)]));
+ if(!Object.keys(byMarket).length||Object.values(byMarket).some(m=>m.n<60))reasons.push('NEED_60_SETTLED_SELECTIONS_PER_PUBLISHED_MARKET');
+ if(!protocol)reasons.push('EXPLICIT_FROZEN_PROTOCOL_REQUIRED');
+ if(candidate.n<200)reasons.push('NEED_200_SETTLED_PROSPECTIVE_SELECTIONS');
+ if(paired.length!==selected.filter(c=>['WIN','LOSS'].includes(c.outcome)).length)reasons.push('INCOMPLETE_SAME_LINE_MARKET_BENCHMARK');
+ if(!(candidate.roi>0&&candidate.roi>baseline.roi))reasons.push('ROI_NOT_ABOVE_ZERO_AND_LEGACY');
+ if(!(calibratedOnPaired.brier<rawOnSameSelections.brier&&calibratedOnPaired.brier<market.brier&&calibratedOnPaired.logLoss<rawOnSameSelections.logLoss&&calibratedOnPaired.logLoss<market.logLoss))reasons.push('PROPER_SCORES_NOT_BETTER_THAN_BOTH_BASELINES');
+ reasons.push('REQUIRE_FROZEN_HOLDOUT_AND_FIXTURE_DAY_BLOCK_CONFIDENCE_INTERVAL_REVIEW');
+ return {snapshotRule:'Latest snapshot at least one hour before kickoff; one primary per fixture',protocol,inputRows,protocolRows:rows.length,fixtures:frozen.size,roiScope:'Flat one-unit single-selection returns at frozen exact Bet365 quotes; not published ticket ROI',candidate,baseline,legacyOnSameSelections:legacyScores,candidateOnLegacyPaired:candidateScores,rawOnSameSelections,calibratedOnPaired,market,paired:paired.length,intervals,byMarket,promotion:{allowed:false,reasons}};
+}
+
+return {evaluate};
+})();
+async function runModelValidationV1(env) {
+  const now=Date.now(),asOf=new Date(now).toISOString(),key='model-validation-v1:status';
+  const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
+  if(now-Date.parse(previous?.asOf)<6*3600000)return {skipped:true,reason:'VALIDATION_6H_CADENCE'};
+  const rows=[];let truncated=false;
+  for(let offset=0;offset<5000;offset+=500) {
+    const page=arr2(await sb(env,'two45_goal_forecasts_v3?generated_at=gte.2026-10-18T00:00:00Z&generated_at=lte.'+encodeURIComponent(asOf)+'&select=id,fixture_id,generated_at,kickoff_at,primary:payload->primary,candidates:payload->candidates,legacy:payload->legacy,protocol:payload->>validationProtocol&order=generated_at.asc,id.asc&limit=500&offset='+offset,{timeoutMs:4000}));
+    rows.push(...page);if(page.length<500)break;if(offset===4500)truncated=true;
+  }
+  const frozen=new Map();
+  for(const r of rows)if(r.protocol===MIGRATION_PROTOCOL_V2&&Date.parse(r.generated_at)<=Date.parse(r.kickoff_at)-3600000){const old=frozen.get(String(r.fixture_id));if(!old||Date.parse(old.generated_at)<Date.parse(r.generated_at))frozen.set(String(r.fixture_id),r);}
+  const ids=[...frozen.keys()].filter(x=>/^\d+$/.test(x)),results=[],conflicts=[];
+  for(let i=0;i<ids.length;i+=100) {
+    const group=ids.slice(i,i+100).join(',');
+    const [r,c]=await Promise.all([
+      sb(env,'two45_goal_results_v3?fixture_id=in.('+group+')&result_available_at=lte.'+encodeURIComponent(asOf)+'&select=fixture_id,home_goals,away_goals',{timeoutMs:4000}),
+      sb(env,'two45_goal_result_conflicts_v3?fixture_id=in.('+group+')&observed_at=lte.'+encodeURIComponent(asOf)+'&select=fixture_id',{timeoutMs:4000})]);
+    results.push(...arr2(r));conflicts.push(...arr2(c));
+  }
+  const labels=new Map(results.map(r=>[String(r.fixture_id),r])),ambiguous=new Set(conflicts.map(r=>String(r.fixture_id)));
+  const input=[...frozen.values()].map(r=>{const label=ambiguous.has(String(r.fixture_id))?null:labels.get(String(r.fixture_id));return {...r,final_home_score:label?.home_goals,final_away_score:label?.away_goals,payload:{validationProtocol:r.protocol,primary:r.primary,candidates:r.candidates,legacy:r.legacy,legacyResearchDecision:r.legacy?.decision}};});
+  const report=shadowEvaluationV1.evaluate(input,{protocol:MIGRATION_PROTOCOL_V2});
+  if(truncated)report.promotion.reasons.push('BOUNDED_EXPORT_TRUNCATED_FULL_REPLAY_REQUIRED');
+  report.promotion.reasons.push('HISTORICAL_PAIRED_BRIER_AND_LOG_LOSS_FAILED','PUBLIC_RECORD_RESULT_SOURCE_REQUIRES_CUTOVER');
+  const status={version:'two45-validation-routine-v1',asOf,ok:true,mode:'RESEARCH_ONLY',promotionAllowed:false,inputRows:rows.length,truncated,
+    frozenFixtures:frozen.size,pendingLabels:input.filter(r=>r.final_home_score==null).length,excludedConflicts:ambiguous.size,report};
+  await archivePlayerResearchV1(env,'model-validation-v1:report:'+asOf,status);
+  await saveFeedSnapshot(env,key,status,365*86400);return status;
+}
+
+// END GENERATED VALIDATION ROUTINE V1
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(
@@ -8552,6 +8777,12 @@ var worker_default = {
           modelVersion: MODEL_VERSION,
           modelLoaded: true
         });
+      }
+      if (url.pathname === "/api/model-validation") {
+        return json({ok:true,promotionAllowed:false,status:(await getFeedSnapshot(env,"model-validation-v1:status"))?.payload||null});
+      }
+      if (url.pathname === "/api/player-research") {
+        return json({ok:true,mode:"RESEARCH_ONLY",promotionAllowed:false,status:(await getFeedSnapshot(env,"player-research-v1:status"))?.payload||null});
       }
       if (url.pathname === "/api/health/forecast-core") {
         return json({ok:true,status:await sb(env,"rpc/two45_goal_status_v3",{method:"POST",body:"{}"}),training:(await getFeedSnapshot(env,"forecast-core-v3:training-status").catch(()=>null))?.payload||null});
