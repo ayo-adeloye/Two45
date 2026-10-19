@@ -25,6 +25,8 @@ The independent goal model and selector remain frozen. Routine reports must not 
 
 ## Validation and rollback
 
+The existing Supabase football gateway was deployed as version 5 with one additive allowed endpoint, `fixtures/players`. JWT verification and all existing authentication, upstream routing, timeout and response behavior are preserved. The deployed source is saved in `supabase/functions/two45-football-gateway/index.ts`; the pre-change version 4 source is in `lab/gateway/two45-football-gateway-v4.ts`. To roll back the gateway, redeploy that saved source with JWT verification enabled. The GitHub Worker workflow tests this source but does not deploy Supabase functions.
+
 Tests cover player/team market isolation, raw offer retention, missing statistics, joint event counting, early substitutions, exact identity and stale-price rejection, duplicate/future history exclusion, provider budget reservation, immutable research storage, frozen forecast scoring and result conflicts. Existing Elite, Ladder, publication and Record regressions remain required.
 
 Revert this release to disable the two research routines and endpoints. Existing historical locks and publication rows are never modified by either routine. Preserve the collected research snapshots for reproducibility; do not delete historical data during rollback.

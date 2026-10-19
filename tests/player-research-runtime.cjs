@@ -20,6 +20,6 @@ c.football=async()=>{calls++;return {response:[{team:{id:1},players:[{player:{id
  assert(writes.some(w=>w.opts?.prefer==='resolution=ignore-duplicates,return=minimal'));assert(writes.every(w=>!w.path||!w.path.includes('publication')));
  c.providerBurstV69={calls:4,maxCalls:4};result=await c.runPlayerResearchV1({});assert.equal(calls,1);assert.equal(result.collectionDeferred,'PROVIDER_BUDGET_RESERVED_FOR_PRODUCTION');
  c.providerBurstV69={calls:0,maxCalls:4};result=await c.runPlayerResearchV1({},{productionBacklog:true});assert.equal(calls,1);assert.equal(result.collectionDeferred,'PRODUCTION_BACKLOG_FIRST');assert.equal(result.ok,true,'Evidence status remains visible while production collection is deferred');
- c.getFeedSnapshot=async()=>({payload:{asOf:new Date().toISOString(),collectionRevision:'tier1-before-limit-v1'}});result=await c.runPlayerResearchV1({});assert.equal(result.skipped,true);assert.equal(calls,1);
+ c.getFeedSnapshot=async()=>({payload:{asOf:new Date().toISOString(),collectionRevision:'tier1-before-limit-gateway-v5'}});result=await c.runPlayerResearchV1({});assert.equal(result.skipped,true);assert.equal(calls,1);
  console.log('PASS: player markets isolated from team totals, bounded research collection, immutable evidence, provider budget and no publication writes');
 })().catch(e=>{console.error(e);process.exitCode=1;});

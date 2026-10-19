@@ -1,7 +1,7 @@
 async function runPlayerResearchV1(env,{productionBacklog=false}={}) {
   const key='player-research-v1:status',now=Date.now(),stamp=new Date(now).toISOString();
   const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
-  const collectionRevision='tier1-before-limit-v1';
+  const collectionRevision='tier1-before-limit-gateway-v5';
   if(previous?.collectionRevision===collectionRevision&&now-Date.parse(previous?.asOf)<15*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
   const status={version:playerPropsV1.PLAYER_RESEARCH_VERSION,collectionRevision,asOf:stamp,mode:'RESEARCH_ONLY',promotionAllowed:false,
     markets:playerPropsV1.PLAYER_MARKETS,officialPicksCreated:0,providerCalls:0,
@@ -29,7 +29,8 @@ async function runPlayerResearchV1(env,{productionBacklog=false}={}) {
       const selected=eligible.find(f=>!seen.has('player-research-v1:stats:'+f.fixture_id));
       status.collectionWindowCandidates=eligible.length;
       if(selected) {
-        const raw=await football(env,'/fixtures/players',{fixture:selected.fixture_id});status.providerCalls=1;
+        status.providerCalls=1;
+        const raw=await football(env,'/fixtures/players',{fixture:selected.fixture_id});
         if(raw.errors&&Object.keys(raw.errors).length)throw Error('Player statistics provider returned errors');
         const observedAt=new Date().toISOString(),rows=playerPropsV1.normalizePlayerStats(raw.response,selected,observedAt);
         if(!rows.length)throw Error('No unambiguous player statistics available; retry later');
