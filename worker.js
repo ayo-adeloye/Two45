@@ -5457,7 +5457,12 @@ async function processOne(env, job) {
         valueEdge: edge
       };
     }, "verifyCandidateV85");
-    // Preserve original independently evaluated alternatives for later research-only\n    // repricing. These are NOT approved picks and never bypass Bet365 verification.\n    const researchMarketOptionsV116 = decision?.decision === "PICK"\n      ? arr2(decision?.topMarkets).filter(x => x && typeof x === "object").slice(0, 20)\n      : [];\n    const verifiedTopMarketsV85 = arr2(decision?.topMarkets).map(verifyCandidateV85).filter(Boolean);
+    // Preserve original independently evaluated alternatives for later research-only
+    // repricing. These are NOT approved picks and never bypass Bet365 verification.
+    const researchMarketOptionsV116 = decision?.decision === "PICK"
+      ? arr2(decision?.topMarkets).filter(x => x && typeof x === "object").slice(0, 20)
+      : [];
+    const verifiedTopMarketsV85 = arr2(decision?.topMarkets).map(verifyCandidateV85).filter(Boolean);
     if (decision?.decision === "PICK") {
       const verifiedMainV85 = verifyCandidateV85(decision);
       const verifiedFallbackV101 =
@@ -8539,7 +8544,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
       revision: TICKET_LOCK_REVISION_V78,
       rebuiltForPricingIntegrity: Boolean(rebuildReason),
       rebuildReason: rebuildReason || null,
-      waitingFor: "ELITE_CANDIDATE_ODDS",
+      waitingFor: researchFixtureIds.size === 0 ? "ELITE_QUALITY" : "ELITE_CANDIDATE_ODDS",
       oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
       ticket: null,
       candidateCount: 0,
