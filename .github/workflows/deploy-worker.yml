@@ -23,6 +23,7 @@ jobs:
         run: |
           node selection-v2.test.mjs
           node tests/quote-provenance.cjs
+          node tests/elite-automation.cjs
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs

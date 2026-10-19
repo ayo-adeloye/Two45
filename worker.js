@@ -6197,9 +6197,14 @@ __name(oddsSnapshotStaleV83, "oddsSnapshotStaleV83");
 async function eliteOddsRepairTargetsV83(env, date, fixtures) {
   const boardRow = await getFeedSnapshot(env, modelBoardKey(date)).catch(() => null);
   const upcoming = new Set(
-    arr2(fixtures).filter((f) => UPCOMING_STATUSES.has(f?.fixture?.status?.short)).map((f) => String(fixtureIdV19(f))).filter(Boolean)
+    arr2(fixtures).filter((f) => UPCOMING_STATUSES.has(f?.fixture?.status?.short) && Date.parse(f?.fixture?.date)>Date.now()).map((f) => String(fixtureIdV19(f))).filter(Boolean)
   );
-  return arr2(boardRow?.payload?.strongPicks).filter((p) => {
+  const fixtureMap = new Map(arr2(fixtures).map(f=>[String(fixtureIdV19(f)),f]));
+  const eligibleIds = arr2(fixtures).filter(f=>upcoming.has(String(fixtureIdV19(f))) && competitionTierV21(f?.league?.name,f?.league?.id)<=2).map(f=>fixtureIdV19(f)).slice(0,120);
+  const rawRows = eligibleIds.length ? arr2(await sb(env,'two45_analysis_state?fixture_id=in.('+eligibleIds.join(',')+')&status=eq.COMPLETE&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&select=fixture_id,marketOptions:result->marketOptions&limit=120',{timeoutMs:2500}).catch(()=>[])) : [];
+  const rawOptions = rawRows.flatMap(r=>arr2(r.marketOptions).filter(o=>o.lane==='STRONG' && o.analysisSource==='independent-model').map(o=>({...o,fixtureId:r.fixture_id,decision:'PICK'})));
+  // Research-qualified alternatives can request a quote before public price verification.
+  return [...arr2(boardRow?.payload?.strongPicks),...rawOptions].map(p=>({...p,competitionTier:competitionTierV21(fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.name,fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.id)})).filter((p) => {
     const id = String(p?.fixtureId ?? p?.providerMatchId ?? "");
     return id && upcoming.has(id) && p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2;
   }).sort(
@@ -6207,6 +6212,10 @@ async function eliteOddsRepairTargetsV83(env, date, fixtures) {
   ).map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? "")).filter(Boolean).filter((id, index, rows) => rows.indexOf(id) === index).slice(0, ELITE_ODDS_REPAIR_TARGETS_V83);
 }
 __name(eliteOddsRepairTargetsV83, "eliteOddsRepairTargetsV83");
+function fixtureQuoteFreshV2(row, now=Date.now(), age=ELITE_ODDS_MAX_AGE_MS_V83) {
+  const observed=Date.parse(row?.observedAt),updated=Date.parse(row?.providerUpdatedAt || row?.update);
+  return updated<=observed && observed<=now && now-observed<age && now-updated<age;
+}
 async function repairDailyOddsFromFixturesV68(env, date) {
   const fixtureRow = await getFeedSnapshot(env, fixtureKey(date));
   const fixtures = fixtureRowsV58(fixtureRow).filter((f) => {
@@ -6218,10 +6227,12 @@ async function repairDailyOddsFromFixturesV68(env, date) {
   let response = bet365RowsV68(previous.response);
   const covered = new Set(response.map((row) => String(row?.fixture?.id)));
   const eliteTargets = await eliteOddsRepairTargetsV83(env, date, fixtures);
-  const repairTargets = arr2(previous?.repairTargets).length ? arr2(previous.repairTargets).map(String) : eliteTargets;
-  const repairedTargets = new Set(arr2(previous?.repairedTargets).map(String));
-  const staleDaily = oddsSnapshotStaleV83(dailyRow);
-  const targetedRepairActive = Boolean(previous?.repairInProgress && repairTargets.length) || staleDaily && repairTargets.length > 0;
+  const repairTargets = eliteTargets;
+  const quoteRows = new Map(response.map(row=>[String(row.fixture?.id),row]));
+  const repairedTargets = new Set(repairTargets.filter(id=>fixtureQuoteFreshV2(quoteRows.get(String(id)))));
+  const repairAttempts = {...previous.repairAttempts};
+  const recentlyAttempted = id => Date.now()-Date.parse(repairAttempts[String(id)])<10*60000;
+  const targetedRepairActive = repairTargets.some(id=>!repairedTargets.has(String(id)) && !recentlyAttempted(id));
   const targetRank = new Map(repairTargets.map((id, index) => [String(id), index]));
   fixtures.sort((a, b) => {
     const aid = String(fixtureIdV19(a)), bid = String(fixtureIdV19(b));
@@ -6233,15 +6244,16 @@ async function repairDailyOddsFromFixturesV68(env, date) {
     const fixtureId = fixtureIdV19(fixture);
     const fixtureKeyString = String(fixtureId);
     const isEliteTarget = targetRank.has(fixtureKeyString);
+    if (recentlyAttempted(fixtureKeyString)) continue;
     if (targetedRepairActive) {
-      if (!isEliteTarget || repairedTargets.has(fixtureKeyString))
+      if (!isEliteTarget || repairedTargets.has(fixtureKeyString) || recentlyAttempted(fixtureKeyString))
         continue;
     } else if (covered.has(fixtureKeyString)) {
       continue;
     }
     const directKey = "fixture-odds:" + fixtureId;
     const cached = await getFeedSnapshot(env, directKey).catch(() => null);
-    const fresh = cached && Date.now() - Date.parse(cached.refreshed_at) < 10 * 6e4;
+    const fresh = cached && Date.now() - Date.parse(cached.refreshed_at) < 10 * 6e4 && arr2(cached.payload?.response).some(r=>String(r.fixture?.id)===fixtureKeyString && fixtureQuoteFreshV2(r));
     let directRows = [];
     if (fresh) {
       directRows = bet365RowsV68(cached?.payload?.response);
@@ -6262,7 +6274,8 @@ async function repairDailyOddsFromFixturesV68(env, date) {
     }
     if (directRows.length)
       response = mergeOddsV18(response, directRows);
-    if (isEliteTarget)
+    repairAttempts[fixtureKeyString]=new Date().toISOString();
+    if (isEliteTarget && directRows.some(r=>String(r.fixture?.id)===fixtureKeyString && fixtureQuoteFreshV2(r)))
       repairedTargets.add(fixtureKeyString);
     const remainingEliteTargets = repairTargets.filter((id) => !repairedTargets.has(String(id)));
     const payload2 = {
@@ -6272,14 +6285,16 @@ async function repairDailyOddsFromFixturesV68(env, date) {
       date,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
       total: response.length,
-      paging: { current: 1, total: 1, complete: true },
+      paging: previous.paging || { current: 1, total: 1, complete: true },
       cacheSeconds: 900,
       response,
       source: "fixture-repair-v83",
-      repairInProgress: targetedRepairActive ? remainingEliteTargets.length > 0 : true,
+      repairInProgress: targetedRepairActive ? remainingEliteTargets.some(id=>!recentlyAttempted(id)) : true,
       repairReason: targetedRepairActive ? "elite-odds-freshness" : "missing-bet365-coverage",
       repairTargets,
       repairedTargets: [...repairedTargets],
+      repairAttempts,
+      pendingExactPrices: remainingEliteTargets,
       repairedFixtureId: fixtureId,
       repairedWithBet365: Boolean(directRows.length)
     };
@@ -6293,14 +6308,16 @@ async function repairDailyOddsFromFixturesV68(env, date) {
     date,
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     total: response.length,
-    paging: { current: 1, total: 1, complete: true },
+    paging: previous.paging || { current: 1, total: 1, complete: true },
     cacheSeconds: 900,
     response,
     source: "fixture-repair-v83",
     repairInProgress: false,
     repairReason: null,
-    repairTargets: [],
-    repairedTargets: [],
+    repairTargets,
+    repairedTargets: [...repairedTargets],
+    repairAttempts,
+    pendingExactPrices: repairTargets.filter(id=>!repairedTargets.has(String(id))),
     repairExhaustedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   await saveFeedSnapshot(env, oddsKey(date), payload, 900);
@@ -6308,7 +6325,7 @@ async function repairDailyOddsFromFixturesV68(env, date) {
 }
 __name(repairDailyOddsFromFixturesV68, "repairDailyOddsFromFixturesV68");
 async function oddsRepairActiveV68(env) {
-  const dates = weekendDeadlineRushV67() ? weekendLadderDatesV67() : [easternDate()];
+  const dates = [...new Set([...(shouldPreloadTomorrow() ? [tomorrowEasternDate()] : []),...(weekendDeadlineRushV67() ? weekendLadderDatesV67() : [easternDate()])])];
   for (const date of dates) {
     const row = await getFeedSnapshot(env, oddsKey(date)).catch(() => null);
     if (!row || !arr2(row?.payload?.response).length || row?.payload?.paging?.complete === false || row?.payload?.repairInProgress || oddsSnapshotStaleV83(row))
@@ -6513,6 +6530,13 @@ async function selectFeedJobV18(env, date, force = false) {
         ttl: 1800,
         run: () => refreshFixturesV18(env, tomorrow)
       };
+    }
+    const nextOdds = await getFeedSnapshot(env, oddsKey(tomorrow));
+    if (!nextOdds || nextOdds.payload?.paging?.complete===false) {
+      return {key:oddsKey(tomorrow),ttl:900,savesItself:true,run:()=>refreshOddsPageV18(env,tomorrow)};
+    }
+    if (nextOdds.payload?.repairInProgress || oddsSnapshotStaleV83(nextOdds)) {
+      return {key:oddsKey(tomorrow),ttl:900,savesItself:true,run:()=>repairDailyOddsFromFixturesV68(env,tomorrow)};
     }
   }
   if (weekendDeadlineRushV67()) {
@@ -7876,7 +7900,7 @@ async function verifyPublicStrongPicksV83(env, date, board) {
   return { ...board, strongPicks: verified, picks: arr2(board?.picks).filter((x) => x?.pickType === "RISKY_VALUE" || ids.has(String(x?.fixtureId || x?.providerMatchId || ""))) };
 }
 __name(verifyPublicStrongPicksV83, "verifyPublicStrongPicksV83");
-function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learning = null) {
+function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learning = null, deduplicateFixtures = true) {
   const rows = [];
   const sources = [...arr2(board?.strongPicks), ...arr2(board?.premiumCandidates)];
   for (const p of sources) {
@@ -7906,13 +7930,28 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
   }
   const seen = /* @__PURE__ */ new Map();
   for (const x of rows) {
-    const id = String(x.fixtureId || x.providerMatchId || ""), prev = seen.get(id);
+    const fixture = String(x.fixtureId || x.providerMatchId || "");
+    if (!fixture) continue;
+    const id = deduplicateFixtures ? fixture : [fixture,x.market,ticketSelectionKeyV78(x.selection)].join('|'), prev = seen.get(id);
     if (id && (!prev || x._ticketScore > prev._ticketScore))
       seen.set(id, x);
   }
   return [...seen.values()].sort((a, b) => num4(a.competitionTier, 4) - num4(b.competitionTier, 4) || b._ticketScore - a._ticketScore);
 }
 __name(ticketPoolBoardVerifiedV78, "ticketPoolBoardVerifiedV78");
+function eliteQualifiedPoolV2(rows) {
+  const best = new Map();
+  for (const row of rows.filter(eliteLegQualityV79)) {
+    const id=String(row.fixtureId ?? row.providerMatchId),previous=best.get(id);
+    if (!previous || row._ticketScore>previous._ticketScore) best.set(id,row);
+  }
+  return [...best.values()].sort((a,b)=>a.competitionTier-b.competitionTier || b._ticketScore-a._ticketScore);
+}
+function dailyPublicationWindowV2(date, now = Date.now()) {
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(new Date(now)).map(p=>[p.type,p.value]));
+  const localDate=parts.year+'-'+parts.month+'-'+parts.day;
+  return {allowed:date<localDate || date===localDate && Number(parts.hour)>=6,date:localDate,hour:Number(parts.hour),reviewAt:'06:00 America/New_York'};
+}
 async function archiveTicketLockV78(env, type, date, row) {
   const payload = row?.payload;
   if (!payload)
@@ -8053,17 +8092,22 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
   const values = await Promise.all([ticketBoardV70(env, date), getFeedSnapshot(env, oddsKey(date)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), board = values[0], oddsRow = values[1], learning = values[2]?.payload || {}, oddsPayload = oddsRow?.payload || {};
   const oddsComplete = Boolean(oddsRow) && oddsPayload?.paging?.complete !== false && !oddsPayload?.repairInProgress;
   const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload);
-  const verifiedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
-  const candidateCoverageReady = verifiedPool.length >= 2;
+  const researchFixtureIds = new Set([...arr2(board?.strongPicks),...arr2(board?.premiumCandidates)].filter(p=>p?.decision==='PICK' && ticketCompetitionTierV79(board,p)<=2 && ticketUpcomingV70(board,p)).map(p=>String(p.fixtureId ?? p.providerMatchId)));
+  const verifiedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
+  const verifiedFixtureIds = new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
+  const candidateCoverageReady = new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size >= 2;
   const pipelineBase = {
     analyzed: num4(board?.analyzedCount, 0),
     headlineStrong: arr2(board?.strongPicks).length,
     strongMarketOptions: arr2(board?.premiumCandidates).length,
     oddsComplete,
     candidateCoverageReady,
+    researchFixtureCount: researchFixtureIds.size,
+    pendingVerificationFixtures: [...researchFixtureIds].filter(id=>!verifiedFixtureIds.has(id)),
+    exactVerifiedFixtures: new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size,
     rejections: verifiedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:eliteRejectionReasonsV2(x),probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
   };
-  if (!oddsComplete && !candidateCoverageReady) {
+  if (!candidateCoverageReady && (!oddsComplete || researchFixtureIds.size>verifiedFixtureIds.size)) {
     const payload2 = {
       ok: true,
       type: "daily",
@@ -8084,21 +8128,22 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
     return payload2;
   }
-  const pool = verifiedPool.filter(eliteLegQualityV79).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), b = await ticketBaselineV70(env, t?.legs || []), payload = {
+  const pool = eliteQualifiedPoolV2(verifiedPool).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), window = dailyPublicationWindowV2(date), publish = Boolean(t && window.allowed), b = publish ? await ticketBaselineV70(env, t.legs) : {}, payload = {
     ok: true,
     type: "daily",
     date,
-    status: t ? "LOCKED" : "BUILDING",
-    lockedAt: t ? at : null,
-    immutable: Boolean(t),
+    status: publish ? "LOCKED" : t ? "DRAFT" : "BUILDING",
+    lockedAt: publish ? at : null,
+    immutable: publish,
+    publicationWindow: window,
     revision: TICKET_LOCK_REVISION_V78,
     rebuiltForPricingIntegrity: Boolean(rebuildReason),
     rebuildReason: rebuildReason || null,
-    waitingFor: t ? null : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
+    waitingFor: publish ? null : t ? "06:00_ET_REVIEW" : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
     oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
-    ticket: lockTicketV70(t, at, b),
+    ticket: publish ? lockTicketV70(t, at, b) : t ? {...t,locked:false,draftAt:at,legs:arr2(t.legs).map(x=>({...x,locked:false}))} : null,
     candidateCount: pool.length,
-    pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: pool.length, rejectedQuality: verifiedPool.length - pool.length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
+    pipeline: { ...pipelineBase, exactVerified: verifiedPool.length, eliteQualified: pool.length, rejectedQuality: verifiedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: verifiedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
     rule: "Frozen after publication. Every leg is exact Bet365 verified. Elite can use fresh fixture-level Bet365 verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
   };
   await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload, 259200);
