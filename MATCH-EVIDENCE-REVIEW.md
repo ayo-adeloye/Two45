@@ -22,6 +22,8 @@ History reads are capped at 160 and report a cap hit. Quote observation and prov
 
 The normal scheduled cycle refreshes one upcoming canonical Tier 1 dossier per run, after existing production work, without making provider calls. A fixture detail or founder request can build an available upcoming fixture dossier on demand. `/api/match-evidence?fixtureId=...` serves this evidence, with a five-minute cache; only existing upcoming jobs within 72 hours can be reviewed. Source data is retained football research and existing prices, not private founder-account information.
 
+The optimized server-side reader, `two45_match_evidence_inputs_v1`, projects only the fixture's price rows and relevant model/history fields in one transaction. It uses `SECURITY INVOKER`, with execution revoked from public/anon/authenticated and granted only to service_role. The Worker serves the resulting non-private football evidence. Supporting home/away history indexes avoid broad scans. Input failures remain visible and a failed cached review retries after 20 seconds. The SQL source and generated migration are tracked; this database migration is applied separately from the Worker deployment. Rolling back the Worker can leave this read-only helper in place without affecting publication or settlement.
+
 This layer does not originate picks, boost probabilities, alter official publication gates or retroactively change tickets. Historical rates and narrative interpretation must not be substituted for the frozen independent model's validation. The raw model still requires accuracy, exact-price prospective-return and settlement-cutover validation. Player markets remain in their separate unvalidated research path.
 
 ## Verification and rollback
