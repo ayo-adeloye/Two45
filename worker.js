@@ -2276,7 +2276,30 @@ __name(researchHistoryV2, "researchHistoryV2");
 async function recordHistoryV20(env, limit = 250) {
   const rows = await sb(env, `two45_public_record_v2?select=*&order=kickoff_at.desc,id.desc&limit=${Math.max(1,Math.min(limit,1000))}`);
   if (!Array.isArray(rows)) throw new Error("Publication Record unavailable");
-  return {ok:true,source:"official-publication-ledger-v2",scope:"official selections only; research forecasts excluded",total:rows.length,publishedCount:rows.length,forecastCount:0,rows:rows.map(x=>normalizeRecordRowV20(x,x.product))};
+  const displayed = rows.map(x=>normalizeRecordRowV20(x,x.product));
+  // Publication-time snapshots are separate from settlement updates. Do not reconstruct
+  // historical rationales from the latest forecasts or post-match data.
+  const published = await sb(env,"two45_publications?select=fixture_id,market,selection,product,published_at,snapshot&order=published_at.desc&limit=1000").catch(()=>[]);
+  const evidence = new Map();
+  for(const p of arr2(published)){
+    const key=[p.fixture_id,String(p.market||"").toUpperCase(),ticketSelectionKeyV78(p.selection)].join("|");
+    if(!evidence.has(key)) evidence.set(key,p);
+  }
+  for(const row of displayed){
+    const key=[row.fixtureId,String(row.market||"").toUpperCase(),ticketSelectionKeyV78(row.selection)].join("|");
+    const archived=evidence.get(key);
+    const snap=archived?.snapshot||{};
+    row.preMatchReview=archived?{
+      publishedAt:archived.published_at,
+      modelVersion:snap.modelVersion||null,
+      reasons:arr2(snap.reasons).filter(x=>typeof x==="string").slice(0,8),
+      dataQuality:snap.dataQuality??null,
+      priceObservedAt:snap.priceObservedAt||null,
+      source:"publication-snapshot",
+      evidenceStatus:arr2(snap.reasons).length?"RECORDED":"INCOMPLETE"
+    }:{source:"publication-snapshot",evidenceStatus:"UNAVAILABLE"};
+  }
+  return {ok:true,source:"official-publication-ledger-v2",scope:"official selections only; research forecasts excluded",total:rows.length,publishedCount:rows.length,forecastCount:0,rows:displayed};
 }
 
 async function recordSummaryV20(env) {
