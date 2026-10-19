@@ -2279,7 +2279,15 @@ async function recordHistoryV20(env, limit = 250) {
   const displayed = rows.map(x=>normalizeRecordRowV20(x,x.product));
   // Publication-time snapshots are separate from settlement updates. Do not reconstruct
   // historical rationales from the latest forecasts or post-match data.
-  const published = await sb(env,"two45_publications?select=fixture_id,market,selection,product,published_at,snapshot&order=published_at.desc&limit=1000").catch(()=>[]);
+  const fixtureIds=[...new Set(displayed.map(r=>Number(r.fixtureId)).filter(Number.isSafeInteger))];
+  // Scope large JSON snapshots to the fixtures shown in this response. This preserves
+  // immutable publication evidence while avoiding an unrelated 1,000-snapshot read.
+  const published=[];
+  for(let i=0;i<fixtureIds.length;i+=40){
+    const ids=fixtureIds.slice(i,i+40);
+    const subset=await sb(env,"two45_publications?fixture_id=in.("+ids.join(",")+")&select=fixture_id,market,selection,product,published_at,snapshot&order=published_at.desc&limit=1000").catch(()=>[]);
+    published.push(...arr2(subset));
+  }
   const evidence = new Map();
   for(const p of arr2(published)){
     const key=[p.fixture_id,String(p.market||"").toUpperCase(),ticketSelectionKeyV78(p.selection)].join("|");
