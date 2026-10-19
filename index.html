@@ -69,6 +69,28 @@
 #homeGames .compHead,#fixtures .compHead{border-left:3px solid #d7ae55}
 @media(max-width:440px){#homeGames .rows,#fixtures .rows{grid-template-columns:1fr;padding:8px}.two45TeamSide{font-size:12px}.two45TeamFace img,.two45CrestPlaceholder{width:30px;height:30px}}
 @media(prefers-reduced-motion:reduce){#homeGames .row,#fixtures .row{transition:none}}
+</style><style id="two45-premium-design-system-v3">
+/* A single visual vocabulary across browsing, research, tickets, record, and dialogs. */
+:root{--t45-night:#0c121e;--t45-panel:#162235;--t45-gold:#e9c76e;--t45-blue:#6fb5ff;--t45-green:#54d9ac;--t45-amber:#f1c06c;--t45-red:#f39889;--t45-line:rgba(134,164,203,.24)}
+body{background:radial-gradient(ellipse 95% 36% at 50% 0,rgba(40,60,98,.12),transparent 70%),#090b11}
+.hero,.stat,.comp,.pick,.sheet,.analysisHero,.ana,.optionCard,.recordStats .stat,.recordRow,.rung{box-shadow:0 12px 28px rgba(0,0,0,.17);border-color:var(--t45-line)}
+.hero,.stat,.comp,.pick,.ana,.optionCard{background:linear-gradient(145deg,rgba(23,35,56,.96),rgba(12,18,30,.97))}
+.hero{border-radius:21px;overflow:hidden;position:relative}.hero:after{content:"";position:absolute;right:-45px;top:-65px;width:190px;height:190px;pointer-events:none;border-radius:50%;background:radial-gradient(circle,rgba(233,199,110,.09),transparent 72%)}
+.hero h2{letter-spacing:-.035em;line-height:1.12}.stat{border-radius:17px;padding:14px}.stat b{color:var(--t45-gold);font-variant-numeric:tabular-nums}
+.nav{scrollbar-width:none}.nav::-webkit-scrollbar{display:none}.tab{transition:background .15s,border-color .15s,transform .15s}.tab:active{transform:scale(.985)}
+.section h3,.analysisSectionTitle h3{letter-spacing:-.025em}.section span{line-height:1.4}
+.pick{border-radius:17px;position:relative;overflow:hidden}.pick:before{content:"";position:absolute;top:0;left:0;width:3px;height:100%;background:var(--t45-blue)}.pick.conviction:before{background:var(--t45-green)}.pick.risk:before{background:var(--t45-amber)}
+.pick .teams,.ticketPick b{color:#f2f5fc}.pick .prob{color:var(--t45-blue)}
+.comp{overflow:hidden;border-radius:18px}.compHead{background:linear-gradient(90deg,rgba(45,65,98,.3),rgba(16,24,40,.1));min-height:50px;align-items:center}
+.ticketPick{background:rgba(18,29,46,.9)!important;border-color:var(--t45-line)!important}.rung{background:linear-gradient(145deg,#1c2b43,#10192a)!important}.rung b{color:var(--t45-gold)}
+.sheet{background:linear-gradient(150deg,#172338,#0d1422)!important;border-color:rgba(233,199,110,.38);box-shadow:0 -20px 64px rgba(0,0,0,.65)}.sheetTop{background:#172338!important;border-bottom:1px solid var(--t45-line)}
+.optionCard.strong{border-left:3px solid var(--t45-green)}.optionCard.value{border-left:3px solid var(--t45-amber)}.noOfficial{border-left:3px solid var(--t45-amber);background:rgba(233,188,103,.045)}
+.empty{background:linear-gradient(145deg,rgba(38,49,70,.33),rgba(17,25,40,.3));border-color:rgba(141,166,199,.28);line-height:1.5}
+.recordRow{background:rgba(20,32,50,.72);border-radius:10px;margin:7px 0;border-top:1px solid var(--t45-line)}
+:is(.tab,.filter,.analyze,.primary,.secondary,.close,.compHead,.rung,.founderDaily,.founderElite,summary):focus-visible{outline:2px solid var(--t45-gold);outline-offset:3px}
+@media(min-width:761px){.pickgrid{grid-template-columns:repeat(auto-fit,minmax(275px,1fr))}}
+@media(max-width:760px){.recordStats{gap:7px}.recordStats .stat{padding:11px}.hero{padding:18px}.sheet{border-radius:22px 22px 0 0}.tab{min-height:44px}}
+@media(prefers-reduced-motion:reduce){.tab{transition:none}}
 </style></head>
 <body>
 <div class="app">
