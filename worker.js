@@ -6213,18 +6213,18 @@ async function saveFeedSnapshot(env, key, payload, ttlSeconds) {
     return;
   }
   const signature = JSON.stringify([key, ttlSeconds, payload]);
-  const pending = snapshotPendingWritesV117.get(key);
+  const pending = snapshotPendingWritesV117.get(signature);
   if (pending && pending.signature === signature) {
     await pending.promise;
     return;
   }
   const promise = write();
   const entry = { signature, promise };
-  snapshotPendingWritesV117.set(key, entry);
+  snapshotPendingWritesV117.set(signature, entry);
   try {
     await promise;
   } finally {
-    if (snapshotPendingWritesV117.get(key) === entry) snapshotPendingWritesV117.delete(key);
+    if (snapshotPendingWritesV117.get(key) === entry) snapshotPendingWritesV117.delete(signature);
   }
 }
 __name(saveFeedSnapshot, "saveFeedSnapshot");
