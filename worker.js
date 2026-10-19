@@ -5,7 +5,7 @@ const PLAYER_RESEARCH_VERSION = 'two45-player-research-v1';
 const PLAYER_MARKETS = ['PLAYER_SHOTS_ON_TARGET','PLAYER_TO_SCORE','PLAYER_TO_ASSIST','PLAYER_TO_SCORE_OR_ASSIST'];
 function isPlayerMarket(name) {
   const label=String(name).trim();
-  return /player|scorer/i.test(label)||/^(?:(?:anytime|first|last)\s+)?(?:to score|to assist|score or assist)$/i.test(label);
+  return /player|scorer/i.test(label)||/^(?:(?:anytime|first|last)\s+)?(?:to score|to assist|(?:to )?score or assist)$/i.test(label);
 }
 function normalizePlayerStats(response, fixture, observedAt) {
   const rows=[];
