@@ -4,7 +4,7 @@ Player shots on target (over 0.5 / 1.5), to score, to assist, and to score or as
 
 ## Routine
 
-- Every 15 minutes, after production work and only without a production backlog, archive available Bet365 player markets from the existing daily odds pulls. Preserve original quote and provider times. Player names are not guessed into provider player IDs.
+- Every 15 minutes, after production work, archive available Bet365 player markets from the existing daily odds pulls. Preserve original quote and provider times. Player names are not guessed into provider player IDs. New statistics calls defer while today's or tomorrow's production analysis has a fresh backlog, is starved, or has failed; old historical pending jobs do not permanently starve research. Collection deferrals remain visible in the research status.
 - When the normal provider burst has spare capacity, collect at most one uncollected Tier 1 regulation-time final from the latest 50 results within seven days using `/fixtures/players`. Store its first observation with ignore-on-conflict semantics in the existing feed snapshot table. This is bounded evidence collection, not a complete historical backfill. No paid plan or provider subscription changes are made.
 - Null player statistics remain missing. Starts, minutes, player/team/fixture IDs and observation times are retained. Historical observations collected today cannot be used in a forecast dated yesterday.
 - `/api/player-research` exposes the latest research status, collection counts and blockers. Raw offers and individual statistics are not exposed by this endpoint.

@@ -1,4 +1,4 @@
-async function runPlayerResearchV1(env) {
+async function runPlayerResearchV1(env,{productionBacklog=false}={}) {
   const key='player-research-v1:status',now=Date.now(),stamp=new Date(now).toISOString();
   const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
   if(now-Date.parse(previous?.asOf)<15*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
@@ -17,7 +17,8 @@ async function runPlayerResearchV1(env) {
     status.rawPlayerMarkets=rawMarkets;
     if(!rawMarkets)status.blockers.push('NO_RETAINED_BET365_PLAYER_MARKETS');
     // One settled fixture per run, only with spare provider capacity, after production work.
-    if(!providerBurstV69||providerBurstV69.calls>=providerBurstV69.maxCalls)status.collectionDeferred='PROVIDER_BUDGET_RESERVED_FOR_PRODUCTION';
+    if(productionBacklog)status.collectionDeferred='PRODUCTION_BACKLOG_FIRST';
+    else if(!providerBurstV69||providerBurstV69.calls>=providerBurstV69.maxCalls)status.collectionDeferred='PROVIDER_BUDGET_RESERVED_FOR_PRODUCTION';
     else {
       const finals=arr2(await sb(env,'two45_goal_results_v3?kickoff_at=gte.'+encodeURIComponent(new Date(now-7*86400000).toISOString())+'&final_status=eq.FT&select=fixture_id,league_id,kickoff_at,competition&order=kickoff_at.desc&limit=50',{timeoutMs:3000}));
       const eligible=finals.filter(f=>competitionTierV21(f.competition,f.league_id)===1);
