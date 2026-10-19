@@ -11,10 +11,12 @@ const pending=[];
 const sb=(_env,path,options)=>new Promise((resolve,reject)=>pending.push({path,options,resolve,reject}));
 const context={sb,Date,JSON,Map};
 vm.createContext(context);
-vm.runInContext(source.slice(start,end)+';globalThis.writeSnapshot=saveFeedSnapshot;',context);
+vm.runInContext(source.slice(start,end)+';globalThis.writeSnapshot=saveFeedSnapshot;globalThis.pendingSnapshotMap=snapshotPendingWritesV117;',context);
 const save=context.writeSnapshot;
 async function drain(count){assert.equal(pending.length,count);const jobs=pending.splice(0);jobs.forEach(j=>j.resolve());await Promise.resolve();}
 test('identical concurrent writes coalesce',async()=>{const a=save({},'model-analysis:a',{v:1},60),b=save({},'model-analysis:a',{v:1},60);await drain(1);await Promise.all([a,b]);});
 test('different payloads do not conceal a third duplicate',async()=>{const a=save({},'model-analysis:b',{v:1},60),b=save({},'model-analysis:b',{v:2},60),c=save({},'model-analysis:b',{v:1},60);await drain(2);await Promise.all([a,b,c]);});
 test('protected pacing writes never coalesce',async()=>{const a=save({},'api-football-pacing',{v:1},60),b=save({},'api-football-pacing',{v:1},60);await drain(2);await Promise.all([a,b]);});
 test('failure permits another attempt',async()=>{const a=save({},'match-intelligence:c',{v:1},60);assert.equal(pending.length,1);pending.shift().reject(Error('failed'));await assert.rejects(a);const b=save({},'match-intelligence:c',{v:1},60);await drain(1);await b;});
+
+test('completion clears tracked writes and sequential refresh writes again',async()=>{const a=save({},'model-analysis:cleanup',{v:9},60);await drain(1);await a;assert.equal(context.pendingSnapshotMap.size,0);const b=save({},'model-analysis:cleanup',{v:9},60);await drain(1);await b;assert.equal(context.pendingSnapshotMap.size,0);});
