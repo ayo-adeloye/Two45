@@ -6201,12 +6201,13 @@ async function eliteOddsRepairTargetsV83(env, date, fixtures) {
   );
   const fixtureMap = new Map(arr2(fixtures).map(f=>[String(fixtureIdV19(f)),f]));
   const eligibleIds = arr2(fixtures).filter(f=>upcoming.has(String(fixtureIdV19(f))) && competitionTierV21(f?.league?.name,f?.league?.id)<=2).map(f=>fixtureIdV19(f)).slice(0,120);
-  const rawRows = eligibleIds.length ? arr2(await sb(env,'two45_analysis_state?fixture_id=in.('+eligibleIds.join(',')+')&status=eq.COMPLETE&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&select=fixture_id,marketOptions:result->marketOptions&limit=120',{timeoutMs:2500}).catch(()=>[])) : [];
+  const rawRows = eligibleIds.length ? arr2(await sb(env,'two45_analysis_state?fixture_id=in.('+eligibleIds.join(',')+')&status=eq.COMPLETE&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&select=fixture_id,data_quality,marketOptions:result->marketOptions,probabilityBoard:result->probabilityBoard&limit=120',{timeoutMs:2500})) : [];
   const rawOptions = rawRows.flatMap(r=>arr2(r.marketOptions).filter(o=>o.lane==='STRONG' && o.analysisSource==='independent-model').map(o=>({...o,fixtureId:r.fixture_id,decision:'PICK'})));
+  const unpricedResearch = rawRows.filter(r=>num4(r.data_quality,0)>=.75 && Object.values(r.probabilityBoard||{}).some(outcomes=>Object.values(outcomes||{}).some(p=>Number.isFinite(Number(p)) && Number(p)>0 && Number(p)<1))).map(r=>({fixtureId:r.fixture_id,requestQuote:true,dataQuality:r.data_quality}));
   // Research-qualified alternatives can request a quote before public price verification.
-  return [...arr2(boardRow?.payload?.strongPicks),...rawOptions].map(p=>({...p,competitionTier:competitionTierV21(fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.name,fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.id)})).filter((p) => {
+  return [...arr2(boardRow?.payload?.strongPicks),...rawOptions,...unpricedResearch].map(p=>({...p,competitionTier:competitionTierV21(fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.name,fixtureMap.get(String(p.fixtureId ?? p.providerMatchId))?.league?.id)})).filter((p) => {
     const id = String(p?.fixtureId ?? p?.providerMatchId ?? "");
-    return id && upcoming.has(id) && p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2;
+    return id && upcoming.has(id) && (p?.decision === "PICK" || p?.requestQuote===true) && num4(p?.competitionTier, 4) <= 2;
   }).sort(
     (a, b) => num4(a?.competitionTier, 4) - num4(b?.competitionTier, 4) || num4(b?.dataQuality, 0) - num4(a?.dataQuality, 0) || num4(b?.probability, 0) - num4(a?.probability, 0)
   ).map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? "")).filter(Boolean).filter((id, index, rows) => rows.indexOf(id) === index).slice(0, ELITE_ODDS_REPAIR_TARGETS_V83);

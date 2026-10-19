@@ -35,6 +35,8 @@ const context=()=>{const c=vm.createContext({console,Date,Intl,URL,Set,Map,Respo
  const targets=await r.eliteOddsRepairTargetsV83({},'2026-10-19',fixtures);
  assert.equal(targets.join(','),'1','Unpriced research alternatives must be eligible for quote repair; WATCH and past fixtures must not');
  assert(query.includes('marketOptions:result->marketOptions'));
+ r.sb=async()=>[{fixture_id:1,data_quality:.9,marketOptions:[],probabilityBoard:{TOTAL_GOALS:{OVER_2_5:.7}}},{fixture_id:2,data_quality:.4,marketOptions:[],probabilityBoard:{TOTAL_GOALS:{OVER_2_5:.9}}}];
+ assert.equal((await r.eliteOddsRepairTargetsV83({},'2026-10-19',fixtures)).join(','),'1','Adequate independent research must obtain prices without an existing priced pick; weak evidence must not gain priority');
  const quote=(id,stamp)=>({fixture:{id},observedAt:stamp,providerUpdatedAt:stamp,bookmakers:[{name:'Bet365',bets:[{name:'Match Winner',values:[{value:'Home',odd:'2.0'},{value:'Draw',odd:'3.0'},{value:'Away',odd:'4.0'}]}]}]});
  const map=new Map([['fixtures:2026-10-19',{payload:{fixtures:fixtures.slice(0,2)}}],['odds:2026-10-19',{refreshed_at:fresh,payload:{response:[quote(1,old),quote(2,old)],paging:{current:2,total:4,complete:false},repairedTargets:['1','2']}}]]);
  r.getFeedSnapshot=async(_e,key)=>map.get(key)||null;r.saveFeedSnapshot=async(_e,key,payload)=>map.set(key,{refreshed_at:new Date().toISOString(),payload});r.eliteOddsRepairTargetsV83=async()=>['1','2'];
