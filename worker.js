@@ -8426,7 +8426,7 @@ async function ticketBoardV70(env, date) {
   const premiumCandidates = [];
   for (const [id, entry] of chosenRows) {
     const row = entry.row, f = fixtureMap.get(id);
-    if (!f || !UPCOMING_STATUSES.has(f?.fixture?.status?.short))
+    if (!f || !UPCOMING_STATUSES.has(f?.fixture?.status?.short) || Date.parse(f?.fixture?.date || 0) <= Date.now())
       continue;
     const tier = competitionTierV21(f?.league?.name, f?.league?.id);
     if (tier > 2)
@@ -8434,7 +8434,17 @@ async function ticketBoardV70(env, date) {
     const forecast = canonicalForecastV2(row);
     if (!forecast)
       continue;
-    for (const option of arr2(row?.result?.marketOptions)) {
+    // Include preserved independent-model candidates only in the existing
+    // exact-Bet365, kickoff, Elite-quality and independent-review pipeline.
+    // Research is not a pick: no price means no candidate can survive verification.
+    const researchOptions = row.model_version === MODEL_VERSION
+      ? arr2(row?.result?.researchMarketOptions) : [];
+    const options = [...arr2(row?.result?.marketOptions), ...researchOptions];
+    const seenOptions = new Set();
+    for (const option of options) {
+      const identity = String(option?.market || "") + "|" + ticketSelectionKeyV78(option?.selection);
+      if (seenOptions.has(identity)) continue;
+      seenOptions.add(identity);
       if (String(option?.lane || "").toUpperCase() !== "STRONG")
         continue;
       if (String(option?.analysisSource || "").toLowerCase() !== "independent-model")
