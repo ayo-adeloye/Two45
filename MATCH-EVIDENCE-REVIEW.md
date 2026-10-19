@@ -26,6 +26,10 @@ The optimized server-side reader, `two45_match_evidence_inputs_v1`, projects onl
 
 This layer does not originate picks, boost probabilities, alter official publication gates or retroactively change tickets. Historical rates and narrative interpretation must not be substituted for the frozen independent model's validation. The raw model still requires accuracy, exact-price prospective-return and settlement-cutover validation. Player markets remain in their separate unvalidated research path.
 
+## Filling actual history gaps
+
+A separate scheduled history collector runs at most once per five minutes, with at most one provider request. It defers to fresh production backlogs and the existing four-call provider burst budget. Upcoming canonical Tier 1 teams are checked once daily; when fewer than eight same-league/season results are retained, it requests their last eight fixtures. Only matching team/league/season regulation finals with real scores and completed kickoffs are accepted. The raw observation is archived, and the existing append-only result capture records its current observation time with `p_seed=false`, detecting conflicts without rewriting prior labels. New historical observations cannot enter earlier forecasts or backtests. This is a bounded gap fill, not a claim of complete historical coverage. Public evidence GET requests never trigger paid provider calls. `/api/match-history-status` exposes collection progress and failures.
+
 ## Verification and rollback
 
 Tests cover temporal boundaries, duplicates/conflicts, missing statistics, venue alignment, small-sample uncertainty, threshold parity with actual Elite gates, price sensitivity, provider-call exclusion, official-write isolation, founder HOLD consistency, UI escaping and stale modal responses. Existing publication, Elite, Ladder and Record checks remain required. Revert this release to disable the dossier, preserving existing research snapshots, ticket locks and publication history.

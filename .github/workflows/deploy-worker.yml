@@ -17,6 +17,7 @@ on:
       - 'tests/football-gateway.cjs'
       - 'match-evidence-*.mjs'
       - 'match-evidence-*.js'
+      - 'match-history-*.js'
       - 'scripts/bundle-match-evidence-v1.mjs'
       - 'tests/match-evidence-*.cjs'
       - '.github/workflows/deploy-worker.yml'
@@ -42,6 +43,7 @@ jobs:
           node tests/football-gateway.cjs
           node match-evidence-v1.test.mjs
           node tests/match-evidence-runtime.cjs
+          node tests/match-history-runtime.cjs
           node tests/match-evidence-ui.cjs
           node tests/model-validation-runtime.cjs
           node tests/model-review-runtime.cjs
