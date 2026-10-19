@@ -9237,6 +9237,29 @@ var worker_default = {
         const result = await founderStatusV95(request, env);
         return json(result.body, result.httpStatus);
       }
+      if (url.pathname === "/api/founder/elite-review-status" && request.method === "GET") {
+        const user = await authenticatedUser(request, env);
+        if (!user?.id) return json({ok:false,error:"Sign in required."},401);
+        if (!await founderAuthorizedV95(env,user)) return json({ok:false,error:"Founder access required."},403);
+        const fixtureId = Math.trunc(Number(url.searchParams.get("fixtureId") || 0));
+        if (!(fixtureId > 0)) return json({ok:false,error:"Valid fixture ID required."},400);
+        const rows = await sb(env, "two45_founder_elite_suggestions?user_id=eq."+encodeURIComponent(user.id)+"&fixture_id=eq."+fixtureId+"&select=status,review,reviewed_at,fixture_date&order=fixture_date.desc&limit=1");
+        const saved = arr2(rows)[0];
+        if (!saved) return json({ok:false,status:"NOT_FOUND",message:"No saved review for this fixture."},404);
+        if (saved.status === "REVIEWING") {
+          const canonical = await currentCanonicalAnalysisV2(env,fixtureId).catch(()=>null);
+          const forecast = canonicalForecastV2(canonical);
+          if (forecast) {
+            const candidate = {...forecast,competitionTier: Number(saved.review?.tier || 4)};
+            const eligible = eliteLegQualityV79(candidate);
+            const status = eligible ? "ELITE_QUALIFIED" : forecast.decision === "PICK" ? "STRONG_ONLY" : "REJECTED";
+            const review = {...saved.review,analysisStatus:"READY",decision:forecast.decision,market:forecast.market||null,selection:forecast.selection||null,probability:forecast.decision==="PICK"?forecast.probability:null,sportsbookOdds:forecast.sportsbookOdds||null,bookmaker:forecast.bookmaker||null,eliteQualified:eligible,reason:arr2(forecast.reasons)[0]||"No independently qualified market.",reviewedAt:new Date().toISOString()};
+            await sb(env,"two45_founder_elite_suggestions?user_id=eq."+encodeURIComponent(user.id)+"&fixture_id=eq."+fixtureId+"&fixture_date=eq."+encodeURIComponent(saved.fixture_date),{method:"PATCH",prefer:"return=minimal",body:JSON.stringify({status,review,reviewed_at:new Date().toISOString()})});
+            return json({ok:true,status,review,fixtureId});
+          }
+        }
+        return json({ok:true,status:saved.status,review:saved.review,fixtureId});
+      }
       if (url.pathname === "/api/founder/elite-suggest" && request.method === "POST") {
         const result = await founderSuggestEliteV95(request, env);
         return json(result.body, result.httpStatus);
