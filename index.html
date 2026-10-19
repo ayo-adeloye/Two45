@@ -50,6 +50,25 @@
 .homeGrid .ticketList{border-top:1px solid rgba(232,198,106,.16);padding-top:9px}
 @media(max-width:640px){.homeGrid .banner{border-radius:17px}.recordRow{gap:8px}.two45SignalViz{min-width:75px}}
 @media(prefers-reduced-motion:reduce){.rung{transition:none}}
+</style><style id="two45-fixture-studio-v2">
+#homeGames .rows,#fixtures .rows{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,350px),1fr));gap:12px;padding:12px}
+#homeGames .row,#fixtures .row{display:grid;grid-template-columns:1fr auto;gap:11px;align-items:start;border:1px solid rgba(109,158,221,.27);border-radius:17px;padding:15px;background:radial-gradient(ellipse at 100% 0,rgba(69,119,203,.13),transparent 62%),linear-gradient(150deg,#17253b,#111a29);box-shadow:0 12px 28px rgba(0,0,0,.21);transition:border-color .18s,transform .18s}
+#homeGames .row:hover,#fixtures .row:hover{border-color:rgba(230,195,101,.6);transform:translateY(-2px)}
+#homeGames .row>.game,#fixtures .row>.game{grid-column:1/-1;grid-row:1;min-width:0}
+#homeGames .row>.signal,#fixtures .row>.signal{grid-column:1/-1;grid-row:3;border-top:1px solid rgba(130,155,190,.18);padding-top:9px}
+#homeGames .row>div:first-child,#fixtures .row>div:first-child{grid-column:1;grid-row:2;font-size:12px;color:#b9c8df}
+#homeGames .row>div:last-child,#fixtures .row>div:last-child{grid-column:2;grid-row:2;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+#homeGames .row .analyze,#fixtures .row .analyze{border:1px solid rgba(232,198,106,.6);background:rgba(232,198,106,.11);color:#ffe09a;border-radius:10px;padding:8px 12px;white-space:nowrap}
+.two45TeamFace{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.two45TeamSide{display:flex;align-items:center;flex:1;min-width:0;gap:8px;font-weight:750;font-size:13px}
+.two45TeamSide.away{justify-content:flex-end;text-align:right}
+.two45TeamFace img{width:34px;height:34px;object-fit:contain;flex:none}
+.two45CrestPlaceholder{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:#293a55;color:#dfcb93;font-size:11px;flex:none}
+.two45Versus{color:#e8c66a;font-weight:900;font-size:10px;letter-spacing:1.4px}
+.two45FixtureRound{display:block;margin-top:9px;font-size:11px;color:#93a6c3;text-align:center}
+#homeGames .compHead,#fixtures .compHead{border-left:3px solid #d7ae55}
+@media(max-width:440px){#homeGames .rows,#fixtures .rows{grid-template-columns:1fr;padding:8px}.two45TeamSide{font-size:12px}.two45TeamFace img,.two45CrestPlaceholder{width:30px;height:30px}}
+@media(prefers-reduced-motion:reduce){#homeGames .row,#fixtures .row{transition:none}}
 </style></head>
 <body>
 <div class="app">
@@ -137,7 +156,12 @@ function two45FixtureSignal(x){
  var qualified=x.decision==="PICK"&&Number(x.sportsbookOdds)>1,clr=qualified?"#55d4aa":"#67aefe";
  return '<div class="two45SignalViz"><div class="two45SignalTitle"><span>'+esc(nice(best.selection||best.market||"Research"))+'</span><b>'+(p01*100).toFixed(0)+'%</b></div><div class="two45SignalTrack"><i style="--signal-width:'+(p01*100).toFixed(1)+'%;--signal-color:'+clr+'"></i></div><div class="two45SignalReason">'+(qualified?"Price-qualified prediction":"Model probability · research only")+'</div></div>';
 }
-function gameRow(f,m){var id=String(f.fixture&&f.fixture.id||""),x=m.get(id),s=status(f),live=isLive(f),fin=FIN.has(s),stateText=live?'<span class="live">'+(f.goals&&f.goals.home!=null?f.goals.home:0)+'–'+(f.goals&&f.goals.away!=null?f.goals.away:0)+' · '+esc(s)+'</span>':fin?'<span class="muted">'+esc(s)+'</span>':'<span class="muted">'+(awaitingUpdate(f)?'Awaiting status update':isUpcoming(f)?'Upcoming':esc(f.fixture.status.long||s))+'</span>',qualified=x&&x.decision==="PICK"&&x.selection&&String(x.selection).toUpperCase()!=="NO_BET",hasOpts=x&&Array.isArray(x.alternatives)&&x.alternatives.length>0,sig=!x?'<strong style="color:#8d887d">Not analyzed yet</strong>':qualified?'<strong>'+esc(nice(x.selection))+'</strong>'+((pct(x.probability)!=null)?pct(x.probability)+'%':''):hasOpts?'<strong>Options available</strong><span class="muted">'+x.alternatives.length+' markets analyzed</span>':'<strong style="color:#8d887d">No Bet</strong>';var label=x?"View Analysis":fin?"Finished":"Analyze",founderBtn=founderSession()&&!fin?'<button class="founderDaily" data-id="'+id+'" style="margin-top:6px;width:100%">Founder Pick</button><button class="founderElite" data-id="'+id+'" style="margin-top:6px;width:100%">★ Elite review</button>':"";return'<div class="row"><div>'+esc(time(f))+'<br>'+stateText+'</div><div class="game"><b>'+esc(f.teams.home.name)+' vs '+esc(f.teams.away.name)+'</b><small>'+esc(f.league.round||"")+'</small></div><div class="signal">'+sig+(x?two45FixtureSignal(x):'')+'</div><div><button class="analyze" data-id="'+id+'" data-finished="'+(fin?"1":"0")+'" '+(fin&&!x?'disabled style="opacity:.45"':"")+'>'+label+'</button>'+founderBtn+'</div></div>'}
+function two45FixtureTeams(f){
+ var home=f.teams&&f.teams.home||{},away=f.teams&&f.teams.away||{};
+ function side(t,awaySide){var name=String(t.name||"Team"),logo=String(t.logo||"");var image=/^https:\/\//.test(logo)?'<img src="'+esc(logo)+'" loading="lazy" decoding="async" alt="" referrerpolicy="no-referrer">':'<span class="two45CrestPlaceholder" aria-hidden="true">'+esc(name.slice(0,2).toUpperCase())+'</span>';return '<span class="two45TeamSide '+(awaySide?'away':'')+'">'+(awaySide?'<span>'+esc(name)+'</span>'+image:image+'<span>'+esc(name)+'</span>')+'</span>'}
+ return '<div class="two45TeamFace">'+side(home,false)+'<span class="two45Versus">VS</span>'+side(away,true)+'</div><small class="two45FixtureRound">'+esc(f.league&&f.league.round||"")+'</small>';
+}
+function gameRow(f,m){var id=String(f.fixture&&f.fixture.id||""),x=m.get(id),s=status(f),live=isLive(f),fin=FIN.has(s),stateText=live?'<span class="live">'+(f.goals&&f.goals.home!=null?f.goals.home:0)+'–'+(f.goals&&f.goals.away!=null?f.goals.away:0)+' · '+esc(s)+'</span>':fin?'<span class="muted">'+esc(s)+'</span>':'<span class="muted">'+(awaitingUpdate(f)?'Awaiting status update':isUpcoming(f)?'Upcoming':esc(f.fixture.status.long||s))+'</span>',qualified=x&&x.decision==="PICK"&&x.selection&&String(x.selection).toUpperCase()!=="NO_BET",hasOpts=x&&Array.isArray(x.alternatives)&&x.alternatives.length>0,sig=!x?'<strong style="color:#8d887d">Not analyzed yet</strong>':qualified?'<strong>'+esc(nice(x.selection))+'</strong>'+((pct(x.probability)!=null)?pct(x.probability)+'%':''):hasOpts?'<strong>Options available</strong><span class="muted">'+x.alternatives.length+' markets analyzed</span>':'<strong style="color:#8d887d">No Bet</strong>';var label=x?"View Analysis":fin?"Finished":"Analyze",founderBtn=founderSession()&&!fin?'<button class="founderDaily" data-id="'+id+'" style="margin-top:6px;width:100%">Founder Pick</button><button class="founderElite" data-id="'+id+'" style="margin-top:6px;width:100%">★ Elite review</button>':"";return'<div class="row"><div>'+esc(time(f))+'<br>'+stateText+'</div><div class="game">'+two45FixtureTeams(f)+'</div><div class="signal">'+sig+(x?two45FixtureSignal(x):'')+'</div><div><button class="analyze" data-id="'+id+'" data-finished="'+(fin?"1":"0")+'" '+(fin&&!x?'disabled style="opacity:.45"':"")+'>'+label+'</button>'+founderBtn+'</div></div>'}
 var displayCompetitionTier=(function(){
 const TIER1_IDS = new Set([1,2,4,5,9,15,39,61,78,135,140]);
 const TIER2_IDS = new Set([3,13,40,45,48,66,71,72,73,81,88,94,136,137,141,143,144,253]);
