@@ -8,9 +8,9 @@ const scripts=[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m=>m[
 function frontend(){const nodes={},timers=[];const c=vm.createContext({console,Date,Intl,Set,Map,localStorage:{getItem(){return ''},removeItem(){}},document:{querySelector(s){return nodes[s]??=( {innerHTML:'',style:{},classList:{open:false,add(){this.open=true},remove(){this.open=false},contains(){return this.open},toggle(){}},setAttribute(){}})},querySelectorAll(){return []}},setInterval(){},setTimeout(fn){timers.push(fn)},fetch:()=>new Promise(()=>{})});vm.runInContext(scripts[0],c);c.state.token='test-token';return {c,nodes,timers}}
 const tick=()=>new Promise(r=>setImmediate(r));
 (async()=>{
-let query;w.sb=async(e,q)=>{query=q;return [{id:'1',fixture_id:1,outcome:'WIN',final_home_score:0,final_away_score:0},{id:'2',fixture_id:2,outcome:'LOSS',final_home_score:1,final_away_score:2},{id:'3',fixture_id:3,outcome:'PUSH'},{id:'4',fixture_id:4,outcome:null}]};
+let queries=[];w.sb=async(e,q)=>{queries.push(q);return [{id:'1',fixture_id:1,outcome:'WIN',final_home_score:0,final_away_score:0},{id:'2',fixture_id:2,outcome:'LOSS',final_home_score:1,final_away_score:2},{id:'3',fixture_id:3,outcome:'PUSH'},{id:'4',fixture_id:4,outcome:null}]};
 let history=await w.recordHistoryV20({},50);assert.equal(history.rows[0].score,'0-0');assert.deepEqual(Array.from(history.rows,r=>r.result),['WIN','LOSS','VOID','PENDING']);
-assert(query.startsWith('two45_public_record_v2?')); assert(!query.includes('two45_model_forecasts'));
+assert(queries.some(q=>q.startsWith('two45_public_record_v2?'))); assert(queries.some(q=>q.startsWith('two45_publications?'))); assert(!queries.some(q=>q.includes('two45_model_forecasts')));
 w.sb=async()=>{throw Error('unavailable')};await assert.rejects(()=>w.recordSummaryV20({}),/unavailable/);
 let calls=0,canonical=null,jobs=[{status:'PENDING',kickoff_at:new Date().toISOString()}];w.authenticatedUser=async()=>({id:'test'});w.currentCanonicalAnalysisV2=async()=>canonical;w.sb=async(e,q,o)=>{assert(!o?.method||o.method==='GET');assert(q.includes('select=status,kickoff_at'));calls++;return jobs};w.dateAllowedV19=()=>true;
 for(const fn of ['processOne','claimSpecificJob','syncFixtureJobsV19','providerRequest'])w[fn]=()=>{throw Error('Paid or mutation path called')};
