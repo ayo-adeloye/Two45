@@ -9070,6 +9070,30 @@ var worker_default = {
           ...health
         });
       }
+      if (url.pathname === "/api/elite-repricing-audit" && request.method === "GET") {
+        const date=String(url.searchParams.get("date")||easternDate());
+        if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(date))return json({ok:false,error:"Invalid date"},400);
+        return json(await eliteResearchRepricingAuditV116(env,date));
+      }
+async function eliteResearchRepricingAuditV116(env,date){
+  const fixtureSnap=await fixtureSnapshotV19(env,date);
+  const fixtures=arr2(fixtureSnap?.fixtures).filter(f=>UPCOMING_STATUSES.has(f?.fixture?.status?.short)&&Date.parse(f?.fixture?.date)>Date.now()&&competitionTierV21(f?.league?.name,f?.league?.id)<=2);
+  const ids=fixtures.map(fixtureIdV19).filter(x=>Number.isSafeInteger(x)&&x>0).slice(0,150);
+  const rows=ids.length?await canonicalAnalysisRowsV2(env,ids):[];
+  const latest=new Map();for(const r of rows){if(r?.status!=="COMPLETE"||r?.model_version!==MODEL_VERSION)continue;const id=Number(r.fixture_id),old=latest.get(id);if(!old||Date.parse(r.completed_at||0)>Date.parse(old.completed_at||0))latest.set(id,r);}
+  const daily=(await getFeedSnapshot(env,oddsKey(date)).catch(()=>null))?.payload||{};
+  const items=[];let candidates=0,quoted=0;
+  for(const f of fixtures){const id=fixtureIdV19(f),row=latest.get(id);const research=arr2(row?.result?.researchMarketOptions).slice(0,20);if(!research.length)continue;
+    const direct=await getFeedSnapshot(env,"fixture-odds:"+id).catch(()=>null);
+    const recent=direct?.refreshed_at&&Date.now()-Date.parse(direct.refreshed_at)<30*60000;
+    const payload=recent?{response:mergeOddsV18(arr2(daily.response),bet365RowsV68(direct?.payload?.response))}:daily;
+    const markets=research.map(c=>{const match=exactBet365QuoteV78(payload,id,c.market,c.selection);return {market:c.market,selection:c.selection,quoteVerified:Boolean(match),odds:match?.odds||null};});
+    candidates+=markets.length;quoted+=markets.filter(m=>m.quoteVerified).length;
+    items.push({fixtureId:id,kickoff:f?.fixture?.date,competition:f?.league?.name,markets});
+  }
+  return {ok:true,date,readOnly:true,published:false,qualifiedPicks:0,fixtureCount:fixtures.length,fixturesWithPreservedResearch:items.length,researchCandidates:candidates,exactQuotedCandidates:quoted,items};
+}
+__name(eliteResearchRepricingAuditV116,"eliteResearchRepricingAuditV116");
       if (url.pathname === "/api/elite-intelligence") {
         const requestedDate = String(url.searchParams.get("date") || easternDate());
         if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
