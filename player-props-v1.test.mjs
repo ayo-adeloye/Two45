@@ -13,4 +13,5 @@ assert.equal(forecastPlayerProp({...input,history:history.map(x=>({...x,teamId:2
 const missing=normalizePlayerStats([{team:{id:1},players:[{player:{id:9},statistics:[{games:{minutes:90,substitute:false},shots:{on:null},goals:{total:0,assists:null}}]}]}],{fixture_id:1,kickoff_at:kickoff},asOf)[0];
 assert.equal(missing.shotsOnTarget,null);assert.equal(missing.assists,null);assert.equal(missing.goals,0);
 assert(isPlayerMarket('Home Player Shots On Target'));assert(isPlayerMarket('Anytime Goalscorer'));assert(!isPlayerMarket('Total Shots On Target'));
+assert(!isPlayerMarket('Both Teams To Score'));assert(!isPlayerMarket('Team To Score First'));assert(!isPlayerMarket('Total Goals/Both Teams To Score'));assert(isPlayerMarket('To Score Or Assist'));assert(isPlayerMarket('Home Anytime Goal Scorer'));
 console.log('PASS: player union events, substitutions, exact identities/prices, stale/future evidence, duplicate exclusion and missing statistics');

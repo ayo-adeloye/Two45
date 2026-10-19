@@ -4,6 +4,7 @@ const c=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers
 vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);
 for(const name of ['Home Player Shots On Target','Player Shots On Target','Anytime Goalscorer','Player To Score Or Assist'])assert.equal(c.providerMarketName(name),null,name);
 assert.equal(c.providerMarketName('Total Shots On Target'),'TOTAL_SHOTS_ON_TARGET');
+assert.equal(c.providerMarketName('Both Teams To Score'),'BTTS','Player market isolation must preserve team scoring markets');
 const raw=c.slimOddsRowV18({fixture:{id:1},bookmakers:[{name:'Bet365',bets:[{name:'Player Shots On Target',values:[{value:'A Over 0.5',odd:'2'}]}]}]});
 assert.equal(raw.bookmakers[0].bets.length,1,'Raw player offers survive retention');
 assert.equal(c.oddsMarketsFromSnapshot({response:[raw]},1).length,0,'Raw player prices cannot become team prices');
