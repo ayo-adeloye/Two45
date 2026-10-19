@@ -6783,7 +6783,11 @@ async function refreshOddsPageV18(env, date) {
       complete: page >= totalPages
     },
     cacheSeconds: 900,
-    response
+    response,
+    // Preserve targeted repair pacing across general odds-page refreshes.
+    repairAttempts: previous?.repairAttempts || {},
+    pendingExactPrices: previous?.pendingExactPrices || [],
+    repairTargets: previous?.repairTargets || []
   };
   await saveFeedSnapshot(
     env,
@@ -6976,6 +6980,16 @@ async function selectFeedJobV18(env, date, force = false) {
       )
     };
   }
+  // Retry unpublished Elite candidates with missing exact Bet365 quotes after 06:00.
+  // A fresh aggregate odds page does not prove that candidate markets are priced.
+  if (oddsSnapshot && date === activeDailyTicketDateV93()) {
+    const dailyLock = await getFeedSnapshot(env, "ticket-lock:daily:" + date).catch(() => null);
+    const pending = arr2(dailyLock?.payload?.pipeline?.pendingVerificationFixtures).map(String);
+    if (dailyLock?.payload?.status === "BUILDING" && pending.some(id =>
+        Date.now() - Date.parse(oddsSnapshot?.payload?.repairAttempts?.[id] || 0) >= 10 * 60000)) {
+      return {key:oddsKey(date),ttl:900,savesItself:true,run:()=>repairDailyOddsFromFixturesV68(env,date)};
+    }
+  }
   if (oddsIncomplete) {
     return {
       key: oddsKey(date),
@@ -6991,16 +7005,6 @@ async function selectFeedJobV18(env, date, force = false) {
       savesItself: true,
       run: () => oddsSnapshot ? repairDailyOddsFromFixturesV68(env, date) : refreshOddsPageV18(env, date)
     };
-  }
-  // Retry unpublished Elite candidates with missing exact Bet365 quotes after 06:00.
-  // A fresh aggregate odds page does not prove that candidate markets are priced.
-  if (date === activeDailyTicketDateV93()) {
-    const dailyLock = await getFeedSnapshot(env, "ticket-lock:daily:" + date).catch(() => null);
-    const pending = arr2(dailyLock?.payload?.pipeline?.pendingVerificationFixtures).map(String);
-    if (dailyLock?.payload?.status === "BUILDING" && pending.some(id =>
-        Date.now() - Date.parse(oddsSnapshot?.payload?.repairAttempts?.[id] || 0) >= 10 * 60000)) {
-      return {key:oddsKey(date),ttl:900,savesItself:true,run:()=>repairDailyOddsFromFixturesV68(env,date)};
-    }
   }
   for (const futureDate of fourDayFixtureDatesV20().slice(1)) {
     const missing = !await getFeedSnapshot(env, fixtureKey(futureDate));
