@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../worker.js'),'utf8');
-const context=()=>{const c=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers,AbortSignal,setTimeout,clearTimeout});vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);return c;};
+const context=(Clock=Date)=>{const c=vm.createContext({console,Date:Clock,Intl,URL,Set,Map,Response,Request,Headers,AbortSignal,setTimeout,clearTimeout});vm.runInContext(source.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);return c;};
 (async()=>{
  const c=context();
  assert.equal(c.dailyPublicationWindowV2('2026-10-19',Date.parse('2026-10-19T00:00:00Z')).allowed,false,'8 PM discovery cannot publish tomorrow');
@@ -51,5 +51,9 @@ const context=()=>{const c=vm.createContext({console,Date,Intl,URL,Set,Map,Respo
  calls.length=0;r.providerFetchV18=async(_e,_type,p)=>{calls.push(p.fixture);return {response:[]};};
  await r.repairDailyOddsFromFixturesV68({},'2026-10-19');await r.repairDailyOddsFromFixturesV68({},'2026-10-19');
  const missing=await r.repairDailyOddsFromFixturesV68({},'2026-10-19');assert.equal(calls.length,2,'Unavailable bookmaker quotes must back off rather than repeat calls');assert.equal(missing.pendingExactPrices.length,2);assert.equal(missing.response.length,0,'Unavailable quotes must never be fabricated');
+ let clock=Date.now();const start=clock;class Clock extends Date {static now(){return clock;}}
+ const b=context(Clock);let claimed=0;const budgets=[];b.providerQuietWindow=()=>false;b.claimNextFreshJobV55=async()=>{clock+=200;return {fixture_id:++claimed};};b.processOne=async()=>{clock+=8000;return {status:'READY'};};b.timedV2=async(p,ms)=>{budgets.push(ms);return p;};
+ const bounded=await b.processJobs({},9,null,true);assert.equal(bounded.claimed,1,'A slow fresh job must not cause another claim that overruns the outer cycle');assert(clock-start<19000);assert(budgets.every(ms=>ms<=15000));
+ clock=start;claimed=0;b.processOne=async()=>{clock+=1000;return {status:'READY'};};assert.equal((await b.processJobs({},9,null,true)).claimed,3,'Fast cached work should retain throughput');
  console.log('PASS: overnight drafts, 6 AM/DST publication boundary, qualifying alternatives before deduplication, immutable locks, unpriced research quote repair, fixture freshness, pagination, provider backoff and 8 PM feed priority');
 })().catch(e=>{console.error(e);process.exitCode=1});

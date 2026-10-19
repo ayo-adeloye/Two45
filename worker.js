@@ -5025,30 +5025,8 @@ async function processOne(env, job) {
       marketOdds,
       competitionTierV21(job.competition, job.provider_league_id)
     );
-    // V2 stays in shadow until a signed validation artifact permits promotion.
-    // Persist every candidate and rejection with point-in-time input/quote evidence.
-    if (Date.now() < Date.parse(job.kickoff_at)) {
-      try {
-        const calibrationRow = await getFeedSnapshot(env, "selection-v2:calibration").catch(()=>null);
-        const now = Date.now(), featureTimes = [hs._two45AsOf,as._two45AsOf].map(Date.parse);
-        const context = {fixtureId:job.fixture_id,modelVersion:MODEL_VERSION,now,kickoff:job.kickoff_at,
-          tier:competitionTierV21(job.competition,job.provider_league_id),
-          sampleSize:Math.min(num4(hf.sampleSize,0),num4(af.sampleSize,0)),
-          featureAsOf:featureTimes.every(Number.isFinite) ? new Date(Math.min(...featureTimes)).toISOString() : null};
-        const quotes = marketOdds.flatMap(g=>arr2(g.outcomes).map(q=>({fixtureId:job.fixture_id,market:g.market,selection:q.selection,
-          bookmaker:g.bookmaker,odds:q.odds,observedAt:g.observedAt,providerUpdatedAt:g.providerUpdatedAt,rawMarket:g.rawMarket,rawSelection:q.rawSelection || null})));
-        try { analysis.goalCoreV3 = await recordGoalForecastV3(env,job,analysis,quotes,decision); }
-        catch(e) { analysis.goalCoreV3 = {mode:"SHADOW",error:safeRefreshError(e)}; console.error("goal-core-v3 shadow failed",analysis.goalCoreV3.error); }
-        const candidates = selectionV2.generateCandidates(analysis,quotes,calibrationRow?.payload,context);
-        await sb(env,"two45_selection_shadow_v2",{method:"POST",prefer:"return=minimal",body:JSON.stringify({fixture_id:job.fixture_id,
-          kickoff_at:job.kickoff_at,generated_at:new Date(now).toISOString(),model_version:selectionV2.VERSION,
-          payload:{context,features:{home:hf,away:af},probabilities:analysis.probabilities,quotes,candidates,legacyResearchDecision:decision,
-            primary:selectionV2.primaryPicks(candidates),promotionAllowed:false}})});
-      } catch(e) {
-        analysis.selectionV2ShadowError = safeRefreshError(e);
-        console.error("selection-v2 shadow persistence failed", analysis.selectionV2ShadowError);
-      }
-    }
+    // Independent raw inference runs outside legacy analysis, in runGoalCoreSweepV3.
+    // Retained legacy-wrapper shadow history is preserved; duplicate synchronous writes are retired.
 
     const verifyCandidateV85 = /* @__PURE__ */ __name((candidate) => {
       if (!candidate || typeof candidate !== "object")
@@ -5231,20 +5209,21 @@ async function processJobs(env, limit = DEFAULT_MODEL_BATCH, prepared = null, sk
   if (skipRecovery) {
     const freshResults = [];
     const freshDeadline = Date.now() + 17000;
-    for (let step = 0; step < 3 && Date.now() < freshDeadline; step++) {
+    for (let step = 0; step < 3 && freshDeadline-Date.now()>=9000; step++) {
       const freshOwned = await timedV2(claimNextFreshJobV55(env), 3e3, "atomic fresh claim").catch(() => null);
       if (!freshOwned)
         break;
       let result;
       try {
+        const processBudget=Math.min(15000,Math.max(1000,freshDeadline-Date.now()-2000));
         result = await timedV2(
           processOne(env, freshOwned),
-          15e3,
+          processBudget,
           "fresh fixture " + freshOwned.fixture_id + " analysis"
         );
       } catch (e) {
         const msg = "V69 bounded fresh-cycle recovery: " + safeRefreshError(e);
-        await deferClaimedJobV55(env, freshOwned, msg).catch(() => null);
+        await timedV2(deferClaimedJobV55(env, freshOwned, msg),2000,'fresh-cycle recovery').catch(() => null);
         result = { fixtureId: freshOwned.fixture_id, status: "DEFERRED", autoRecovered: true, rateLimited: false, error: msg };
       }
       freshResults.push(result);

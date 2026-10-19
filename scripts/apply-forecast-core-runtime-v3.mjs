@@ -4,7 +4,7 @@ let source=fs.readFileSync(worker,'utf8').replace(/\r\n/g,'\n');
 const block='// BEGIN FORECAST CORE RUNTIME V3\n'+fs.readFileSync(runtime,'utf8').replace(/\r\n/g,'\n')+'\n// END FORECAST CORE RUNTIME V3\n';
 source=source.replace(/\/\/ BEGIN FORECAST CORE RUNTIME V3[\s\S]*?\/\/ END FORECAST CORE RUNTIME V3\n/g,'');
 source=block+source;
-if(!source.includes('analysis.goalCoreV3 = await recordGoalForecastV3')) {
+if(!source.includes('analysis.goalCoreV3 = await recordGoalForecastV3') && !source.includes('// Independent raw inference runs outside legacy analysis')) {
  const needle='        const candidates = selectionV2.generateCandidates(analysis,quotes,calibrationRow?.payload,context);';
  if(!source.includes(needle))throw Error('Shadow integration point not found');
  source=source.replace(needle,`        try { analysis.goalCoreV3 = await recordGoalForecastV3(env,job,analysis,quotes,decision); }

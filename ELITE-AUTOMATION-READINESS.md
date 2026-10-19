@@ -11,6 +11,7 @@ Monetization and public launch remain blocked until the scheduled product pipeli
 - Elite's own market eligibility is evaluated before choosing one primary per fixture. A higher general-purpose score on an Elite-ineligible market can no longer hide a genuinely eligible alternative. Probability, quality, price and confidence thresholds are unchanged.
 - Qualified overnight combinations are mutable **DRAFT** tickets. Publication starts at 6 a.m. Eastern on the slate date, with fresh quote verification and a current candidate review. A late qualifying combination may publish afterward; an unqualified target remains BUILDING. The clock uses America/New_York, including DST. Drafts have `locked:false` and never enter the official ledger.
 - Existing locked snapshots and publication receipts remain immutable. Daily coverage counts distinct fixtures; diagnostics distinguish rejected markets from multiple qualifying alternatives.
+- Scheduled analysis now reserves time before claiming another fresh job and bounds recovery inside the cycle. Duplicate inline legacy-wrapper and new-core shadow writes were removed from `processOne`; retained wrapper history stays intact, while independent raw forecasts continue in their dedicated scheduled pass. Shadow persistence no longer delays completion of a legacy official analysis.
 
 ## Acceptance evidence
 
