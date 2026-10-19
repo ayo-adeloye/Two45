@@ -8996,6 +8996,18 @@ var worker_default = {
       if (url.pathname === "/api/match-history-status") {
         return json({ok:true,createsPicks:false,status:(await getFeedSnapshot(env,"match-history-v1:status"))?.payload||null});
       }
+      if (url.pathname === "/api/external-intelligence-health" && request.method === "GET") {
+        // Read-only, bounded source coverage. This never runs collection or alters picks.
+        let rows=[];
+        try {
+          rows=arr2(await sb(env,'two45_fixture_evidence?select=fixture_id,source_name,evidence_type,captured_at,expires_at,status&order=captured_at.desc&limit=500',{timeoutMs:3000}));
+        }catch(_error){
+          return json({ok:false,status:"SOURCE_AUDIT_UNAVAILABLE",truncated:false,modelInfluence:false},503);
+        }
+        const now=Date.now(),active=rows.filter(r=>r.status==='ACTIVE'&&Number.isFinite(Date.parse(r.captured_at))&&Date.parse(r.captured_at)<=now&&Number.isFinite(Date.parse(r.expires_at))&&Date.parse(r.expires_at)>now);
+        const fixtures=new Set(active.map(r=>String(r.fixture_id))),sources=[...new Set(active.map(r=>String(r.source_name||'Unknown')))].sort();
+        return json({ok:true,status:active.length?'FRESH_EVIDENCE_PRESENT':'NO_FRESH_EVIDENCE',modelInfluence:false,scanned:rows.length,truncated:rows.length===500,freshRecords:active.length,staleOrUnusableRecords:rows.length-active.length,fixturesWithFreshEvidence:fixtures.size,activeSources:sources,latestCapturedAt:rows[0]?.captured_at||null,automatedExternalCollection:false,commercialPermissionsVerified:false,approvedExternalForecastFeeds:0});
+      }
       if (url.pathname === "/api/match-evidence" && request.method === "GET") {
         const id=Number(url.searchParams.get("fixtureId"));
         if(!Number.isSafeInteger(id)||id<=0)return json({ok:false,error:"A valid fixture is required"},400);
