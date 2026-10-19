@@ -6,6 +6,7 @@ const runtime=fs.readFileSync(new URL('../model-validation-runtime-v1.js',import
 const block='// BEGIN GENERATED VALIDATION ROUTINE V1\nvar shadowEvaluationV1 = (()=>{\nconst {canonical,scoreRows}=selectionV2;\n'+evaluator+'\nreturn {evaluate};\n})();\n'+runtime+'\n// END GENERATED VALIDATION ROUTINE V1\n';
 // Evaluate after the selection bundle initializes and keep the Worker export last.
 if(!worker.includes('result.modelValidation ='))worker=worker.replace('  result.providerBurst = {','  if (minute % 15 === 0) {\n    try { result.modelValidation = await runModelValidationV1(env); }\n    catch(e) { result.modelValidation = {ok:false,error:safeRefreshError(e)}; }\n  }\n  result.providerBurst = {');
+worker=worker.replace('  if (minute % 15 === 0) {\n    try { result.modelValidation','  { // Validation checks its own six-hour cadence and runs on initial deployment.\n    try { result.modelValidation');
 if(!worker.includes('url.pathname === "/api/model-validation"'))worker=worker.replace('      if (url.pathname === "/api/player-research") {','      if (url.pathname === "/api/model-validation") {\n        return json({ok:true,promotionAllowed:false,status:(await getFeedSnapshot(env,"model-validation-v1:status"))?.payload||null});\n      }\n      if (url.pathname === "/api/player-research") {');
 if(!worker.includes('var worker_default = {'))throw Error('Worker entrypoint not found');
 fs.writeFileSync(file,worker.trimEnd().replace('var worker_default = {',block+'var worker_default = {')+'\n');

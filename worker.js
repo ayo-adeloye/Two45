@@ -51,7 +51,7 @@ return {PLAYER_RESEARCH_VERSION,PLAYER_MARKETS,isPlayerMarket,normalizePlayerSta
 async function runPlayerResearchV1(env) {
   const key='player-research-v1:status',now=Date.now(),stamp=new Date(now).toISOString();
   const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
-  if(now-Date.parse(previous?.asOf)<14*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
+  if(now-Date.parse(previous?.asOf)<15*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
   const status={version:playerPropsV1.PLAYER_RESEARCH_VERSION,asOf:stamp,mode:'RESEARCH_ONLY',promotionAllowed:false,
     markets:playerPropsV1.PLAYER_MARKETS,officialPicksCreated:0,providerCalls:0,
     blockers:['PLAYER_HISTORY_ACCUMULATING','EXACT_PLAYER_ID_PRICE_MAPPING_REQUIRED','BOOKMAKER_PLAYER_SETTLEMENT_RULES_REQUIRED','PLAYER_CHRONOLOGICAL_VALIDATION_REQUIRED']};
@@ -8618,11 +8618,11 @@ async function scheduledAnalysisV2(event, env) {
       }
     }
   }
-  if (minute % 15 === 0) {
+  { // Research checks its own cadence, including the first run after deployment.
     try { result.playerResearch = pendingBacklog ? {skipped:true,reason:"PRODUCTION_BACKLOG_FIRST"} : await runPlayerResearchV1(env); }
     catch(e) { result.playerResearch = {ok:false,error:safeRefreshError(e)}; }
   }
-  if (minute % 15 === 0) {
+  { // Validation checks its own six-hour cadence and runs on initial deployment.
     try { result.modelValidation = await runModelValidationV1(env); }
     catch(e) { result.modelValidation = {ok:false,error:safeRefreshError(e)}; }
   }
@@ -8725,7 +8725,13 @@ async function runModelValidationV1(env) {
   const rows=[];let truncated=false;
   for(let offset=0;offset<5000;offset+=500) {
     const page=arr2(await sb(env,'two45_goal_forecasts_v3?generated_at=gte.2026-10-18T00:00:00Z&generated_at=lte.'+encodeURIComponent(asOf)+'&select=id,fixture_id,generated_at,kickoff_at,primary:payload->primary,candidates:payload->candidates,legacy:payload->legacy,protocol:payload->>validationProtocol&order=generated_at.asc,id.asc&limit=500&offset='+offset,{timeoutMs:4000}));
-    rows.push(...page);if(page.length<500)break;if(offset===4500)truncated=true;
+    // Retain only the exact legacy comparison candidate, not every board market.
+    for(const r of page) {
+      const d=r.legacy?.decision;
+      r.candidates=arr2(r.candidates).filter(c=>c.market===d?.market&&selectionV2.canonical(c.selection)===selectionV2.canonical(d?.selection)).slice(0,1);
+      rows.push(r);
+    }
+    if(page.length<500)break;if(offset===4500)truncated=true;
   }
   const frozen=new Map();
   for(const r of rows)if(r.protocol===MIGRATION_PROTOCOL_V2&&Date.parse(r.generated_at)<=Date.parse(r.kickoff_at)-3600000){const old=frozen.get(String(r.fixture_id));if(!old||Date.parse(old.generated_at)<Date.parse(r.generated_at))frozen.set(String(r.fixture_id),r);}

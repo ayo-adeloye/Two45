@@ -10,6 +10,8 @@ c.sb=async(_,path)=>path.startsWith('two45_goal_forecasts')?[base,{...base,id:2,
 (async()=>{
  let r=await c.runModelValidationV1({});assert.equal(r.report.candidate.n,1);assert(Math.abs(r.report.candidate.brier-.09)<1e-9,'A late forecast cannot replace the frozen one-hour snapshot');assert.equal(r.report.promotion.allowed,false);assert.equal(r.report.candidate.priced,1);assert(Math.abs(r.report.candidate.roi-.8)<1e-9);assert.equal(archived.length,1);assert.equal(r.truncated,false);
  conflicted=true;r=await c.runModelValidationV1({});assert.equal(r.excludedConflicts,1);assert.equal(r.report.candidate.n,0);
+ c.sb=async(_,path)=>path.startsWith('two45_goal_forecasts')?Array.from({length:500},(_,i)=>({...base,id:i})):[];
+ r=await c.runModelValidationV1({});assert.equal(r.inputRows,5000);assert.equal(r.truncated,true);assert(r.report.promotion.reasons.includes('BOUNDED_EXPORT_TRUNCATED_FULL_REPLAY_REQUIRED'));
  c.getFeedSnapshot=async()=>({payload:{asOf:new Date().toISOString()}});r=await c.runModelValidationV1({});assert.equal(r.skipped,true);
  console.log('PASS: routine frozen forecast scoring, exact snapshot ROI, conflict exclusion, archived reports and no automatic promotion');
 })().catch(e=>{console.error(e);process.exitCode=1;});

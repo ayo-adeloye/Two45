@@ -1,7 +1,7 @@
 async function runPlayerResearchV1(env) {
   const key='player-research-v1:status',now=Date.now(),stamp=new Date(now).toISOString();
   const previous=(await getFeedSnapshot(env,key).catch(()=>null))?.payload;
-  if(now-Date.parse(previous?.asOf)<14*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
+  if(now-Date.parse(previous?.asOf)<15*60000)return {skipped:true,reason:'RESEARCH_15M_CADENCE'};
   const status={version:playerPropsV1.PLAYER_RESEARCH_VERSION,asOf:stamp,mode:'RESEARCH_ONLY',promotionAllowed:false,
     markets:playerPropsV1.PLAYER_MARKETS,officialPicksCreated:0,providerCalls:0,
     blockers:['PLAYER_HISTORY_ACCUMULATING','EXACT_PLAYER_ID_PRICE_MAPPING_REQUIRED','BOOKMAKER_PLAYER_SETTLEMENT_RULES_REQUIRED','PLAYER_CHRONOLOGICAL_VALIDATION_REQUIRED']};

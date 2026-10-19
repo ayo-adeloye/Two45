@@ -5,7 +5,13 @@ async function runModelValidationV1(env) {
   const rows=[];let truncated=false;
   for(let offset=0;offset<5000;offset+=500) {
     const page=arr2(await sb(env,'two45_goal_forecasts_v3?generated_at=gte.2026-10-18T00:00:00Z&generated_at=lte.'+encodeURIComponent(asOf)+'&select=id,fixture_id,generated_at,kickoff_at,primary:payload->primary,candidates:payload->candidates,legacy:payload->legacy,protocol:payload->>validationProtocol&order=generated_at.asc,id.asc&limit=500&offset='+offset,{timeoutMs:4000}));
-    rows.push(...page);if(page.length<500)break;if(offset===4500)truncated=true;
+    // Retain only the exact legacy comparison candidate, not every board market.
+    for(const r of page) {
+      const d=r.legacy?.decision;
+      r.candidates=arr2(r.candidates).filter(c=>c.market===d?.market&&selectionV2.canonical(c.selection)===selectionV2.canonical(d?.selection)).slice(0,1);
+      rows.push(r);
+    }
+    if(page.length<500)break;if(offset===4500)truncated=true;
   }
   const frozen=new Map();
   for(const r of rows)if(r.protocol===MIGRATION_PROTOCOL_V2&&Date.parse(r.generated_at)<=Date.parse(r.kickoff_at)-3600000){const old=frozen.get(String(r.fixture_id));if(!old||Date.parse(old.generated_at)<Date.parse(r.generated_at))frozen.set(String(r.fixture_id),r);}
