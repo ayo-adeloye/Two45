@@ -1,0 +1,3 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');const s=fs.readFileSync(require('node:path').join(__dirname,'..','worker.js'),'utf8');
+test('match evidence links existing model markets to descriptive pattern shortlist',()=>{assert.match(s,/const patternOpportunities=patternOpportunityShortlistV2\(home,away\)/);assert.match(s,/patternReviewPriority:pattern\?\.rankScore\?\?null/);});
+test('pattern rank is not the reason for publishing a price',()=>{const part=s.slice(s.indexOf('function patternOpportunityShortlistV2('),s.indexOf('function buildMatchEvidence('));assert.match(part,/createsPicks:false/);assert.match(part,/descriptiveOnly:true/);});
