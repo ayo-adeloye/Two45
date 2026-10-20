@@ -7,6 +7,7 @@ on:
     paths:
       - 'worker.js'
       - 'engine2-shadow-runtime-v1.js'
+      - 'tests/engine2-shadow-runtime.cjs'
       - 'scripts/bundle-engine2-shadow-v1.mjs'
       - 'engine2-shadow-adapter.mjs'
       - 'simulation-v2.mjs'
@@ -54,6 +55,7 @@ jobs:
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs
+          node tests/engine2-shadow-runtime.cjs
           node shadow-evaluation-v2.test.mjs
           node tests/publication-v2.cjs
           node tests/record-ask.cjs
