@@ -8277,7 +8277,7 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
   const bookRow=(row.bookmakers||[]).find(b=>String(b.name||'').replace(/[^a-z0-9]/gi,'').toLowerCase()===normalizedBook);
   const observedAt=bookRow?.observedAt||row.observedAt,providerUpdatedAt=bookRow?.providerUpdatedAt||bookRow?.last_update||row.providerUpdatedAt||row.update;
   const observed=Date.parse(observedAt),updated=Date.parse(providerUpdatedAt);
-  if(!Number.isFinite(observed)||!Number.isFinite(updated)||updated>observed||observed>now||updated>now||now-observed>30*60000||now-updated>30*60000)continue;
+  if(!Number.isFinite(observed)||!Number.isFinite(updated)||updated>observed||observed>now||updated>now||now-observed>30*60000||now-updated>180*60000)continue;
   for(const outcome of arr2(group.outcomes)){
    if(ticketSelectionKeyV78(outcome.selection)!==wantedSelection)continue;
    const odds=Number(outcome.odds);
