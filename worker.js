@@ -8241,8 +8241,9 @@ function publishedReasonV81(x) {
     why = "Two45's matchup model favors the " + option.toLowerCase() + " handicap";
   else if (market.includes("CORNERS"))
     why = "Two45's corner model favors the " + option.toLowerCase() + " corner line";
-  const verify = x?.oddsVerification?.status === "CROSS_BOOK_VERIFIED" ? " Price is consistent with DraftKings/FanDuel comparison." : x?.oddsVerification?.status === "BET365_ONLY" ? " Comparison books were unavailable for this exact line, so the price is marked Bet365-only verified." : "";
-  return why + " at Bet365 " + odds.toFixed(2) + ". Model " + prob.toFixed(1) + "% vs " + implied.toFixed(1) + "% implied, edge " + Math.max(0, edge).toFixed(1) + "%." + verify;
+  const book = String(x?.bookmaker || "verified sportsbook").trim();
+  const verify = x?.oddsVerification?.status === "CROSS_BOOK_VERIFIED" ? " Price was checked against additional bookmaker quotes for this exact line." : x?.oddsVerification?.status === "SINGLE_BOOK_VERIFIED" ? " Only one bookmaker quote was available for this exact line." : "";
+  return why + " at " + book + " " + odds.toFixed(2) + ". Model " + prob.toFixed(1) + "% vs " + implied.toFixed(1) + "% implied, edge " + Math.max(0, edge).toFixed(1) + "%." + verify;
 }
 __name(publishedReasonV81, "publishedReasonV81");
 function suspiciousBet365PriceV100(market, selection, odds) {
@@ -8592,7 +8593,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     priceVerifiedMarketCount: pricedPool.length,
     qualifiedBeforeIndependentReview: pricedPool.filter(eliteLegQualityV79).length,
     independentlyHeldCount: review.holds.length,
-    noPickDiagnostic: researchFixtureIds.size === 0 ? "NO_CURRENT_STRONG_RESEARCH" : pricedPool.length === 0 ? "NO_EXACT_BET365_QUOTES" : pricedPool.every(x => !eliteLegQualityV79(x)) ? "ELITE_QUALITY_REJECTION" : review.holds.length && verifiedPool.every(x => x.modelReview?.hold) ? "INDEPENDENT_REVIEW_HOLD" : "NO_QUALIFIED_ODDS_COMBINATION",
+    noPickDiagnostic: researchFixtureIds.size === 0 ? "NO_CURRENT_STRONG_RESEARCH" : pricedPool.length === 0 ? "NO_CURRENT_EXACT_BOOK_QUOTES" : pricedPool.every(x => !eliteLegQualityV79(x)) ? "ELITE_QUALITY_REJECTION" : review.holds.length && verifiedPool.every(x => x.modelReview?.hold) ? "INDEPENDENT_REVIEW_HOLD" : "NO_QUALIFIED_ODDS_COMBINATION",
     pendingVerificationFixtures: [...researchFixtureIds].filter(id=>!verifiedFixtureIds.has(id)),
     exactVerifiedFixtures: new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size,
     rejections: pricedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:[...eliteRejectionReasonsV2(x),...(review.holds.some(h=>String(h.fixtureId)===String(x.fixtureId)&&h.market===x.market&&h.selection===x.selection)?['INDEPENDENT_REVIEW_HOLD']:[])],probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
@@ -8613,7 +8614,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
       ticket: null,
       candidateCount: 0,
       pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: 0 },
-      rule: "Elite no longer waits for unrelated sportsbook pages. It proceeds only when at least two Tier 1/2 STRONG independent-model candidates have exact verified Bet365 prices; otherwise it keeps building."
+      rule: "Elite no longer waits for unrelated sportsbook pages. It proceeds only when at least two Tier 1/2 STRONG independent-model candidates have exact verified approved-bookmaker prices; otherwise it keeps building."
     };
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
     return payload2;
@@ -8634,7 +8635,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     ticket: publish ? lockTicketV70(t, at, b) : t ? {...t,locked:false,draftAt:at,legs:arr2(t.legs).map(x=>({...x,locked:false}))} : null,
     candidateCount: pool.length,
     pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: pool.length, rejectedQuality: pricedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: pricedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
-    rule: "Frozen after publication. Every leg is exact Bet365 verified. Elite can use fresh fixture-level Bet365 verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
+    rule: "Frozen after publication. Every leg is exact verified approved-bookmaker priced. Elite can use fresh fixture-level approved-bookmaker verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
   };
   await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload, 259200);
   return payload;
