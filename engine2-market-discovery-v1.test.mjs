@@ -1,0 +1,5 @@
+import assert from 'node:assert/strict';import{discoverEngine2Markets}from'./engine2-market-discovery-v1.mjs';
+const s={ok:true,mode:'SHADOW',fixtureId:5,generatedAt:'2026-10-20T19:00:00Z',kickoffAt:'2026-10-20T21:00:00Z',qualityHold:false,simulation:{markets:{TOTAL_GOALS:{OVER_2_5:.75,UNDER_3_5:.25}}},marketComparisons:[{bookmaker:'Bet365',market:'TOTAL_GOALS',selection:'OVER_2_5',odds:1.7,observedAt:'2026-10-20T18:55:00Z'},{bookmaker:'Bet365',market:'TOTAL_GOALS',selection:'UNDER_3_5',odds:1.5,observedAt:'2026-10-20T18:55:00Z'}]};
+const r=discoverEngine2Markets(s);assert.equal(r.status,'CANDIDATES');assert.equal(r.candidates.length,1);assert.equal(r.candidates[0].selection,'OVER_2_5');assert.equal(r.promotionAllowed,false);
+assert.equal(discoverEngine2Markets({...s,qualityHold:true}).candidates.length,0);assert.equal(discoverEngine2Markets({...s,marketComparisons:[{...s.marketComparisons[0],observedAt:'2026-10-20T19:01:00Z'}]}).candidates.length,0);
+console.log('PASS independent market discovery: calibrated-input value ranking, freshness, rejection and publication isolation');
