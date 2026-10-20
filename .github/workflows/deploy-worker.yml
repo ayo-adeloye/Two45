@@ -16,6 +16,7 @@ on:
       - 'player-*.js'
       - 'tests/player-*.cjs'
       - 'scripts/bundle-player-research-v1.mjs'
+      - 'model-review-engine2.test.mjs'
       - 'model-validation-runtime-v1.js'
       - 'scripts/bundle-validation-routine-v1.mjs'
       - 'supabase/functions/two45-football-gateway/index.ts'
@@ -43,6 +44,7 @@ jobs:
           node tests/quote-provenance.cjs
           node tests/elite-automation.cjs
           node model-review-v1.test.mjs
+          node model-review-engine2.test.mjs
           node player-props-v1.test.mjs
           node tests/player-research-runtime.cjs
           node tests/football-gateway.cjs

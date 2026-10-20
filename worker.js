@@ -305,7 +305,7 @@ const numeric=x=>x==null||x===''||!Number.isFinite(Number(x))?null:Number(x);
 const probability=x=>{const n=numeric(x);return n==null?null:n>1?n/100:n;};
 
 // A conservative evidence-review policy, not fitted calibration or model promotion.
-function compareModelPick(pick,row,now=Date.now()) {
+function compareModelPick(pick,row,now=Date.now(),simulation=null) {
  const payload=row?.payload||row||{},forecast=payload.forecast||{},context=payload.context||{};
  const market=String(pick.market||'').toUpperCase(),selection=canonical(pick.selection),legacy=probability(pick.probability);
  const core=probability(forecast.probabilities?.[market]?.[selection]),odds=numeric(pick.sportsbookOdds ?? pick.odds);
@@ -328,6 +328,12 @@ function compareModelPick(pick,row,now=Date.now()) {
  const difference=legacy-core,ev=base.independentEV;
  // Material negative-value disagreement sends an already-qualified legacy candidate back for review.
  if(difference>=.10 && ev<=-.05)return {...base,status:'HOLD',reason:'MATERIAL_INDEPENDENT_DISAGREEMENT',hold:true};
+ const sim=probability(simulation?.markets?.[market]?.[selection]);
+ if(sim!=null && sim>=0 && sim<=1 && Number.isFinite(simulation?.monteCarloStandardErrorUpperBound)){
+  const simEV=sim*odds-1;
+  // Engine 2 may challenge a qualified legacy pick but never approve a missing/unsupported candidate.
+  if(simEV<=-.05 && core-sim>=.08)return {...base,status:'HOLD',reason:'ENGINE2_SIMULATION_MATERIAL_NEGATIVE_VALUE',hold:true,simulationProbability:sim,simulationEV:simEV,simulationVersion:simulation.version};
+ }
  if(ev>=.03 && Math.abs(difference)<.10)return {...base,status:'SUPPORTS',reason:'SAME_MARKET_POSITIVE_VALUE_ABOVE_3PCT_EV_FLOOR'};
  return {...base,status:'DIFFERS',reason:'REVIEW_DIFFERENCE_WITHOUT_STRONG_HOLD'};
 }
@@ -363,7 +369,14 @@ async function reviewModelPoolV1(env,picks) {
     }catch(e){error=safeRefreshError(e);}
   }
   const latest=new Map();for(const row of rows)if(!latest.has(String(row.fixture_id)))latest.set(String(row.fixture_id),row);
-  const reviewed=arr2(picks).map(p=>({...p,modelReview:modelReviewV1.compareModelPick(p,latest.get(String(p.fixtureId ?? p.providerMatchId)),now)}));
+  // Deterministic, per-fixture simulation challenger; never originates selections.
+  const simulations=new Map();
+  for(const [fixtureId,row] of latest) {
+    const x=row.forecast?.expectedGoals;
+    if(!x||!(Number.isFinite(x.home)&&Number.isFinite(x.away)&&x.home>0&&x.away>0))continue;
+    try { simulations.set(fixtureId,engine2ShadowV1.simulateMatch({homeExpectedGoals:x.home,awayExpectedGoals:x.away,seed:Number(fixtureId),simulations:3000,logRateSd:.15})); }catch(e){ /* independent review continues unchanged */ }
+  }
+  const reviewed=arr2(picks).map(p=>({...p,modelReview:modelReviewV1.compareModelPick(p,latest.get(String(p.fixtureId ?? p.providerMatchId)),now,simulations.get(String(p.fixtureId ?? p.providerMatchId)))}));
   const holds=reviewed.filter(p=>p.modelReview.hold);let receiptError=null;
   const pending=holds.map(p=>({pick:p,key:JSON.stringify([p.fixtureId ?? p.providerMatchId,p.market,ticketSelectionKeyV78(p.selection),p.modelReview.coreForecastId,p.sportsbookOdds,p.priceObservedAt])})).filter(x=>!modelReviewHoldReceiptsV1.has(x.key));
   if(pending.length)try {

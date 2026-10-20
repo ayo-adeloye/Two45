@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {compareModelPick} from './model-review-v1.mjs';
+const now=Date.parse('2026-10-20T18:00:00Z'),time=x=>new Date(now+x).toISOString();
+const pick={fixtureId:100,market:'TOTAL_GOALS',selection:'UNDER_3_5',probability:.72,sportsbookOdds:1.7,kickoff:time(7200000),priceObservedAt:time(-60000),providerUpdatedAt:time(-120000)};
+const row={id:'f',fixture_id:100,model_id:'m',generated_at:time(-180000),kickoff_at:pick.kickoff,payload:{datasetHash:'a'.repeat(64),context:{sampleSize:20,featureAsOf:time(-240000)},forecast:{modelVersion:'two45-independent-core-v3.1',trainedBefore:time(-3600000),qualityHold:false,dataQuality:.9,evidence:{leagueEffectiveMatches:30},probabilities:{TOTAL_GOALS:{UNDER_3_5:.72}}}}};
+const sim={version:'two45-simulation-v2.0-shadow',monteCarloStandardErrorUpperBound:.01,markets:{TOTAL_GOALS:{UNDER_3_5:.45}}};
+const old=compareModelPick(pick,row,now),challenge=compareModelPick(pick,row,now,sim);
+assert.equal(old.status,'SUPPORTS');assert.equal(challenge.status,'HOLD');assert.equal(challenge.reason,'ENGINE2_SIMULATION_MATERIAL_NEGATIVE_VALUE');
+assert.equal(compareModelPick({...pick,selection:'OVER_3_5'},row,now,sim).status,'UNREVIEWED');
+assert.equal(compareModelPick(pick,row,now,{...sim,markets:{TOTAL_GOALS:{UNDER_3_5:.73}}}).status,'SUPPORTS');
+console.log('PASS Engine2 may veto adverse legacy pick, never generate unsupported pick');
