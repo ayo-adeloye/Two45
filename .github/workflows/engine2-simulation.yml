@@ -5,13 +5,19 @@ on:
       - 'simulation-v2.mjs'
       - 'simulation-v2.test.mjs'
       - 'engine2-shadow-adapter.mjs'
-      - 'engine2-market-discovery-v1.mjs'\n      - 'engine2-market-discovery-v1.test.mjs'\n      - 'engine2-scorecard-v1.mjs'
+      - 'engine2-market-discovery-v1.mjs'
+      - 'engine2-market-discovery-v1.test.mjs'
+      - 'engine2-scorecard-v1.mjs'
       - 'engine2-scorecard-v1.test.mjs'
       - 'engine2-shadow-adapter.test.mjs'
       - '.github/workflows/engine2-simulation.yml'
   push:
     branches: [main]
     paths:
+      - 'engine2-market-discovery-v1.mjs'
+      - 'engine2-market-discovery-v1.test.mjs'
+      - 'engine2-scorecard-v1.mjs'
+      - 'engine2-scorecard-v1.test.mjs'
       - 'simulation-v2.mjs'
       - 'simulation-v2.test.mjs'
       - 'engine2-shadow-adapter.mjs'
@@ -31,4 +37,5 @@ jobs:
       - run: node --check simulation-v2.mjs
       - run: node simulation-v2.test.mjs
       - run: node engine2-shadow-adapter.test.mjs
-      - run: node engine2-scorecard-v1.test.mjs\n      - run: node engine2-market-discovery-v1.test.mjs
+      - run: node engine2-scorecard-v1.test.mjs
+      - run: node engine2-market-discovery-v1.test.mjs
