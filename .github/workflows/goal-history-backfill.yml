@@ -1,0 +1,19 @@
+name: Goal History Backfill Safety
+on:
+  pull_request:
+    paths:
+      - worker.js
+      - tests/goal-history-backfill.test.cjs
+      - .github/workflows/goal-history-backfill.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check worker.js
+      - run: node --test tests/goal-history-backfill.test.cjs

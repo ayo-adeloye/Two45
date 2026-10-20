@@ -584,6 +584,49 @@ function modelMigrationStatusV2() {
     cutover:'No runtime activation flag. A validated release must replace all product publishers together, retire legacy writes and retain the publication ledger and historical locks.'};
 }
 
+// Verified historical-score backfill: one provider request per 15-minute slot.
+// Results become available for training only when observed; never backdate labels.
+function goalBackfillResultV120(row,nowIso) {
+ const f=row?.fixture,l=row?.league,h=row?.teams?.home,a=row?.teams?.away,g=row?.goals;
+ const kickoff=Date.parse(f?.date),now=Date.parse(nowIso),hg=g?.home==null?NaN:Number(g.home),ag=g?.away==null?NaN:Number(g.away);
+ if(!Number.isSafeInteger(Number(f?.id))||Number(f.id)<=0||f?.status?.short!=='FT')return null;
+ if(!Number.isFinite(kickoff)||kickoff>=now||now-kickoff>365*86400000)return null;
+ if(!Number.isSafeInteger(hg)||!Number.isSafeInteger(ag)||hg<0||ag<0||hg>30||ag>30)return null;
+ if(!l?.id||!l?.season||!h?.id||!a?.id||h.id===a.id)return null;
+ return {fixture_id:Number(f.id),league_id:String(l.id),season:String(l.season),
+  home_id:String(h.id),away_id:String(a.id),home_name:String(h.name||''),away_name:String(a.name||''),
+  competition:String(l.name||''),country:String(l.country||''),kickoff_at:new Date(kickoff).toISOString(),
+  home_goals:hg,away_goals:ag,result_available_at:nowIso,final_status:'FT',
+  source_key:'provider-team-history:'+String(h.id)+':'+String(a.id)};
+}
+__name(goalBackfillResultV120,"goalBackfillResultV120");
+async function backfillGoalHistoryV120(env) {
+ const now=new Date(),slot=Math.floor(now.getTime()/900000);
+ if(now.getUTCMinutes()%15!==7)return {skipped:true,reason:'15_MINUTE_CADENCE'};
+ if(providerQuietWindow())return {skipped:true,reason:'PROVIDER_QUIET_WINDOW'};
+ const jobs=arr2(await sb(env,'two45_feature_jobs?kickoff_at=gt.'+encodeURIComponent(now.toISOString())+
+  '&kickoff_at=lt.'+encodeURIComponent(new Date(now.getTime()+36*3600000).toISOString())+
+  '&select=fixture_id,provider_league_id,season,home_team_id,away_team_id,competition,kickoff_at&order=kickoff_at.asc&limit=90',{timeoutMs:3500}));
+ const candidates=jobs.filter(j=>competitionTierV21(j.competition,j.provider_league_id)<=2).flatMap(j=>[j.home_team_id,j.away_team_id]).filter(Boolean);
+ const unique=[...new Set(candidates.map(String))];
+ if(!unique.length)return {skipped:true,reason:'NO_ELIGIBLE_UPCOMING_TEAMS'};
+ // Never compete with match analysis: only one missing team per invocation.
+ for(const team of unique.slice(0,30)) {
+  const historyKey='goal-history-backfill:v120:'+team;
+  const marker=(await getFeedSnapshot(env,historyKey).catch(()=>null))?.payload;
+  if(marker?.slot && slot-Number(marker.slot)<96)continue;
+  const present=arr2(await sb(env,'two45_goal_results_v3?or=(home_id.eq.'+encodeURIComponent(team)+',away_id.eq.'+encodeURIComponent(team)+')&select=fixture_id&limit=16',{timeoutMs:3500}));
+  if(present.length>=16)continue;
+  const response=await providerFetchV18(env,'fixtures',{team,last:'40'});
+  const observedAt=new Date().toISOString();
+  const rows=arr2(response?.response).map(r=>goalBackfillResultV120(r,observedAt)).filter(Boolean);
+  if(rows.length)await sb(env,'two45_goal_results_v3?on_conflict=fixture_id',{method:'POST',prefer:'resolution=ignore-duplicates,return=minimal',timeoutMs:9000,body:JSON.stringify(rows)});
+  await saveFeedSnapshot(env,historyKey,{slot,team,observedAt,returned:arr2(response?.response).length,valid:rows.length,insertAttempted:rows.length},7*86400);
+  return {ok:true,team,validFinals:rows.length,observedAt,trainingAvailableAfter:observedAt};
+ }
+ return {skipped:true,reason:'NO_UNDERCOVERED_TEAM'};
+}
+__name(backfillGoalHistoryV120,"backfillGoalHistoryV120");
 async function runGoalCoreSweepV3(env) {
   // Raw inference must not depend on legacy job completion or provider calls.
   const started=Date.now(),low=new Date(started+5*60000).toISOString(),high=new Date(started+48*3600000).toISOString();
@@ -8752,6 +8795,7 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
   result.watchdog = await runAnalysisWatchdogV2(env);
+  result.goalHistoryBackfill = await backfillGoalHistoryV120(env).catch(e=>({ok:false,error:safeRefreshError(e)}));
   result.forecastCoreTraining = await refreshGoalCoreV3(env);
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
