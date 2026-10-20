@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+const file=new URL('../worker.js',import.meta.url);
+const read=path=>fs.readFileSync(new URL(path,import.meta.url),'utf8').replace(/\r\n/g,'\n');
+const simulation=read('../simulation-v2.mjs').replace(/^export /gm,'');
+const adapter=read('../engine2-shadow-adapter.mjs').replace(/^import .*?;\n/gm,'').replace(/^export /gm,'');
+const runtime=read('../engine2-shadow-runtime-v1.js');
+const block='// BEGIN GENERATED ENGINE2 SHADOW V1\nvar engine2ShadowV1 = (()=>{\n'+simulation+'\n'+adapter+'\nreturn {SIMULATION_VERSION,SHADOW_ADAPTER_VERSION,simulateMatch,comparePricedMarkets,evaluateShadowForecast,scoreShadowOutcome};\n})();\n'+runtime+'\n// END GENERATED ENGINE2 SHADOW V1\n';
+let worker=read('../worker.js').replace(/\/\/ BEGIN GENERATED ENGINE2 SHADOW V1[\s\S]*?\/\/ END GENERATED ENGINE2 SHADOW V1\n/g,'');
+const marker='// END GENERATED FORECAST CORE V3\n';
+if(!worker.includes(marker))throw Error('Missing forecast core marker');
+worker=worker.replace(marker,marker+block);
+fs.writeFileSync(file,worker);

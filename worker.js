@@ -569,6 +569,90 @@ function predictGoals(model,fixture,asOf,context={}) {
 return {CORE_VERSION,fitGoalModel,predictGoals,seasonFeatures,attachSeasonHistory};
 })();
 // END GENERATED FORECAST CORE V3
+// BEGIN GENERATED ENGINE2 SHADOW V1
+var engine2ShadowV1 = (()=>{
+const SIMULATION_VERSION='two45-simulation-v2.0-shadow';
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+function rng(seed){let s=(seed>>>0)||0x9e3779b9;return ()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return(s>>>0)/4294967296;};}
+function normal(r){return Math.sqrt(-2*Math.log(Math.max(r(),1e-12)))*Math.cos(2*Math.PI*r());}
+function poisson(lambda,r){let sum=0,remaining=lambda;while(remaining>0){const part=Math.min(remaining,8),bound=Math.exp(-part);let p=1,k=0;do{p*=r();k++;}while(p>bound);sum+=k-1;remaining-=part;}return sum;}
+function simulateMatch(input){
+ const {homeExpectedGoals:h,awayExpectedGoals:a,simulations:n=20000,seed=42,logRateSd=0}=input||{};
+ if(!Number.isFinite(h)||!Number.isFinite(a)||h<=0||a<=0||h>8||a>8)throw Error('Invalid expected goals');
+ if(!Number.isInteger(n)||n<1000||n>100000)throw Error('Simulation count must be 1000-100000');
+ if(!Number.isInteger(seed)||!Number.isFinite(logRateSd)||logRateSd<0||logRateSd>.75)throw Error('Invalid seed or uncertainty');
+ const r=rng(seed),counts=new Map(),outcomes={HOME:0,DRAW:0,AWAY:0},total=Array(8).fill(0),home=Array(8).fill(0),away=Array(8).fill(0);let btts=0;
+ for(let i=0;i<n;i++){
+  const hg=poisson(clamp(h*Math.exp(logRateSd*normal(r)-.5*logRateSd**2),.01,15),r),ag=poisson(clamp(a*Math.exp(logRateSd*normal(r)-.5*logRateSd**2),.01,15),r);
+  outcomes[hg>ag?'HOME':hg<ag?'AWAY':'DRAW']++;if(hg>0&&ag>0)btts++;counts.set(hg+'-'+ag,(counts.get(hg+'-'+ag)||0)+1);
+  for(let t=0;t<8;t++){if(hg+ag>t)total[t]++;if(hg>t)home[t]++;if(ag>t)away[t]++;}
+ }
+ const p=x=>x/n,markets={MATCH_RESULT:Object.fromEntries(Object.entries(outcomes).map(([k,v])=>[k,p(v)])),BTTS:{YES:p(btts),NO:1-p(btts)}};
+ markets.DOUBLE_CHANCE={HOME_OR_DRAW:1-markets.MATCH_RESULT.AWAY,DRAW_OR_AWAY:1-markets.MATCH_RESULT.HOME,HOME_OR_AWAY:1-markets.MATCH_RESULT.DRAW};
+ for(const [market,values]of [['TOTAL_GOALS',total],['HOME_TEAM_GOALS',home],['AWAY_TEAM_GOALS',away]]){markets[market]={};for(let t=0;t<8;t++){markets[market]['OVER_'+t+'_5']=p(values[t]);markets[market]['UNDER_'+t+'_5']=1-p(values[t]);}}
+ return {version:SIMULATION_VERSION,mode:'SHADOW',promotionAllowed:false,seed,simulations:n,inputs:{homeExpectedGoals:h,awayExpectedGoals:a,logRateSd},markets,topScorelines:[...counts].map(([score,count])=>({score,probability:p(count)})).sort((x,y)=>y.probability-x.probability||x.score.localeCompare(y.score)).slice(0,12),monteCarloStandardErrorUpperBound:1/(2*Math.sqrt(n))};
+}
+function comparePricedMarkets(simulation,quotes,{minExpectedValue=.03}={}){
+ if(simulation?.version!==SIMULATION_VERSION||!Array.isArray(quotes))throw Error('Invalid simulation or quotes');
+ return quotes.flatMap(q=>{const p=simulation.markets[q.market]?.[q.selection];if(p==null||!Number.isFinite(q.odds)||q.odds<=1||!q.observedAt||q.bookmaker!=='Bet365')return [];const expectedValue=p*q.odds-1;return [{market:q.market,selection:q.selection,bookmaker:q.bookmaker,odds:q.odds,observedAt:q.observedAt,probability:p,expectedValue,meetsIndicativeEV:expectedValue>=minExpectedValue,simulationOnly:true}];}).sort((x,y)=>y.expectedValue-x.expectedValue);
+}
+
+const SHADOW_ADAPTER_VERSION='two45-engine2-shadow-adapter-v1';
+const finite=x=>typeof x==='number'&&Number.isFinite(x);
+function evaluateShadowForecast(row,{seed=undefined,simulations=20000,logRateSd=.15,asOf=undefined}={}){
+ const fixture=row?.payload?.fixture,forecast=row?.payload?.forecast;
+ const kickoff=Date.parse(row?.kickoff_at||fixture?.kickoff_at),generated=Date.parse(row?.generated_at);
+ if(!Number.isFinite(generated)||!Number.isFinite(kickoff)||generated>=kickoff)return {ok:false,reason:'NOT_PREMATCH',createsPicks:false};
+ if(asOf!==undefined&&(!Number.isFinite(Date.parse(asOf))||generated>Date.parse(asOf)))return {ok:false,reason:'FORECAST_NOT_YET_AVAILABLE',createsPicks:false};
+ const h=forecast?.expectedGoals?.home,a=forecast?.expectedGoals?.away;
+ if(!finite(h)||!finite(a)||h<=0||a<=0)return {ok:false,reason:'EXPECTED_GOALS_UNAVAILABLE',createsPicks:false};
+ const fixtureId=Number(row.fixture_id??fixture?.fixture_id);
+ if(!Number.isSafeInteger(fixtureId)||fixtureId<=0)return {ok:false,reason:'INVALID_FIXTURE_ID',createsPicks:false};
+ const actualSeed=seed??fixtureId,simulation=simulateMatch({homeExpectedGoals:h,awayExpectedGoals:a,seed:actualSeed,simulations,logRateSd});
+ const observations=(row.payload?.quotes||[]).filter(q=>q.observedAt&&Date.parse(q.observedAt)<=generated&&q.providerUpdatedAt&&Date.parse(q.providerUpdatedAt)<=Date.parse(q.observedAt));
+ const marketComparisons=comparePricedMarkets(simulation,observations).map(x=>({...x,preMatch:true}));
+ return {ok:true,version:SHADOW_ADAPTER_VERSION,sourceVersion:SIMULATION_VERSION,fixtureId,generatedAt:row.generated_at,kickoffAt:row.kickoff_at,modelId:row.model_id,datasetHash:row.payload?.datasetHash||null,mode:'SHADOW',createsPicks:false,promotionAllowed:false,qualityHold:Boolean(forecast.qualityHold),rejectionReasons:forecast.rejectionReasons||[],simulation,marketComparisons};
+}
+function scoreShadowOutcome(shadow,{homeGoals,awayGoals,resultAvailableAt}={}){
+ if(!shadow?.ok||!Number.isInteger(homeGoals)||!Number.isInteger(awayGoals)||homeGoals<0||awayGoals<0||!Number.isFinite(Date.parse(resultAvailableAt))||Date.parse(resultAvailableAt)<=Date.parse(shadow.kickoffAt))return {ok:false,reason:'INVALID_OR_UNAVAILABLE_SETTLEMENT'};
+ const outcome=homeGoals>awayGoals?'HOME':homeGoals<awayGoals?'AWAY':'DRAW',p=shadow.simulation.markets.MATCH_RESULT[outcome];
+ const markets=shadow.marketComparisons.map(c=>{const win=c.market==='MATCH_RESULT'?c.selection===outcome:c.market==='BTTS'?(c.selection==='YES')===(homeGoals>0&&awayGoals>0):c.market==='TOTAL_GOALS'?c.selection.startsWith('OVER_')?(homeGoals+awayGoals)>Number(c.selection.match(/_(\d+)_(\d+)$/)?.slice(1).join('.')||NaN):(homeGoals+awayGoals)<Number(c.selection.match(/_(\d+)_(\d+)$/)?.slice(1).join('.')||NaN):null;return {...c,won:win};});
+ return {ok:true,fixtureId:shadow.fixtureId,marketOutcome:outcome,homeGoals,awayGoals,brier1x2:Object.entries(shadow.simulation.markets.MATCH_RESULT).reduce((s,[key,v])=>s+(v-(key===outcome?1:0))**2,0),logLoss1x2:-Math.log(Math.max(p,1e-12)),markets};
+}
+
+return {SIMULATION_VERSION,SHADOW_ADAPTER_VERSION,simulateMatch,comparePricedMarkets,evaluateShadowForecast,scoreShadowOutcome};
+})();
+// Engine 2.0 read-only shadow sweep. No provider calls and no publication writes.
+async function runEngine2ShadowSweepV1(env) {
+  const now=Date.now(), low=new Date(now+5*60000).toISOString(), high=new Date(now+48*3600000).toISOString();
+  try {
+    const metadata=arr2(await sb(env,'two45_goal_forecasts_v3?kickoff_at=gt.'+encodeURIComponent(low)+'&kickoff_at=lt.'+encodeURIComponent(high)+'&generated_at=gte.'+encodeURIComponent(new Date(now-45*60000).toISOString())+'&select=fixture_id,model_id,generated_at,kickoff_at&order=generated_at.desc&limit=36',{timeoutMs:3500}));
+    const distinct=new Map();for(const row of metadata)if(!distinct.has(String(row.fixture_id)))distinct.set(String(row.fixture_id),row);
+    const completed=[],failures=[];let evaluated=0;
+    for(const row of distinct.values()) {
+      if(evaluated>=2)break;
+      const key='engine2-shadow:v1:'+row.fixture_id;
+      try {
+        const existing=(await getFeedSnapshot(env,key))?.payload;
+        if(existing?.sourceGeneratedAt===row.generated_at&&existing?.modelId===row.model_id)continue;
+        const forecasts=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=eq.'+encodeURIComponent(row.fixture_id)+'&model_id=eq.'+encodeURIComponent(row.model_id)+'&generated_at=eq.'+encodeURIComponent(row.generated_at)+'&select=fixture_id,model_id,generated_at,kickoff_at,payload&limit=1',{timeoutMs:3500}));
+        if(!forecasts.length)continue;
+        const evaluation=engine2ShadowV1.evaluateShadowForecast(forecasts[0],{seed:Number(row.fixture_id),simulations:3000,asOf:new Date(now).toISOString()});
+        const summary=evaluation.ok?{ok:true,version:evaluation.version,mode:'SHADOW',createsPicks:false,promotionAllowed:false,
+          fixtureId:evaluation.fixtureId,sourceGeneratedAt:evaluation.generatedAt,modelId:evaluation.modelId,datasetHash:evaluation.datasetHash,kickoffAt:evaluation.kickoffAt,
+          qualityHold:evaluation.qualityHold,rejectionReasons:evaluation.rejectionReasons,simulationVersion:evaluation.simulation.version,
+          simulations:evaluation.simulation.simulations,inputs:evaluation.simulation.inputs,markets:evaluation.simulation.markets,
+          topScorelines:evaluation.simulation.topScorelines,marketComparisons:evaluation.marketComparisons.slice(0,30)}
+          :{ok:false,reason:evaluation.reason,fixtureId:row.fixture_id,modelId:row.model_id,sourceGeneratedAt:row.generated_at,mode:'SHADOW',createsPicks:false};
+        await saveFeedSnapshot(env,key,summary,14*86400);
+        completed.push({fixtureId:row.fixture_id,ok:summary.ok,reason:summary.reason||null});evaluated++;
+      }catch(e){failures.push({fixtureId:row.fixture_id,error:safeRefreshError(e)});}
+    }
+    return {ok:failures.length===0,mode:'SHADOW',eligibleRecent:distinct.size,processed:completed.length,completed,failures};
+  }catch(e){return {ok:false,mode:'SHADOW',processed:0,error:safeRefreshError(e)};}
+}
+
+// END GENERATED ENGINE2 SHADOW V1
 // BEGIN FORECAST CORE RUNTIME V3
 // The configuration is frozen from development scoring. Daily refreshes never retune on test results.
 const GOAL_CORE_CONFIG_V3 = {teamPenalty:12,halfLifeDays:90,rho:0,seasonWeight:1};
@@ -8811,6 +8895,7 @@ async function scheduledAnalysisV2(event, env) {
   result.goalHistoryBackfill = await backfillGoalHistoryV120(env).catch(e=>({ok:false,error:safeRefreshError(e)}));
   result.forecastCoreTraining = await refreshGoalCoreV3(env);
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
+  result.engine2Shadow = await runEngine2ShadowSweepV1(env);
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
   // Running it every minute re-downloaded up to 1,000 full forecast rows, including
   // large JSON analysis fields, without improving model freshness.
