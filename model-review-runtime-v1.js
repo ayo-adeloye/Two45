@@ -19,7 +19,14 @@ async function reviewModelPoolV1(env,picks) {
     }catch(e){error=safeRefreshError(e);}
   }
   const latest=new Map();for(const row of rows)if(!latest.has(String(row.fixture_id)))latest.set(String(row.fixture_id),row);
-  const reviewed=arr2(picks).map(p=>({...p,modelReview:modelReviewV1.compareModelPick(p,latest.get(String(p.fixtureId ?? p.providerMatchId)),now)}));
+  // Deterministic, per-fixture simulation challenger; never originates selections.
+  const simulations=new Map();
+  for(const [fixtureId,row] of latest) {
+    const x=row.forecast?.expectedGoals;
+    if(!x||!(Number.isFinite(x.home)&&Number.isFinite(x.away)&&x.home>0&&x.away>0))continue;
+    try { simulations.set(fixtureId,engine2ShadowV1.simulateMatch({homeExpectedGoals:x.home,awayExpectedGoals:x.away,seed:Number(fixtureId),simulations:3000,logRateSd:.15})); }catch(e){ /* independent review continues unchanged */ }
+  }
+  const reviewed=arr2(picks).map(p=>({...p,modelReview:modelReviewV1.compareModelPick(p,latest.get(String(p.fixtureId ?? p.providerMatchId)),now,simulations.get(String(p.fixtureId ?? p.providerMatchId)))}));
   const holds=reviewed.filter(p=>p.modelReview.hold);let receiptError=null;
   const pending=holds.map(p=>({pick:p,key:JSON.stringify([p.fixtureId ?? p.providerMatchId,p.market,ticketSelectionKeyV78(p.selection),p.modelReview.coreForecastId,p.sportsbookOdds,p.priceObservedAt])})).filter(x=>!modelReviewHoldReceiptsV1.has(x.key));
   if(pending.length)try {

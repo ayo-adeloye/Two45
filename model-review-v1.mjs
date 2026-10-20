@@ -4,7 +4,7 @@ const numeric=x=>x==null||x===''||!Number.isFinite(Number(x))?null:Number(x);
 const probability=x=>{const n=numeric(x);return n==null?null:n>1?n/100:n;};
 
 // A conservative evidence-review policy, not fitted calibration or model promotion.
-export function compareModelPick(pick,row,now=Date.now()) {
+export function compareModelPick(pick,row,now=Date.now(),simulation=null) {
  const payload=row?.payload||row||{},forecast=payload.forecast||{},context=payload.context||{};
  const market=String(pick.market||'').toUpperCase(),selection=canonical(pick.selection),legacy=probability(pick.probability);
  const core=probability(forecast.probabilities?.[market]?.[selection]),odds=numeric(pick.sportsbookOdds ?? pick.odds);
@@ -27,6 +27,12 @@ export function compareModelPick(pick,row,now=Date.now()) {
  const difference=legacy-core,ev=base.independentEV;
  // Material negative-value disagreement sends an already-qualified legacy candidate back for review.
  if(difference>=.10 && ev<=-.05)return {...base,status:'HOLD',reason:'MATERIAL_INDEPENDENT_DISAGREEMENT',hold:true};
+ const sim=probability(simulation?.markets?.[market]?.[selection]);
+ if(sim!=null && sim>=0 && sim<=1 && Number.isFinite(simulation?.monteCarloStandardErrorUpperBound)){
+  const simEV=sim*odds-1;
+  // Engine 2 may challenge a qualified legacy pick but never approve a missing/unsupported candidate.
+  if(simEV<=-.05 && core-sim>=.08)return {...base,status:'HOLD',reason:'ENGINE2_SIMULATION_MATERIAL_NEGATIVE_VALUE',hold:true,simulationProbability:sim,simulationEV:simEV,simulationVersion:simulation.version};
+ }
  if(ev>=.03 && Math.abs(difference)<.10)return {...base,status:'SUPPORTS',reason:'SAME_MARKET_POSITIVE_VALUE_ABOVE_3PCT_EV_FLOOR'};
  return {...base,status:'DIFFERS',reason:'REVIEW_DIFFERENCE_WITHOUT_STRONG_HOLD'};
 }
