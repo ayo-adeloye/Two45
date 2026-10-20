@@ -1,0 +1,23 @@
+name: Pattern First Safety
+on:
+  pull_request:
+    paths:
+      - 'worker.js'
+      - 'tests/pattern-*.test.cjs'
+      - '.github/workflows/pattern-first-safety.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse entire Worker
+        run: node --check worker.js
+      - name: Run pattern and source regression tests
+        run: node --test tests/pattern-first-evidence.test.cjs tests/pattern-opportunity-shortlist.test.cjs
