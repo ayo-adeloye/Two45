@@ -10,7 +10,7 @@ async function runEngine2ShadowSweepV1(env) {
       const key='engine2-shadow:v1:'+row.fixture_id;
       try {
         const existing=(await getFeedSnapshot(env,key))?.payload;
-        if(existing?.sourceGeneratedAt===row.generated_at&&existing?.modelId===row.model_id)continue;
+        if(existing?.sourceGeneratedAt===row.generated_at&&existing?.modelId===row.model_id&&existing?.discovery?.version==='engine2-market-discovery-v1')continue;
         const forecasts=arr2(await sb(env,'two45_goal_forecasts_v3?fixture_id=eq.'+encodeURIComponent(row.fixture_id)+'&model_id=eq.'+encodeURIComponent(row.model_id)+'&generated_at=eq.'+encodeURIComponent(row.generated_at)+'&select=fixture_id,model_id,generated_at,kickoff_at,payload&limit=1',{timeoutMs:3500}));
         if(!forecasts.length)continue;
         const evaluation=engine2ShadowV1.evaluateShadowForecast(forecasts[0],{seed:Number(row.fixture_id),simulations:3000,asOf:new Date(now).toISOString()});
