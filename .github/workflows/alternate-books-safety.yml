@@ -4,6 +4,7 @@ on:
     paths:
       - worker.js
       - tests/alternate-book-prices.test.cjs
+      - tests/approved-book-paths.test.cjs
       - .github/workflows/alternate-books-safety.yml
 permissions:
   contents: read
@@ -16,4 +17,4 @@ jobs:
         with:
           node-version: '22'
       - run: node --check worker.js
-      - run: node --test tests/alternate-book-prices.test.cjs
+      - run: node --test tests/alternate-book-prices.test.cjs tests/approved-book-paths.test.cjs

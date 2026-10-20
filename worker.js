@@ -1620,7 +1620,7 @@ function formatBoardSelectionsV20(payload) {
     if (!item || typeof item !== "object")
       return false;
     const price = num4(item.sportsbookOdds, 0);
-    return !price || cleanBookV64(item.bookmaker) === "bet365";
+    return !price || ["bet365","draftkings","pinnacle","williamhill","marathonbet"].includes(cleanBookV64(item.bookmaker));
   }, "allowedPriceV64");
   const formatItem = /* @__PURE__ */ __name((item) => {
     if (!item || typeof item !== "object")
@@ -6592,7 +6592,7 @@ __name(mergeOddsV18, "mergeOddsV18");
 function bet365RowsV68(rows) {
   return arr2(rows).filter(
     (row) => arr2(row?.bookmakers).some(
-      (book) => String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "bet365"
+      (book) => ["bet365","draftkings","pinnacle","williamhill","marathonbet"].includes(String(book?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""))
     )
   );
 }
