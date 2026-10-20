@@ -615,9 +615,10 @@ async function backfillGoalHistoryV120(env) {
  for(const team of ordered.slice(0,30)) {
   const historyKey='goal-history-backfill:v120:'+team;
   const marker=(await getFeedSnapshot(env,historyKey).catch(()=>null))?.payload;
-  if(marker?.slot && slot-Number(marker.slot)<288)continue;
+  const markerAt=Date.parse(marker?.observedAt);
+  if(Number.isFinite(markerAt)&&markerAt<=now.getTime()&&now.getTime()-markerAt<24*3600000)continue;
   const present=arr2(await sb(env,'two45_goal_results_v3?or=(home_id.eq.'+encodeURIComponent(team)+',away_id.eq.'+encodeURIComponent(team)+')&select=fixture_id&limit=30',{timeoutMs:3500}));
-  if(present.length>=30)continue;
+  if(present.length>=24)continue;
   const response=await providerFetchV18(env,'fixtures',{team,last:'60'});
   const observedAt=new Date().toISOString();
   const rows=arr2(response?.response).map(r=>goalBackfillResultV120(r,observedAt)).filter(Boolean);
