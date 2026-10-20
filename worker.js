@@ -44,6 +44,28 @@ function profile(rows,id,venue,job) {
  const lastFive=(list)=>{const a=list.slice(0,5),n=a.length;const matches=a.map(r=>{const home=String(r.home_id)===String(id),gf=home?r.home_goals:r.away_goals,ga=home?r.away_goals:r.home_goals;return {fixtureId:r.fixture_id,kickoff:r.kickoff_at,competitionId:r.league_id,venue:home?'HOME':'AWAY',goalsFor:gf,goalsAgainst:ga,won:gf>ga,btts:gf>0&&ga>0,over25:gf+ga>=3,scored:gf>0,conceded:ga>0};});const count=fn=>matches.filter(fn).length;return {sampleSize:n,scope:'COMPLETED_MATCHES_BEFORE_AS_OF',matches,scored:count(x=>x.scored),conceded:count(x=>x.conceded),btts:count(x=>x.btts),over25:count(x=>x.over25),wins:count(x=>x.won),scoredTwoPlus:count(x=>x.goalsFor>=2),concededTwoPlus:count(x=>x.goalsAgainst>=2)};};
  return {lastFiveAllCompetitions:lastFive(all),lastFiveAtVenue:lastFive(all.filter(r=>String(venue==='home'?r.home_id:r.away_id)===String(id))),recent:summarize(league),venue:summarize(league.filter(r=>String(venue==='home'?r.home_id:r.away_id)===String(id))),lastCompletedKickoff:all[0]?.kickoff_at||null,daysSinceLastCompletedKickoff:all.length?(stamp(job.kickoff_at)-stamp(all[0].kickoff_at))/86400000:null,completedMatchesLast14Days:all.length?all.filter(r=>stamp(job.kickoff_at)-stamp(r.kickoff_at)<=14*86400000).length:null};
 }
+// Discovery only: pattern evidence ranks markets but never creates a bet or a probability.
+function patternOpportunityShortlistV2(home,away) {
+ const h=home.lastFiveAllCompetitions,a=away.lastFiveAllCompetitions,
+       hv=home.lastFiveAtVenue,av=away.lastFiveAtVenue;
+ const candidates=[
+  {market:'TOTAL_GOALS',selection:'OVER_2_5',indicators:[['Home last-five Over 2.5',h.over25,h.sampleSize],['Away last-five Over 2.5',a.over25,a.sampleSize],['Home venue Over 2.5',hv.over25,hv.sampleSize],['Away venue Over 2.5',av.over25,av.sampleSize]]},
+  {market:'BTTS',selection:'YES',indicators:[['Home last-five BTTS',h.btts,h.sampleSize],['Away last-five BTTS',a.btts,a.sampleSize],['Home venue BTTS',hv.btts,hv.sampleSize],['Away venue BTTS',av.btts,av.sampleSize]]},
+  {market:'HOME_TEAM_GOALS',selection:'OVER_1_5',indicators:[['Home scored twice',h.scoredTwoPlus,h.sampleSize],['Away conceded twice',a.concededTwoPlus,a.sampleSize],['Home venue scored twice',hv.scoredTwoPlus,hv.sampleSize],['Away venue conceded twice',av.concededTwoPlus,av.sampleSize]]},
+  {market:'AWAY_TEAM_GOALS',selection:'OVER_1_5',indicators:[['Away scored twice',a.scoredTwoPlus,a.sampleSize],['Home conceded twice',h.concededTwoPlus,h.sampleSize],['Away venue scored twice',av.scoredTwoPlus,av.sampleSize],['Home venue conceded twice',hv.concededTwoPlus,hv.sampleSize]]},
+  {market:'TOTAL_GOALS',selection:'OVER_1_5',indicators:[['Home scored',h.scored,h.sampleSize],['Away scored',a.scored,a.sampleSize],['Home venue scored',hv.scored,hv.sampleSize],['Away venue scored',av.scored,av.sampleSize]]}
+ ];
+ return candidates.map(c=>{
+   const observations=c.indicators.filter(i=>i[2]>0).map(([label,hits,sampleSize])=>({label,hits,sampleSize}));
+   const coverage=observations.reduce((v,i)=>v+i.sampleSize,0);
+   const weightedHits=observations.reduce((v,i)=>v+i.hits,0);
+   // Descriptive pattern frequency, NOT event probability or expected betting value.
+   const descriptiveRate=coverage ? weightedHits/coverage : null;
+   const provisional= h.sampleSize<3||a.sampleSize<3 || hv.sampleSize<2||av.sampleSize<2;
+   return {market:c.market,selection:c.selection,rankScore:descriptiveRate===null?null:Math.round(descriptiveRate*1000)/10,descriptiveOnly:true,createsPicks:false,coverage,provisional,indicators:observations,
+     warnings:[...(provisional?['Small or missing five-game/venue sample']:[]),'Indicators overlap and are not independent observations','Not adjusted for opponent strength or injuries','Must be calibrated and price-verified before any publication']};
+ }).sort((x,y)=>(y.rankScore??-1)-(x.rankScore??-1));
+}
 function buildMatchEvidence({job,asOf,results=[],conflicts=[],analysis={},candidates=[],availability={},sourceErrors=[],truncated=false}) {
  const rows=cleanEvidenceResults(results,job,asOf,conflicts),home=profile(rows,job.home_team_id,'home',job),away=profile(rows,job.away_team_id,'away',job),risks=[];
  if(home.recent.matches<8||away.recent.matches<8)risks.push('Fewer than eight recent same-league matches for at least one team.');
@@ -70,12 +92,12 @@ function buildMatchEvidence({job,asOf,results=[],conflicts=[],analysis={},candid
  });
  return {version:EVIDENCE_VERSION,fixtureId:Number(job.fixture_id),asOf,kickoff:job.kickoff_at,mode:'EVIDENCE_REVIEW',createsPicks:false,confidenceBoost:0,
   summary:'Compare each exact market with its evidence and downside. Historical rates and stress scenarios do not replace validated probabilities.',
-  home,away,expectedGoals:analysis.expectedGoals||null,lineupsConfirmed:confirmed,injuryCoverage:availabilityFresh&&!availability.injuriesError&&Array.isArray(availability.injuries)?'REPORTED':'UNKNOWN',
+  home,away,patternOpportunities:patternOpportunityShortlistV2(home,away),expectedGoals:analysis.expectedGoals||null,lineupsConfirmed:confirmed,injuryCoverage:availabilityFresh&&!availability.injuriesError&&Array.isArray(availability.injuries)?'REPORTED':'UNKNOWN',
   modelGeneratedAt:analysis.generatedAt||null,historyFixtures:rows.length,historyAvailableAtMax:rows.length?new Date(Math.max(...rows.map(r=>stamp(r.result_available_at)))).toISOString():null,
   risks,sourceErrors,markets,limitations:['Historical event intervals describe the retained sample, not a calibrated probability for this fixture.','Opponent-adjusted forecasting comes from the independent raw model; venue frequencies are descriptive.','No invented motivation, tactical, injury-impact or player-minute assumptions.']};
 }
 
-return {EVIDENCE_VERSION,cleanEvidenceResults,buildMatchEvidence,evidenceOutcome,eliteEvidenceRequirements};
+return {EVIDENCE_VERSION,cleanEvidenceResults,buildMatchEvidence,evidenceOutcome,eliteEvidenceRequirements,patternOpportunityShortlistV2};
 })();
 async function getMatchEvidenceV1(env,fixtureId,{force=false}={}) {
  if(!Number.isSafeInteger(Number(fixtureId))||Number(fixtureId)<=0)throw Error('A valid fixture is required');
