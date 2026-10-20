@@ -1,0 +1,2 @@
+export function brier1x2(probabilities,result){const labels=['HOME','DRAW','AWAY'];if(!labels.includes(result)||labels.some(k=>!Number.isFinite(probabilities?.[k])))throw Error('Invalid prediction');return labels.reduce((s,k)=>s+(probabilities[k]-(k===result?1:0))**2,0);}
+export function logLoss1x2(probabilities,result){if(!['HOME','DRAW','AWAY'].includes(result)||!Number.isFinite(probabilities?.[result]))throw Error('Invalid prediction');return -Math.log(Math.max(1e-12,probabilities[result]));}
