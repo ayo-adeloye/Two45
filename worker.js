@@ -599,7 +599,7 @@ function goalBackfillResultV120(row,nowIso) {
   home_goals:hg,away_goals:ag,result_available_at:nowIso,final_status:'FT',
   source_key:'provider-team-history:'+String(h.id)+':'+String(a.id)};
 }
-__name(goalBackfillResultV120,"goalBackfillResultV120");
+
 async function backfillGoalHistoryV120(env) {
  const now=new Date(),slot=Math.floor(now.getTime()/900000);
  if(now.getUTCMinutes()%15!==7)return {skipped:true,reason:'15_MINUTE_CADENCE'};
@@ -626,7 +626,7 @@ async function backfillGoalHistoryV120(env) {
  }
  return {skipped:true,reason:'NO_UNDERCOVERED_TEAM'};
 }
-__name(backfillGoalHistoryV120,"backfillGoalHistoryV120");
+
 async function runGoalCoreSweepV3(env) {
   // Raw inference must not depend on legacy job completion or provider calls.
   const started=Date.now(),low=new Date(started+5*60000).toISOString(),high=new Date(started+48*3600000).toISOString();
