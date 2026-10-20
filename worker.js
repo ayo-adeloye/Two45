@@ -8456,11 +8456,14 @@ function recoverEliteBoardHandoffV119(presented,stored,games,canonicalRows,now=D
   const created=Date.parse(p?.generatedAt||p?.createdAt||'');
   return Number.isFinite(created)&&created<=now&&created<Date.parse(f?.fixture?.date||0);
  });
- const canonicalAvailable=arr2(canonicalRows).some(r=>r?.status==='COMPLETE');
- if(canonicalAvailable||!candidates.length||arr2(presented?.strongPicks).length)return presented;
- return {...presented,strongPicks:candidates,picks:candidates,
+ const canonicalIds=new Set(arr2(canonicalRows).filter(r=>r?.status==='COMPLETE').map(r=>String(r.fixture_id)));
+ const presentIds=new Set(arr2(presented?.strongPicks).map(p=>String(p.fixtureId??p.providerMatchId)));
+ const missing=candidates.filter(p=>!canonicalIds.has(String(p.fixtureId??p.providerMatchId))&&!presentIds.has(String(p.fixtureId??p.providerMatchId)));
+ if(!missing.length)return presented;
+ return {...presented,strongPicks:[...arr2(presented?.strongPicks),...missing],
+   picks:[...arr2(presented?.picks),...missing],
    analyzedCount:Math.max(num4(presented?.analyzedCount,0),num4(stored?.analyzedCount,0)),
-   handoffRecovery:{source:'stored-independent-model-board',candidateCount:candidates.length,requiresFreshOdds:true,publicationAuthorized:false}};
+   handoffRecovery:{source:'stored-independent-model-board',candidateCount:missing.length,requiresFreshOdds:true,publicationAuthorized:false}};
 }
 __name(recoverEliteBoardHandoffV119,"recoverEliteBoardHandoffV119");
 async function ticketBoardV70(env, date) {
