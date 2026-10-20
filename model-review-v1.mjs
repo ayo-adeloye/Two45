@@ -27,7 +27,7 @@ export function compareModelPick(pick,row,now=Date.now()) {
  const difference=legacy-core,ev=base.independentEV;
  // Material negative-value disagreement sends an already-qualified legacy candidate back for review.
  if(difference>=.10 && ev<=-.05)return {...base,status:'HOLD',reason:'MATERIAL_INDEPENDENT_DISAGREEMENT',hold:true};
- if(ev>0 && Math.abs(difference)<.10)return {...base,status:'SUPPORTS',reason:'SAME_MARKET_POSITIVE_VALUE'};
+ if(ev>=.03 && Math.abs(difference)<.10)return {...base,status:'SUPPORTS',reason:'SAME_MARKET_POSITIVE_VALUE_ABOVE_3PCT_EV_FLOOR'};
  return {...base,status:'DIFFERS',reason:'REVIEW_DIFFERENCE_WITHOUT_STRONG_HOLD'};
 }
 
