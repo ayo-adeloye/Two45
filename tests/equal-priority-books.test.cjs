@@ -1,0 +1,11 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync(require('node:path').join(__dirname,'..','worker.js'),'utf8');
+const a=source.indexOf('function exactPreferredBookQuoteV118('),b=source.indexOf('__name(exactPreferredBookQuoteV118,',a);assert.ok(a>=0&&b>a);
+const ctx={Date,Number,String,Map,Set,Math,arr2:v=>Array.isArray(v)?v:[],ticketSelectionKeyV78:v=>String(v||'').toUpperCase(),suspiciousBet365PriceV100:()=>false,oddsMarketsForBooksV81:(p,id,books)=>p.testGroups.filter(g=>books.includes(g.bookmaker))};vm.createContext(ctx);vm.runInContext(source.slice(a,b)+';globalThis.quote=exactPreferredBookQuoteV118;',ctx);
+const now=Date.parse('2026-10-20T12:00:00Z'),fresh='2026-10-20T11:55:00Z';
+const g=(bookmaker,odds)=>({market:'TOTAL_GOALS',bookmaker,rawMarket:'Goals Over/Under',outcomes:[{selection:'OVER_2_5',rawSelection:'Over 2.5',odds},{selection:'UNDER_2_5',rawSelection:'Under 2.5',odds:1.9}]});
+const payload=(groups,ts=fresh)=>({response:[{fixture:{id:7},observedAt:ts,providerUpdatedAt:ts,bookmakers:groups.map(g=>({name:g.bookmaker}))}],testGroups:groups});
+test('DraftKings works as the sole approved source',()=>{const q=ctx.quote(payload([g('DraftKings',1.85)]),7,'TOTAL_GOALS','OVER_2_5',now);assert.equal(q.bookmaker,'DraftKings');assert.equal(q.odds,1.85);});
+test('higher qualified book price wins without relabeling',()=>{const q=ctx.quote(payload([g('Bet365',1.75),g('DraftKings',1.85)]),7,'TOTAL_GOALS','OVER_2_5',now);assert.equal(q.bookmaker,'DraftKings');});
+test('stale provider data is not called verified',()=>{const p=payload([g('DraftKings',1.85)],'2026-10-20T10:00:00Z');assert.equal(ctx.quote(p,7,'TOTAL_GOALS','OVER_2_5',now),null);});
+test('conflicting prices from same book are rejected',()=>{const p=payload([g('DraftKings',1.8),g('DraftKings',1.9)]);assert.equal(ctx.quote(p,7,'TOTAL_GOALS','OVER_2_5',now),null);});
