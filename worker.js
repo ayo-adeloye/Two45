@@ -638,13 +638,15 @@ async function runGoalCoreSweepV3(env) {
     if(!jobs.length)return {ok:true,processed:0,reason:'NO_PREMATCH_FIXTURES'};
     const ids=jobs.map(j=>Number(j.fixture_id)).filter(Number.isFinite).join(',');
     let priorityError=null;
-    const [recentRows,priorityRows]=await Promise.all([
-      sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id&limit=1000',{timeoutMs:3000}),
-      sb(env,'two45_analysis_state?fixture_id=in.('+ids+')&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&decision=eq.PICK&status=eq.COMPLETE&select=fixture_id&limit=120',{timeoutMs:2500}).catch(e=>{priorityError=safeRefreshError(e);return [];})
+    const [recentRows,priorityRows,trainingSnapshot]=await Promise.all([
+      sb(env,'two45_goal_forecasts_v3?fixture_id=in.('+ids+')&generated_at=gte.'+encodeURIComponent(new Date(started-30*60000).toISOString())+'&select=fixture_id,model_id&limit=1000',{timeoutMs:3000}),
+      sb(env,'two45_analysis_state?fixture_id=in.('+ids+')&model_version=eq.'+encodeURIComponent(MODEL_VERSION)+'&decision=eq.PICK&status=eq.COMPLETE&select=fixture_id&limit=120',{timeoutMs:2500}).catch(e=>{priorityError=safeRefreshError(e);return [];}),
+      getFeedSnapshot(env,'forecast-core-v3:training-status').catch(()=>null)
     ]);
     const recent=arr2(recentRows),priority=new Set(arr2(priorityRows).map(r=>String(r.fixture_id)));
     jobs.sort((a,b)=>Number(priority.has(String(b.fixture_id)))-Number(priority.has(String(a.fixture_id))) || Date.parse(a.kickoff_at)-Date.parse(b.kickoff_at));
-    const seen=new Set(recent.map(r=>String(r.fixture_id))),results=[],daily=new Map();
+    const activeModelId=trainingSnapshot?.payload?.state==='READY'?trainingSnapshot.payload.modelId:null;
+    const seen=new Set(recent.filter(r=>!activeModelId||String(r.model_id)===String(activeModelId)).map(r=>String(r.fixture_id))),results=[],daily=new Map();
     for(const job of jobs.filter(j=>!seen.has(String(j.fixture_id))).slice(0,2)) {
       if(Date.now()-started>10000)break;
       try {
