@@ -98,28 +98,37 @@ async function runGoalCoreSweepV3(env) {
 async function refreshGoalCoreV3(env) {
   const now=new Date(),asOf=now.toISOString(),date=asOf.slice(0,10),statusKey='forecast-core-v3:training-status';
   const status=(await getFeedSnapshot(env,statusKey).catch(()=>null))?.payload;
-  if(status?.date===date&&status?.state==='READY')return {skipped:true,...status};
   if(status?.state==='RUNNING'&&Date.now()-Date.parse(status.startedAt)<15*60000)return {skipped:true,reason:'TRAINING_IN_PROGRESS'};
   if(Date.parse(status?.retryAfter)>Date.now())return {skipped:true,reason:'TRAINING_RETRY_BACKOFF'};
   try {
-    const existing=arr2(await sb(env,'two45_goal_model_artifacts_v3?model_version=eq.'+encodeURIComponent(forecastCoreV3.CORE_VERSION)+'&select=id,trained_before&order=trained_before.desc&limit=1'))[0];
-    if(existing?.trained_before?.slice(0,10)===date) {
-      const result={state:'READY',date,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW'};
-      await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
+    const existing=arr2(await sb(env,'two45_goal_model_artifacts_v3?model_version=eq.'+encodeURIComponent(forecastCoreV3.CORE_VERSION)+'&select=id,trained_before,dataset_hash&order=trained_before.desc&limit=1'))[0];
+    const recent=existing?.trained_before&&Date.now()-Date.parse(existing.trained_before)<90*60000;
+    if(recent) {
+      const result={state:'READY',date,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW',datasetHash:existing.dataset_hash,reason:'RECENT_MODEL_ARTIFACT'};
+      await saveFeedSnapshot(env,statusKey,result,365*86400);return {skipped:true,...result};
     }
-    await saveFeedSnapshot(env,statusKey,{state:'RUNNING',date,startedAt:asOf,mode:'SHADOW'},365*86400);
+    // Historical backfill may finish after midnight training. Check the as-of corpus fingerprint
+    // before deciding that today's immutable artifact is sufficient.
+    const hash=await sb(env,'rpc/two45_goal_dataset_hash_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
+    if(!/^[a-f0-9]{64}$/.test(String(hash)))throw Error('Training dataset hash unavailable');
+    if(existing?.dataset_hash===hash) {
+      const result={state:'READY',date,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW',datasetHash:hash,reason:'TRAINING_CORPUS_UNCHANGED',checkedAt:asOf};
+      await saveFeedSnapshot(env,statusKey,result,365*86400);return {skipped:true,...result};
+    }
+    if(status?.checkedAt&&Date.now()-Date.parse(status.checkedAt)<30*60000)return {skipped:true,reason:'TRAINING_RECHECK_COOLDOWN'};
+    await saveFeedSnapshot(env,statusKey,{state:'RUNNING',date,startedAt:asOf,mode:'SHADOW',previousModelId:existing?.id||null},365*86400);
     const data=await sb(env,'rpc/two45_goal_training_data_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
     if(!data||data.truncated)throw Error('Training corpus unavailable or exceeded declared bounds');
     const inputs=forecastCoreV3.attachSeasonHistory(data.fixtures,data.features);
     const parameters=forecastCoreV3.fitGoalModel(inputs,asOf,GOAL_CORE_CONFIG_V3);
     if(parameters.trainingFixtures<100||parameters.fit.lastStep>.001)throw Error('Insufficient training data or optimizer did not converge');
     parameters.calibration=await sb(env,'rpc/two45_goal_calibration_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf})});
-    const hash=await sb(env,'rpc/two45_goal_dataset_hash_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
-    if(!/^[a-f0-9]{64}$/.test(String(hash)))throw Error('Training dataset hash unavailable');
+    // Never overwrite a previously trained artifact: every distinct as-of corpus has its own key.
     const saved=arr2(await sb(env,'two45_goal_model_artifacts_v3?on_conflict=artifact_key',{method:'POST',prefer:'resolution=ignore-duplicates,return=representation',timeoutMs:15000,
-      body:JSON.stringify({artifact_key:forecastCoreV3.CORE_VERSION+':'+date,model_version:forecastCoreV3.CORE_VERSION,trained_before:asOf,dataset_hash:hash,parameters,
+      body:JSON.stringify({artifact_key:forecastCoreV3.CORE_VERSION+':'+date+':'+hash,model_version:forecastCoreV3.CORE_VERSION,trained_before:asOf,dataset_hash:hash,parameters,
       validation:{promotionAllowed:false,phase:'PROSPECTIVE_SHADOW',historicalGate:'FAILED_PAIRED_BRIER_AND_LOG_LOSS',configuration:'development-frozen; no automatic retuning'}})}))[0];
-    const result={state:'READY',date,modelId:saved?.id||null,trainedBefore:asOf,trainingFixtures:parameters.trainingFixtures,mode:'SHADOW',datasetHash:hash};
+    if(!saved?.id)throw Error('New training artifact not persisted');
+    const result={state:'READY',date,modelId:saved.id,trainedBefore:asOf,trainingFixtures:parameters.trainingFixtures,mode:'SHADOW',datasetHash:hash,checkedAt:asOf,reason:'UPDATED_HISTORY_CORPUS'};
     await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
   }catch(e) {
     const result={state:'FAILED',date,error:safeRefreshError(e),retryAfter:new Date(Date.now()+3600000).toISOString(),mode:'SHADOW'};
