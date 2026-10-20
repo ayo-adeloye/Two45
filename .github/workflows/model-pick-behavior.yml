@@ -1,0 +1,19 @@
+name: Model Pick Behavior Safety
+on:
+  pull_request:
+    paths:
+      - worker.js
+      - tests/model-pick-behavior.test.cjs
+      - .github/workflows/model-pick-behavior.yml
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check worker.js
+      - run: node --test tests/model-pick-behavior.test.cjs tests/alternate-book-prices.test.cjs tests/approved-book-paths.test.cjs
