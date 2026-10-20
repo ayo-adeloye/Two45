@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - 'worker.js'
-      - 'engine2-settlement-runtime-v1.js'
       - 'engine2-shadow-runtime-v1.js'
       - 'tests/engine2-shadow-runtime.cjs'
       - 'scripts/bundle-engine2-shadow-v1.mjs'
@@ -57,6 +56,7 @@ jobs:
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs
           node tests/engine2-shadow-runtime.cjs
+          node tests/engine2-settlement-runtime.cjs
           node shadow-evaluation-v2.test.mjs
           node tests/publication-v2.cjs
           node tests/record-ask.cjs
