@@ -56,6 +56,7 @@ jobs:
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs
           node tests/engine2-shadow-runtime.cjs
+          node tests/engine2-settlement-runtime.cjs
           node shadow-evaluation-v2.test.mjs
           node tests/publication-v2.cjs
           node tests/record-ask.cjs
