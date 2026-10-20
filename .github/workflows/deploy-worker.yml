@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'worker.js'
+      - 'engine2-market-discovery-v1.mjs'
       - 'engine2-shadow-runtime-v1.js'
       - 'tests/engine2-shadow-runtime.cjs'
       - 'scripts/bundle-engine2-shadow-v1.mjs'
@@ -57,6 +58,7 @@ jobs:
           node forecast-core-v3.test.mjs
           node tests/forecast-core-runtime-v3.cjs
           node tests/forecast-core-sweep.cjs
+          node engine2-market-discovery-v1.test.mjs
           node tests/engine2-shadow-runtime.cjs
           node tests/engine2-settlement-runtime.cjs
           node shadow-evaluation-v2.test.mjs

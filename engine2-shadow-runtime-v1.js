@@ -18,7 +18,7 @@ async function runEngine2ShadowSweepV1(env) {
           fixtureId:evaluation.fixtureId,sourceGeneratedAt:evaluation.generatedAt,modelId:evaluation.modelId,datasetHash:evaluation.datasetHash,kickoffAt:evaluation.kickoffAt,
           qualityHold:evaluation.qualityHold,rejectionReasons:evaluation.rejectionReasons,simulationVersion:evaluation.simulation.version,
           simulations:evaluation.simulation.simulations,inputs:evaluation.simulation.inputs,markets:evaluation.simulation.markets,
-          topScorelines:evaluation.simulation.topScorelines,marketComparisons:evaluation.marketComparisons.slice(0,30)}
+          topScorelines:evaluation.simulation.topScorelines,marketComparisons:evaluation.marketComparisons.slice(0,30),discovery:engine2ShadowV1.discoverEngine2Markets(evaluation)}
           :{ok:false,reason:evaluation.reason,fixtureId:row.fixture_id,modelId:row.model_id,sourceGeneratedAt:row.generated_at,mode:'SHADOW',createsPicks:false};
         await saveFeedSnapshot(env,key,summary,14*86400);
         completed.push({fixtureId:row.fixture_id,ok:summary.ok,reason:summary.reason||null});evaluated++;
