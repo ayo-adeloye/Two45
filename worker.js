@@ -76,6 +76,7 @@ function buildMatchEvidence({job,asOf,results=[],conflicts=[],analysis={},candid
  if(!availabilityFresh||availability.injuriesError||!Array.isArray(availability.injuries))risks.push('Injury coverage is unknown; missing reports do not mean a full-strength squad.');
  risks.push('Observed xG is unavailable. Model goal expectations are estimates, not measured xG.');
  if(truncated)risks.push('History read reached its bound; evidence may be incomplete.');
+ const patternOpportunities=patternOpportunityShortlistV2(home,away);
  const markets=candidates.map(c=>{
   const p=unit(c.probability),odds=c.exactPrice?.odds??null,breakEven=odds>1?1/odds:null;
   const sample=(id,venue)=>{const observations=rows.filter(r=>String(r.league_id)===String(job.provider_league_id)&&String(r.season)===String(job.season)&&String(venue==='home'?r.home_id:r.away_id)===String(id)).slice(0,8);
@@ -88,11 +89,12 @@ function buildMatchEvidence({job,asOf,results=[],conflicts=[],analysis={},candid
   if(p!==null&&odds>1&&Math.max(0,p-.05)*odds<=1)counter.push('A five-percentage-point probability reduction removes the estimated value.');
   if(h.matches<5||a.matches<5)counter.push('Too few venue-specific observations to rely on the historical event rate.');
   if(c.modelReview?.status==='HOLD')counter.push('The independent model materially disagrees; this selection is held for review.');
-  return {...c,probability:p,odds,breakEven,estimatedEV:p!==null&&odds>1?p*odds-1:null,stressEV:p!==null&&odds>1?Math.max(0,p-.05)*odds-1:null,homeVenueEvent:h,awayVenueEvent:a,counterCase:counter};
+  const pattern=patternOpportunities.find(x=>x.market===c.market&&x.selection===String(c.selection||'').toUpperCase())||null;
+  return {...c,patternEvidence:pattern,patternReviewPriority:pattern?.rankScore??null,probability:p,odds,breakEven,estimatedEV:p!==null&&odds>1?p*odds-1:null,stressEV:p!==null&&odds>1?Math.max(0,p-.05)*odds-1:null,homeVenueEvent:h,awayVenueEvent:a,counterCase:counter};
  });
  return {version:EVIDENCE_VERSION,fixtureId:Number(job.fixture_id),asOf,kickoff:job.kickoff_at,mode:'EVIDENCE_REVIEW',createsPicks:false,confidenceBoost:0,
   summary:'Compare each exact market with its evidence and downside. Historical rates and stress scenarios do not replace validated probabilities.',
-  home,away,patternOpportunities:patternOpportunityShortlistV2(home,away),expectedGoals:analysis.expectedGoals||null,lineupsConfirmed:confirmed,injuryCoverage:availabilityFresh&&!availability.injuriesError&&Array.isArray(availability.injuries)?'REPORTED':'UNKNOWN',
+  home,away,patternOpportunities,expectedGoals:analysis.expectedGoals||null,lineupsConfirmed:confirmed,injuryCoverage:availabilityFresh&&!availability.injuriesError&&Array.isArray(availability.injuries)?'REPORTED':'UNKNOWN',
   modelGeneratedAt:analysis.generatedAt||null,historyFixtures:rows.length,historyAvailableAtMax:rows.length?new Date(Math.max(...rows.map(r=>stamp(r.result_available_at)))).toISOString():null,
   risks,sourceErrors,markets,limitations:['Historical event intervals describe the retained sample, not a calibrated probability for this fixture.','Opponent-adjusted forecasting comes from the independent raw model; venue frequencies are descriptive.','No invented motivation, tactical, injury-impact or player-minute assumptions.']};
 }
