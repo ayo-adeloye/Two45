@@ -170,8 +170,8 @@ async function runMatchHistoryCollectionV1(env,{productionBacklog=false}={}) {
    else {
     const {job,id}=selected;status.fixtureId=job.fixture_id;status.teamId=id;
     const input=await sb(env,'rpc/two45_match_evidence_inputs_v1',{method:'POST',timeoutMs:5000,body:JSON.stringify({p_fixture_id:job.fixture_id,p_as_of:asOf,p_odds_key:oddsKey(dateOfV19(job.kickoff_at))})});
-    const available=matchEvidenceV1.cleanEvidenceResults(arr2(input?.history),job,asOf,arr2(input?.conflicts)).filter(r=>String(r.league_id)===String(job.provider_league_id)&&String(r.season)===String(job.season)&&(String(r.home_id)===id||String(r.away_id)===id));
-    status.retainedMatchesBefore=available.length;status.historyScope='ALL_COMPETITIONS_RECENT_15';
+    const available=matchEvidenceV1.cleanEvidenceResults(arr2(input?.history),job,asOf,arr2(input?.conflicts)).filter(r=>String(r.home_id)===id||String(r.away_id)===id);
+    status.retainedMatchesBefore=available.length;status.historyScope='ALL_COMPETITIONS_LAST_180_DAYS';
     if(available.length>=8)status.reason='SUFFICIENT_RETAINED_HISTORY';
     else {
      status.providerCalls=1;
