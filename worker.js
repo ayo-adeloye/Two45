@@ -8577,7 +8577,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
   const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload);
   const researchFixtureIds = new Set([...arr2(board?.strongPicks),...arr2(board?.premiumCandidates)].filter(p=>p?.decision==='PICK' && ticketCompetitionTierV79(board,p)<=2 && ticketUpcomingV70(board,p)).map(p=>String(p.fixtureId ?? p.providerMatchId)));
   const pricedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
-  const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool;
+  const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
   const candidateCoverageReady = verifiedFixtureIds.size >= 2;
   const pipelineBase = {
@@ -8587,13 +8587,15 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     oddsComplete,
     candidateCoverageReady,
     independentReview:review.summary,
+    independentReviewPending:review.pool.filter(x=>x.modelReview?.status!=='SUPPORTS').map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,status:x.modelReview?.status||'UNREVIEWED',reason:x.modelReview?.reason||'NO_REVIEW'})),
+    reviewApprovedMarketCount:verifiedPool.length,
     independentReviewHolds:review.holds.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,modelReview:x.modelReview})),
     researchFixtureCount: researchFixtureIds.size,
     researchMarketCount: arr2(board?.premiumCandidates).length + arr2(board?.strongPicks).length,
     priceVerifiedMarketCount: pricedPool.length,
     qualifiedBeforeIndependentReview: pricedPool.filter(eliteLegQualityV79).length,
     independentlyHeldCount: review.holds.length,
-    noPickDiagnostic: researchFixtureIds.size === 0 ? "NO_CURRENT_STRONG_RESEARCH" : pricedPool.length === 0 ? "NO_CURRENT_EXACT_BOOK_QUOTES" : pricedPool.every(x => !eliteLegQualityV79(x)) ? "ELITE_QUALITY_REJECTION" : review.holds.length && verifiedPool.every(x => x.modelReview?.hold) ? "INDEPENDENT_REVIEW_HOLD" : "NO_QUALIFIED_ODDS_COMBINATION",
+    noPickDiagnostic: researchFixtureIds.size === 0 ? "NO_CURRENT_STRONG_RESEARCH" : pricedPool.length === 0 ? "NO_CURRENT_EXACT_BOOK_QUOTES" : pricedPool.every(x => !eliteLegQualityV79(x)) ? "ELITE_QUALITY_REJECTION" : review.holds.length && !verifiedPool.length ? "INDEPENDENT_REVIEW_HOLD" : review.pool.length && !verifiedPool.length ? "INDEPENDENT_REVIEW_INCOMPLETE" : "NO_QUALIFIED_ODDS_COMBINATION",
     pendingVerificationFixtures: [...researchFixtureIds].filter(id=>!verifiedFixtureIds.has(id)),
     exactVerifiedFixtures: new Set(verifiedPool.map(x=>String(x.fixtureId ?? x.providerMatchId))).size,
     rejections: pricedPool.map(x=>({fixtureId:x.fixtureId,market:x.market,selection:x.selection,reasons:[...eliteRejectionReasonsV2(x),...(review.holds.some(h=>String(h.fixtureId)===String(x.fixtureId)&&h.market===x.market&&h.selection===x.selection)?['INDEPENDENT_REVIEW_HOLD']:[])],probability:ticketNormV70(x.probability),verifiedOdds:x.sportsbookOdds,valueEdge:x.valueEdge,valueEdgePct:x.valueEdgePct,confidenceScore:eliteConfidenceScoreV102(x)}))
@@ -8630,7 +8632,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     revision: TICKET_LOCK_REVISION_V78,
     rebuiltForPricingIntegrity: Boolean(rebuildReason),
     rebuildReason: rebuildReason || null,
-    waitingFor: publish ? null : t ? "06:00_ET_REVIEW" : review.holds.length ? "INDEPENDENT_REVIEW" : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
+    waitingFor: publish ? null : t ? "06:00_ET_REVIEW" : (review.holds.length || review.pool.length && !verifiedPool.length) ? "INDEPENDENT_REVIEW" : pool.length ? "TARGET_ODDS_COMBINATION" : "ELITE_QUALITY",
     oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
     ticket: publish ? lockTicketV70(t, at, b) : t ? {...t,locked:false,draftAt:at,legs:arr2(t.legs).map(x=>({...x,locked:false}))} : null,
     candidateCount: pool.length,
