@@ -1,0 +1,26 @@
+name: Engine 2 Simulation Shadow Validation
+on:
+  pull_request:
+    paths:
+      - 'simulation-v2.mjs'
+      - 'simulation-v2.test.mjs'
+      - '.github/workflows/engine2-simulation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'simulation-v2.mjs'
+      - 'simulation-v2.test.mjs'
+      - '.github/workflows/engine2-simulation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check simulation-v2.mjs
+      - run: node simulation-v2.test.mjs
