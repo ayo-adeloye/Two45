@@ -8,6 +8,9 @@ const original=JSON.stringify({pick,row});
 const support=compareModelPick(pick,row,now);assert.equal(support.status,'SUPPORTS');assert.equal(support.confidenceBoost,0);assert.equal(support.coreValidated,false);
 const conflict={...row,forecast:{...row.forecast,probabilities:{TOTAL_GOALS:{OVER_2_5:.5}}}};
 assert.equal(compareModelPick(pick,conflict,now).hold,true);
+const marginal={...row,forecast:{...row.forecast,probabilities:{TOTAL_GOALS:{OVER_2_5:.65}}}};
+assert.equal(compareModelPick(pick,marginal,now).status,'DIFFERS','0.75% model EV must not receive independent support');
+
 assert.equal(compareModelPick(pick,{...row,forecast:{...row.forecast,qualityHold:true}},now).status,'UNREVIEWED');
 assert.equal(compareModelPick(pick,{...row,fixture_id:2},now).reason,'FIXTURE_IDENTITY_MISMATCH');
 assert.equal(compareModelPick(pick,{...row,generated_at:new Date(now+1000).toISOString()},now).status,'UNREVIEWED');
