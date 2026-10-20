@@ -1,0 +1,20 @@
+name: Cross League Model V32 Safety
+on:
+  pull_request:
+    paths:
+      - worker.js
+      - tests/cross-league-model-v32.test.cjs
+      - supabase/migrations/20261020_independent_goal_core_v32.sql
+      - .github/workflows/cross-league-model-v32.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check worker.js
+      - run: node --test tests/cross-league-model-v32.test.cjs
