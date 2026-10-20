@@ -633,7 +633,29 @@ function scoreShadowOutcome(shadow,{homeGoals,awayGoals,resultAvailableAt}={}){
  return {ok:true,fixtureId:shadow.fixtureId,marketOutcome:outcome,homeGoals,awayGoals,brier1x2:Object.entries(shadow.simulation.markets.MATCH_RESULT).reduce((s,[key,v])=>s+(v-(key===outcome?1:0))**2,0),logLoss1x2:-Math.log(Math.max(p,1e-12)),markets};
 }
 
-return {SIMULATION_VERSION,SHADOW_ADAPTER_VERSION,simulateMatch,comparePricedMarkets,evaluateShadowForecast,scoreShadowOutcome};
+const ENGINE2_DISCOVERY_VERSION='engine2-market-discovery-v1';
+const canonical=s=>String(s||'').trim().toUpperCase().replace(/(\d)\.(\d)/g,'$1_$2');
+function discoverEngine2Markets(shadow,{minEV=.03,maxQuoteAgeMinutes=30,minProbability=.35}={}){
+ if(!shadow?.ok||shadow?.mode!=='SHADOW'||!shadow.simulation||!Number.isFinite(Date.parse(shadow.generatedAt))||!Number.isFinite(Date.parse(shadow.kickoffAt)))return {version:ENGINE2_DISCOVERY_VERSION,status:'BLOCKED',reason:'INVALID_SHADOW_FORECAST',candidates:[],createsPicks:false,promotionAllowed:false};
+ const generated=Date.parse(shadow.generatedAt),kickoff=Date.parse(shadow.kickoffAt);
+ if(!(generated<kickoff)||shadow.qualityHold)return {version:ENGINE2_DISCOVERY_VERSION,status:'BLOCKED',reason:shadow.qualityHold?'INDEPENDENT_QUALITY_HOLD':'NOT_PREMATCH',candidates:[],createsPicks:false,promotionAllowed:false};
+ const candidates=[],rejected={};
+ for(const q of shadow.marketComparisons||[]){
+  const observed=Date.parse(q.observedAt),p=shadow.simulation.markets?.[q.market]?.[canonical(q.selection)];
+  let reason=null;
+  if(q.bookmaker!=='Bet365'||!Number.isFinite(q.odds)||q.odds<=1)reason='EXACT_BET365_QUOTE_REQUIRED';
+  else if(!Number.isFinite(observed)||observed>generated||generated-observed>maxQuoteAgeMinutes*60000||observed>=kickoff)reason='QUOTE_NOT_FRESH_PREMATCH';
+  else if(!Number.isFinite(p)||p<=0||p>=1)reason='MARKET_PROBABILITY_UNAVAILABLE';
+  else if(p<minProbability)reason='PROBABILITY_BELOW_FLOOR';
+  else if(p*q.odds-1<minEV)reason='NO_POSITIVE_VALUE';
+  if(reason){rejected[reason]=(rejected[reason]||0)+1;continue;}
+  candidates.push({fixtureId:shadow.fixtureId,market:q.market,selection:canonical(q.selection),odds:q.odds,probability:p,estimatedEV:p*q.odds-1,observedAt:q.observedAt,sourceGeneratedAt:shadow.generatedAt,mode:'SHADOW',createsPicks:false});
+ }
+ candidates.sort((a,b)=>b.estimatedEV-a.estimatedEV||b.probability-a.probability);
+ return {version:ENGINE2_DISCOVERY_VERSION,status:candidates.length?'CANDIDATES':'NO_ELIGIBLE_MARKET',candidates:candidates.slice(0,12),rejected,considered:(shadow.marketComparisons||[]).length,createsPicks:false,promotionAllowed:false};
+}
+
+return {SIMULATION_VERSION,SHADOW_ADAPTER_VERSION,simulateMatch,comparePricedMarkets,evaluateShadowForecast,scoreShadowOutcome,discoverEngine2Markets};
 })();
 // Engine 2.0 read-only shadow sweep. No provider calls and no publication writes.
 async function runEngine2ShadowSweepV1(env) {
@@ -655,7 +677,7 @@ async function runEngine2ShadowSweepV1(env) {
           fixtureId:evaluation.fixtureId,sourceGeneratedAt:evaluation.generatedAt,modelId:evaluation.modelId,datasetHash:evaluation.datasetHash,kickoffAt:evaluation.kickoffAt,
           qualityHold:evaluation.qualityHold,rejectionReasons:evaluation.rejectionReasons,simulationVersion:evaluation.simulation.version,
           simulations:evaluation.simulation.simulations,inputs:evaluation.simulation.inputs,markets:evaluation.simulation.markets,
-          topScorelines:evaluation.simulation.topScorelines,marketComparisons:evaluation.marketComparisons.slice(0,30)}
+          topScorelines:evaluation.simulation.topScorelines,marketComparisons:evaluation.marketComparisons.slice(0,30),discovery:engine2ShadowV1.discoverEngine2Markets(evaluation)}
           :{ok:false,reason:evaluation.reason,fixtureId:row.fixture_id,modelId:row.model_id,sourceGeneratedAt:row.generated_at,mode:'SHADOW',createsPicks:false};
         await saveFeedSnapshot(env,key,summary,14*86400);
         completed.push({fixtureId:row.fixture_id,ok:summary.ok,reason:summary.reason||null});evaluated++;
