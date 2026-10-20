@@ -6259,31 +6259,45 @@ async function rpcRefresh(env, name, body) {
   );
 }
 __name(rpcRefresh, "rpcRefresh");
+// Only identical simultaneous non-coordination writes can share an upsert.
+// The entry is removed on both success and failure: this is NOT a TTL cache.
+const snapshotPendingWritesV117 = new Map();
+const SNAPSHOT_COALESCE_FAMILIES_V117 = ["player-research-v1:", "match-intelligence:", "model-analysis:"];
 async function saveFeedSnapshot(env, key, payload, ttlSeconds) {
   const date = key.includes(":") ? key.split(":").pop() : null;
   const body = {
     snapshot_key: key,
     payload,
-    provider_date: /^\d{4}-\d{2}-\d{2}$/.test(
-      date || ""
-    ) ? date : null,
+    provider_date: /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? date : null,
     refreshed_at: (/* @__PURE__ */ new Date()).toISOString(),
-    expires_at: new Date(
-      Date.now() + ttlSeconds * 1e3
-    ).toISOString(),
+    expires_at: new Date(Date.now() + ttlSeconds * 1e3).toISOString(),
     request_count: 0
   };
-  await sb(
-    env,
-    `two45_feed_snapshots?on_conflict=snapshot_key`,
-    {
-      method: "POST",
-      prefer: "resolution=merge-duplicates,return=minimal",
-      body: JSON.stringify(
-        body
-      )
-    }
-  );
+  const write = () => sb(env, `two45_feed_snapshots?on_conflict=snapshot_key`, {
+    method: "POST",
+    prefer: "resolution=merge-duplicates,return=minimal",
+    body: JSON.stringify(body)
+  });
+  // A concurrent call with identical data has the same logical write intent.
+  // Exclude keys carrying leases, API limits, freshness or ticket transitions.
+  if (!SNAPSHOT_COALESCE_FAMILIES_V117.some(prefix => key.startsWith(prefix))) {
+    await write();
+    return;
+  }
+  const signature = JSON.stringify([key, ttlSeconds, payload]);
+  const pending = snapshotPendingWritesV117.get(signature);
+  if (pending && pending.signature === signature) {
+    await pending.promise;
+    return;
+  }
+  const promise = write();
+  const entry = { signature, promise };
+  snapshotPendingWritesV117.set(signature, entry);
+  try {
+    await promise;
+  } finally {
+    if (snapshotPendingWritesV117.get(signature) === entry) snapshotPendingWritesV117.delete(signature);
+  }
 }
 __name(saveFeedSnapshot, "saveFeedSnapshot");
 async function getFeedSnapshot(env, key) {
