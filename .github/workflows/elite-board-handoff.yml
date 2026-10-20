@@ -1,0 +1,19 @@
+name: Elite Board Handoff Safety
+on:
+  pull_request:
+    paths:
+      - worker.js
+      - tests/elite-board-handoff.test.cjs
+      - .github/workflows/elite-board-handoff.yml
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check worker.js
+      - run: node --test tests/elite-board-handoff.test.cjs

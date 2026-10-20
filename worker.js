@@ -8445,6 +8445,27 @@ function ticketOptimizeV70(pool, target, low, high, minLegs, maxLegs, requireTie
   return chosen;
 }
 __name(ticketOptimizeV70, "ticketOptimizeV70");
+function recoverEliteBoardHandoffV119(presented,stored,games,canonicalRows,now=Date.now()) {
+ const candidates=arr2(stored?.strongPicks).filter(p=>{
+  const id=String(p?.fixtureId??p?.providerMatchId??'');
+  const f=arr2(games).find(g=>String(fixtureIdV19(g))===id);
+  if(!f||!UPCOMING_STATUSES.has(f?.fixture?.status?.short)||Date.parse(f?.fixture?.date||0)<=now)return false;
+  if(competitionTierV21(f?.league?.name,f?.league?.id)>2)return false;
+  if(p?.decision!=='PICK'||p?.analysisSource!=='independent-model'||p?.priceVerified!==true)return false;
+  if(!p?.market||!p?.selection||!Number.isFinite(Number(p?.probability)))return false;
+  const created=Date.parse(p?.generatedAt||p?.createdAt||'');
+  return Number.isFinite(created)&&created<=now&&created<Date.parse(f?.fixture?.date||0);
+ });
+ const canonicalIds=new Set(arr2(canonicalRows).filter(r=>r?.status==='COMPLETE').map(r=>String(r.fixture_id)));
+ const presentIds=new Set(arr2(presented?.strongPicks).map(p=>String(p.fixtureId??p.providerMatchId)));
+ const missing=candidates.filter(p=>!canonicalIds.has(String(p.fixtureId??p.providerMatchId))&&!presentIds.has(String(p.fixtureId??p.providerMatchId)));
+ if(!missing.length)return presented;
+ return {...presented,strongPicks:[...arr2(presented?.strongPicks),...missing],
+   picks:[...arr2(presented?.picks),...missing],
+   analyzedCount:Math.max(num4(presented?.analyzedCount,0),num4(stored?.analyzedCount,0)),
+   handoffRecovery:{source:'stored-independent-model-board',candidateCount:missing.length,requiresFreshOdds:true,publicationAuthorized:false}};
+}
+__name(recoverEliteBoardHandoffV119,"recoverEliteBoardHandoffV119");
 async function ticketBoardV70(env, date) {
   const fs = await snapshot(env, fixtureKey(date)).catch(() => null), games = fixtureRowsV58(fs);
   if (!games.length)
@@ -8453,6 +8474,10 @@ async function ticketBoardV70(env, date) {
   let rows = await canonicalAnalysisRowsV2(env, games.map(fixtureIdV19)).catch(() => []);
   rows = await repriceCanonicalRowsV84(env, date, rows);
   const presented = presentCanonicalBoardV59(base, games, rows);
+  // A transient canonical-query failure must not erase a completed model board.
+  // Recovery supplies research candidates only; buildDailyLockV70 reprices every
+  // selection against current exact sportsbook quotes and independent review.
+  const recoveredBoard = recoverEliteBoardHandoffV119(presented, base, games, rows);
   const fixtureMap = new Map(games.map((f) => [String(fixtureIdV19(f)), f]));
   const chosenRows = /* @__PURE__ */ new Map();
   for (const row of arr2(rows)) {
@@ -8508,7 +8533,7 @@ async function ticketBoardV70(env, date) {
       });
     }
   }
-  return { ...presented, premiumCandidates };
+  return { ...recoveredBoard, premiumCandidates };
 }
 __name(ticketBoardV70, "ticketBoardV70");
 async function ticketBaselineV70(env, legs) {
