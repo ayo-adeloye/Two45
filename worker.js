@@ -1710,7 +1710,7 @@ function pricedBoardPickV65(f, competitionTier = 3) {
   const tier = Math.max(1, Math.min(4, Number(competitionTier) || 3));
   const dq = p013(f.dataQuality);
   const choices = [f, ...arr2(f.alternatives)].filter(
-    (x) => normBook(x?.bookmaker) === "bet365" && num4(x?.sportsbookOdds, 0) >= 1.15 && priceCoherentV60(p013(x?.probability), num4(x?.sportsbookOdds, 0))
+    (x) => ["bet365", "draftkings", "pinnacle", "williamhill", "marathonbet"].includes(normBook(x?.bookmaker)) && x?.priceVerified === true && num4(x?.sportsbookOdds, 0) >= 1.15 && priceCoherentV60(p013(x?.probability), num4(x?.sportsbookOdds, 0))
   );
   if (!choices.length || tier > 3)
     return null;
@@ -1745,7 +1745,9 @@ function pricedBoardPickV65(f, competitionTier = 3) {
     const market = String(x.market || "").toUpperCase();
     const selection = String(x.selection || "").toUpperCase();
     const safety = market === "DOUBLE_CHANCE" ? 0.05 : market === "TOTAL_GOALS" && selection === "OVER_1_5" ? 0.038 : market === "TOTAL_GOALS" ? 0.025 : ["HOME_TEAM_GOALS", "AWAY_TEAM_GOALS"].includes(market) ? 0.022 : market === "BTTS" ? 0.01 : market === "MATCH_RESULT" ? 4e-3 : 0;
-    return p * 0.76 + clamp4(dq, 0, 1) * 0.18 + clamp4(e / 100, -0.12, 0.3) * 0.04 + safety - Math.max(0, o - 2.8) * 8e-3;
+    const lowInformation = market === "TOTAL_GOALS" && selection === "UNDER_4_5" ? 0.075 : market === "HANDICAP" && /PLUS_1_5/.test(selection) ? 0.055 : 0;
+    const patternSignal = x?.patternEvidence?.rankScore != null && x?.patternEvidence?.descriptiveOnly === true ? Math.min(0.025, Math.max(0, Number(x.patternEvidence.rankScore) / 100 * 0.025)) : 0;
+    return p * 0.76 + clamp4(dq, 0, 1) * 0.18 + clamp4(e / 100, -0.12, 0.3) * 0.04 + safety + patternSignal - lowInformation - Math.max(0, o - 2.8) * 8e-3;
   }, "eliteScore");
   const strong = choices.filter((x) => {
     const p = p013(x.probability), e = edgePct(x), lane = String(x.lane || "").toUpperCase();
