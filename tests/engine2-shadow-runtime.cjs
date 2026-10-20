@@ -1,0 +1,21 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const code=fs.readFileSync(require('node:path').join(__dirname,'../worker.js'),'utf8');
+const c=vm.createContext({console,Date,Intl,URL,Set,Map,Response,Request,Headers,AbortSignal,TextEncoder,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout});
+vm.runInContext(code.replace(/export\s*\{\s*worker_default as default\s*\};/,''),c);
+(async()=>{
+const now=Date.now(),generated=new Date(now-120000).toISOString(),kickoff=new Date(now+7200000).toISOString();
+const metadata={fixture_id:98765,model_id:'model-a',generated_at:generated,kickoff_at:kickoff};
+const row={...metadata,payload:{fixture:{fixture_id:98765},datasetHash:'a'.repeat(64),forecast:{expectedGoals:{home:1.8,away:1.1},qualityHold:true,rejectionReasons:['SPARSE_TEAM_HISTORY']},quotes:[{bookmaker:'Bet365',market:'TOTAL_GOALS',selection:'OVER_2_5',odds:1.9,observedAt:new Date(now-180000).toISOString(),providerUpdatedAt:new Date(now-200000).toISOString()}]}};
+const snapshots=new Map(),writes=[];
+c.sb=async(_env,q)=>{if(q.startsWith('two45_goal_forecasts_v3?kickoff_at='))return [metadata];if(q.startsWith('two45_goal_forecasts_v3?fixture_id='))return [row];throw Error('Unexpected DB access '+q)};
+c.getFeedSnapshot=async(_env,key)=>snapshots.get(key)||null;
+c.saveFeedSnapshot=async(_env,key,payload)=>{writes.push(key);snapshots.set(key,{payload});};
+const one=await c.runEngine2ShadowSweepV1({});
+assert.equal(one.ok,true);assert.equal(one.processed,1);assert.equal(one.completed[0].fixtureId,98765);
+const saved=snapshots.get('engine2-shadow:v1:98765')?.payload;
+assert.equal(saved.ok,true);assert.equal(saved.promotionAllowed,false);assert.equal(saved.createsPicks,false);assert.equal(saved.marketComparisons.length,1);assert.equal(saved.marketComparisons[0].selection,'OVER_2_5');
+assert(saved.markets.TOTAL_GOALS.OVER_2_5>0);assert.equal(saved.qualityHold,true);
+const two=await c.runEngine2ShadowSweepV1({});assert.equal(two.processed,0);assert.equal(writes.length,1);
+assert(writes.every(k=>k.startsWith('engine2-shadow:v1:')),'Engine 2 must never write public publications');
+console.log('PASS: scheduled Engine 2 shadow sweep persists compact snapshots, deduplicates, respects holds, and never publishes picks');
+})().catch(e=>{console.error(e);process.exitCode=1});
