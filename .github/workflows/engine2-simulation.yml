@@ -4,12 +4,16 @@ on:
     paths:
       - 'simulation-v2.mjs'
       - 'simulation-v2.test.mjs'
+      - 'engine2-shadow-adapter.mjs'
+      - 'engine2-shadow-adapter.test.mjs'
       - '.github/workflows/engine2-simulation.yml'
   push:
     branches: [main]
     paths:
       - 'simulation-v2.mjs'
       - 'simulation-v2.test.mjs'
+      - 'engine2-shadow-adapter.mjs'
+      - 'engine2-shadow-adapter.test.mjs'
       - '.github/workflows/engine2-simulation.yml'
   workflow_dispatch:
 permissions:
@@ -24,3 +28,4 @@ jobs:
           node-version: '22'
       - run: node --check simulation-v2.mjs
       - run: node simulation-v2.test.mjs
+      - run: node engine2-shadow-adapter.test.mjs
