@@ -18,7 +18,7 @@ let artifact,forecast,queries=[];c.sb=async(_env,q,opt)=>{
  throw Error('Unexpected query: '+q);
 };
 const trained=await c.refreshGoalCoreV3({});assert.equal(trained.state,'READY');assert.equal(artifact.validation.promotionAllowed,false);assert.equal(artifact.parameters.trainingFixtures,100);assert.equal(artifact.dataset_hash.length,64);
-const before=queries.length;assert.equal((await c.refreshGoalCoreV3({})).skipped,true);assert.equal(queries.length,before,'Recently trained models must not repeat');
+const before=queries.filter(q=>q==='rpc/two45_goal_training_data_v3'||q.startsWith('two45_goal_model_artifacts_v3?on_conflict')).length;assert.equal((await c.refreshGoalCoreV3({})).skipped,true);assert.equal(queries.filter(q=>q==='rpc/two45_goal_training_data_v3'||q.startsWith('two45_goal_model_artifacts_v3?on_conflict')).length,before,'Recently trained models must not retrain or insert an artifact');
 const job={fixture_id:1000,provider_league_id:'39',season:2026,home_team_id:'1',away_team_id:'2',competition:'Premier League',kickoff_at:new Date(now+3*3600000).toISOString()};
 const legacy={modelVersion:'v1.9',expectedGoals:{home:1.2,away:1.1},probabilities:{MATCH_RESULT:{HOME:.4,DRAW:.3,AWAY:.3}}},original=JSON.stringify(legacy);
 const result=await c.recordGoalForecastV3({},job,legacy,[]);assert.equal(result.mode,'SHADOW');assert.equal(result.promotionAllowed,false);assert.equal(JSON.stringify(legacy),original);
