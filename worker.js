@@ -588,7 +588,7 @@ function modelMigrationStatusV2() {
 // Results become available for training only when observed; never backdate labels.
 function goalBackfillResultV120(row,nowIso) {
  const f=row?.fixture,l=row?.league,h=row?.teams?.home,a=row?.teams?.away,g=row?.goals;
- const kickoff=Date.parse(f?.date),now=Date.parse(nowIso),hg=Number(g?.home),ag=Number(g?.away);
+ const kickoff=Date.parse(f?.date),now=Date.parse(nowIso),hg=g?.home==null?NaN:Number(g.home),ag=g?.away==null?NaN:Number(g.away);
  if(!Number.isSafeInteger(Number(f?.id))||Number(f.id)<=0||f?.status?.short!=='FT')return null;
  if(!Number.isFinite(kickoff)||kickoff>=now||now-kickoff>365*86400000)return null;
  if(!Number.isSafeInteger(hg)||!Number.isSafeInteger(ag)||hg<0||ag<0||hg>30||ag>30)return null;
