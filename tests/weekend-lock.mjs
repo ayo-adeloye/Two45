@@ -14,6 +14,12 @@ ctx.ticketBaselineV70 = async () => ({});
 ctx.saveFeedSnapshot = async (_env, key, payload) => { saved = payload; };
 const leg = (id, odds) => ({ fixtureId:id, _ticketOdds:odds, sportsbookOdds:odds, _ticketScore:.85, competitionTier:1 });
 const build = previous => ctx.buildWeekendLockV70({}, '2026-10-17', null, previous);
+// Without independent approval, the ladder must remain unpublished.
+pool = [leg(1,2.2),leg(2,2.2)];
+const unreviewed = await build();
+assert.equal(unreviewed.status,'BUILDING');
+assert.equal(unreviewed.tickets.five,null);
+ctx.reviewModelPoolV1 = async(_env,picks)=>({pool:picks.map(p=>({...p,modelReview:{status:'SUPPORTS',hold:false}})),holds:[],summary:{counts:{SUPPORTS:picks.length,DIFFERS:0,HOLD:0,UNREVIEWED:0}}});
 
 pool = [leg(1,2.2), leg(2,2.2), leg(3,2.15), leg(8,2.15), leg(9,2.15)];
 const partial = await build();
