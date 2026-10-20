@@ -20,4 +20,4 @@ jobs:
       - name: Parse entire Worker
         run: node --check worker.js
       - name: Run pattern and source regression tests
-        run: node --test tests/pattern-first-evidence.test.cjs tests/pattern-opportunity-shortlist.test.cjs
+        run: node --test tests/pattern-first-evidence.test.cjs tests/pattern-opportunity-shortlist.test.cjs tests/pattern-market-link.test.cjs
