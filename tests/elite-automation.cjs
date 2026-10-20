@@ -18,6 +18,10 @@ const context=(Clock=Date)=>{const c=vm.createContext({console,Date:Clock,Intl,U
  c.ticketPoolBoardVerifiedV78=(_b,_d,_o,_a,_l,dedupe)=>{assert.equal(dedupe,false);return [bad,good(1),good(2)];};
  c.saveFeedSnapshot=async(_e,_k,p)=>{saved=p;};c.ticketBaselineV70=async()=>({});
  c.dailyPublicationWindowV2=()=>({allowed:false,reviewAt:'06:00 America/New_York'});
+ const unreviewed=await c.buildDailyLockV70({},'2026-10-19');
+ assert.equal(unreviewed.status,'BUILDING','Absent independent support must not produce an Elite draft');
+ assert.equal(unreviewed.ticket,null,'Unreviewed legs must never be exposed as a draft');
+ c.reviewModelPoolV1=async(_env,picks)=>({pool:picks.map(p=>({...p,modelReview:{status:'SUPPORTS',hold:false}})),holds:[],summary:{counts:{SUPPORTS:picks.length,DIFFERS:0,HOLD:0,UNREVIEWED:0}}});
  const draft=await c.buildDailyLockV70({},'2026-10-19');
  assert.equal(draft.status,'DRAFT');assert.equal(draft.ticket.locked,false);assert.equal(draft.immutable,false);assert.equal(draft.lockedAt,null);assert.equal(draft.ticket.legs.length,2);assert.equal(draft.waitingFor,'06:00_ET_REVIEW');
  c.dailyPublicationWindowV2=()=>({allowed:true});
