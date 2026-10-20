@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'worker.js'
+      - 'engine2-settlement-runtime-v1.js'
       - 'engine2-shadow-runtime-v1.js'
       - 'tests/engine2-shadow-runtime.cjs'
       - 'scripts/bundle-engine2-shadow-v1.mjs'
