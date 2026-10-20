@@ -318,7 +318,7 @@ function compareModelPick(pick,row,now=Date.now()) {
  const kickoff=Date.parse(pick.kickoff ?? pick.kickoffAt ?? pick.kickoff_at),generated=Date.parse(row.generated_at);
  if(String(row.fixture_id)!==String(base.fixtureId)||Date.parse(row.kickoff_at)!==kickoff)return unreviewed('FIXTURE_IDENTITY_MISMATCH');
  if(!(generated<=now && now-generated<=3600000 && now<kickoff))return unreviewed('STALE_OR_NON_PREMATCH_COMPARISON');
- if(forecast.modelVersion!=='two45-independent-core-v3.1'||!/^[a-f0-9]{64}$/.test(payload.datasetHash||''))return unreviewed('INDEPENDENT_PROVENANCE_MISSING');
+ if(forecast.modelVersion!=='two45-independent-core-v3.2'||!/^[a-f0-9]{64}$/.test(payload.datasetHash||''))return unreviewed('INDEPENDENT_PROVENANCE_MISSING');
  const trained=Date.parse(forecast.trainedBefore),features=Date.parse(context.featureAsOf);
  if(!(trained<=generated && now-trained<=7*86400000 && features<=generated && now-features<=86400000))return unreviewed('STALE_OR_FUTURE_MODEL_INPUTS');
  if(forecast.qualityHold || !(forecast.dataQuality>=.75 && context.sampleSize>=8 && forecast.evidence?.leagueEffectiveMatches>=20))return unreviewed('INSUFFICIENT_INDEPENDENT_EVIDENCE');
@@ -378,12 +378,12 @@ async function reviewModelPoolV1(env,picks) {
 // BEGIN GENERATED FORECAST CORE V3
 var forecastCoreV3 = (() => {
 // Odds-free, hierarchical goal model. Training labels are unique regulation-time fixtures.
-const CORE_VERSION='two45-independent-core-v3.1';
+const CORE_VERSION='two45-independent-core-v3.2';
 const day=86400000;
 const number=x=>x===null||x===undefined||x===''?null:Number.isFinite(Number(x))?Number(x):null;
 const clip=(x,lo,hi)=>Math.max(lo,Math.min(hi,x));
 const leagueKey=f=>`${f.league_id}:${f.season}`;
-const teamKey=(f,id)=>`${leagueKey(f)}:${id}`;
+const teamKey=(f,id)=>`${f.season}:${id}`; // Joint season-level team effects; league offsets still opponent-adjusted.
 const validId=x=>x!=null&&String(x).trim()!==''&&!['undefined','null','nan','0'].includes(String(x).toLowerCase());
 function seasonFeatures(snapshot,fixture,side,at) {
  if(!snapshot)return null;
@@ -669,16 +669,16 @@ async function runGoalCoreSweepV3(env) {
 async function refreshGoalCoreV3(env) {
   const now=new Date(),asOf=now.toISOString(),date=asOf.slice(0,10),statusKey='forecast-core-v3:training-status';
   const status=(await getFeedSnapshot(env,statusKey).catch(()=>null))?.payload;
-  if(status?.date===date&&status?.state==='READY')return {skipped:true,...status};
+  if(status?.date===date&&status?.state==='READY'&&status?.modelVersion===forecastCoreV3.CORE_VERSION)return {skipped:true,...status};
   if(status?.state==='RUNNING'&&Date.now()-Date.parse(status.startedAt)<15*60000)return {skipped:true,reason:'TRAINING_IN_PROGRESS'};
   if(Date.parse(status?.retryAfter)>Date.now())return {skipped:true,reason:'TRAINING_RETRY_BACKOFF'};
   try {
     const existing=arr2(await sb(env,'two45_goal_model_artifacts_v3?model_version=eq.'+encodeURIComponent(forecastCoreV3.CORE_VERSION)+'&select=id,trained_before&order=trained_before.desc&limit=1'))[0];
     if(existing?.trained_before?.slice(0,10)===date) {
-      const result={state:'READY',date,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW'};
+      const result={state:'READY',date,modelVersion:forecastCoreV3.CORE_VERSION,modelId:existing.id,trainedBefore:existing.trained_before,mode:'SHADOW'};
       await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
     }
-    await saveFeedSnapshot(env,statusKey,{state:'RUNNING',date,startedAt:asOf,mode:'SHADOW'},365*86400);
+    await saveFeedSnapshot(env,statusKey,{state:'RUNNING',date,modelVersion:forecastCoreV3.CORE_VERSION,startedAt:asOf,mode:'SHADOW'},365*86400);
     const data=await sb(env,'rpc/two45_goal_training_data_v3',{method:'POST',body:JSON.stringify({p_as_of:asOf}),timeoutMs:15000});
     if(!data||data.truncated)throw Error('Training corpus unavailable or exceeded declared bounds');
     const inputs=forecastCoreV3.attachSeasonHistory(data.fixtures,data.features);
@@ -690,10 +690,10 @@ async function refreshGoalCoreV3(env) {
     const saved=arr2(await sb(env,'two45_goal_model_artifacts_v3?on_conflict=artifact_key',{method:'POST',prefer:'resolution=ignore-duplicates,return=representation',timeoutMs:15000,
       body:JSON.stringify({artifact_key:forecastCoreV3.CORE_VERSION+':'+date,model_version:forecastCoreV3.CORE_VERSION,trained_before:asOf,dataset_hash:hash,parameters,
       validation:{promotionAllowed:false,phase:'PROSPECTIVE_SHADOW',historicalGate:'FAILED_PAIRED_BRIER_AND_LOG_LOSS',configuration:'development-frozen; no automatic retuning'}})}))[0];
-    const result={state:'READY',date,modelId:saved?.id||null,trainedBefore:asOf,trainingFixtures:parameters.trainingFixtures,mode:'SHADOW',datasetHash:hash};
+    const result={state:'READY',date,modelVersion:forecastCoreV3.CORE_VERSION,modelId:saved?.id||null,trainedBefore:asOf,trainingFixtures:parameters.trainingFixtures,mode:'SHADOW',datasetHash:hash};
     await saveFeedSnapshot(env,statusKey,result,365*86400);return result;
   }catch(e) {
-    const result={state:'FAILED',date,error:safeRefreshError(e),retryAfter:new Date(Date.now()+3600000).toISOString(),mode:'SHADOW'};
+    const result={state:'FAILED',date,modelVersion:forecastCoreV3.CORE_VERSION,error:safeRefreshError(e),retryAfter:new Date(Date.now()+3600000).toISOString(),mode:'SHADOW'};
     await saveFeedSnapshot(env,statusKey,result,365*86400).catch(()=>null);return result;
   }
 }
