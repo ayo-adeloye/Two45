@@ -6,6 +6,10 @@ on:
     branches: [main]
     paths:
       - 'worker.js'
+      - 'engine2-shadow-runtime-v1.js'
+      - 'scripts/bundle-engine2-shadow-v1.mjs'
+      - 'engine2-shadow-adapter.mjs'
+      - 'simulation-v2.mjs'
       - 'wrangler.toml'
       - 'player-*.mjs'
       - 'player-*.js'
@@ -65,6 +69,7 @@ jobs:
           node scripts/bundle-player-research-v1.mjs
           node scripts/bundle-validation-routine-v1.mjs
           node scripts/bundle-match-evidence-v1.mjs
+          node scripts/bundle-engine2-shadow-v1.mjs
           git diff --exit-code worker.js
   deploy:
     needs: test
