@@ -8262,43 +8262,55 @@ function suspiciousBet365PriceV100(market, selection, odds) {
   return false;
 }
 __name(suspiciousBet365PriceV100, "suspiciousBet365PriceV100");
-function exactBet365QuoteV78(oddsPayload, fixtureId, market, selection) {
-  const wantMarket = String(market || "").trim().toUpperCase(), wantSelection = ticketSelectionKeyV78(selection);
-  if (!wantMarket || !wantSelection)
-    return null;
-  const matches = [];
-  for (const group of oddsMarketsFromSnapshot(oddsPayload, fixtureId)) {
-    const observed = Date.parse(group.observedAt), updated = Date.parse(group.providerUpdatedAt), now = Date.now();
-    if (!(updated <= observed && observed <= now && now - observed <= 30 * 60000 && now - updated <= 30 * 60000))
-      continue;
-    if (String(group?.market || "").toUpperCase() !== wantMarket)
-      continue;
-    const book = String(group?.bookmaker || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-    if (book !== "bet365")
-      continue;
-    for (const outcome of arr2(group?.outcomes)) {
-      const normalized = ticketSelectionKeyV78(outcome?.selection);
-      if (normalized !== wantSelection)
-        continue;
-      const odds = Number(outcome?.odds);
-      if (!(odds >= 1.15) || suspiciousBet365PriceV100(wantMarket, wantSelection, odds))
-        continue;
-      matches.push({ odds, bookmaker: group.bookmaker || "Bet365", observedAt:group.observedAt,providerUpdatedAt:group.providerUpdatedAt, rawMarket: group.rawMarket || null, rawSelection: outcome.rawSelection || null, groupKey: group.groupKey || null, exactMarket: true, exactSelection: true, priceSuspicious: false });
-    }
+// Equal-priority Bet365/DraftKings quote resolver. Never relabel one book's price as another.
+function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, now = Date.now()) {
+ const wantedMarket=String(market||'').trim().toUpperCase(), wantedSelection=ticketSelectionKeyV78(selection);
+ if(!wantedMarket||!wantedSelection)return null;
+ const rows=Array.isArray(oddsPayload?.response)?oddsPayload.response:[];
+ const row=rows.find(x=>String(x?.fixture?.id??x?.fixture_id??x?.id)===String(fixtureId));
+ if(!row)return null;
+ const matches=[];
+ for(const group of oddsMarketsForBooksV81(oddsPayload,fixtureId,['Bet365','DraftKings'])){
+  if(String(group.market||'').toUpperCase()!==wantedMarket)continue;
+  const normalizedBook=String(group.bookmaker||'').replace(/[^a-z0-9]/gi,'').toLowerCase();
+  if(!['bet365','draftkings'].includes(normalizedBook))continue;
+  const bookRow=(row.bookmakers||[]).find(b=>String(b.name||'').replace(/[^a-z0-9]/gi,'').toLowerCase()===normalizedBook);
+  const observedAt=bookRow?.observedAt||row.observedAt,providerUpdatedAt=bookRow?.providerUpdatedAt||bookRow?.last_update||row.providerUpdatedAt||row.update;
+  const observed=Date.parse(observedAt),updated=Date.parse(providerUpdatedAt);
+  if(!Number.isFinite(observed)||!Number.isFinite(updated)||updated>observed||observed>now||updated>now||now-observed>30*60000||now-updated>30*60000)continue;
+  for(const outcome of arr2(group.outcomes)){
+   if(ticketSelectionKeyV78(outcome.selection)!==wantedSelection)continue;
+   const odds=Number(outcome.odds);
+   if(!Number.isFinite(odds)||odds<1.15||suspiciousBet365PriceV100(wantedMarket,wantedSelection,odds))continue;
+   matches.push({odds,bookmaker:normalizedBook==='bet365'?'Bet365':'DraftKings',observedAt,providerUpdatedAt,rawMarket:group.rawMarket||null,rawSelection:outcome.rawSelection||null,groupKey:group.groupKey||null,exactMarket:true,exactSelection:true,priceSuspicious:false});
   }
-  if (!matches.length)
-    return null;
-  const unique = [...new Map(matches.map((x) => [[x.rawMarket, x.rawSelection, x.groupKey, x.odds].join("|"), x])).values()], distinctOdds = [...new Set(unique.map((x) => Number(x.odds).toFixed(4)))];
-  if (distinctOdds.length !== 1)
-    return null;
-  const quote = unique[0], verification = crossBookCheckV81(oddsPayload, fixtureId, wantMarket, wantSelection, quote.odds);
-  if (!verification.ok)
-    return null;
-  return { ...quote, oddsVerification: verification };
+ }
+ const byBook=new Map();
+ for(const x of matches){const arr=byBook.get(x.bookmaker)||[];arr.push(x);byBook.set(x.bookmaker,arr);}
+ const verified=[];
+ for(const [book,arr] of byBook){
+  if(new Set(arr.map(x=>x.odds.toFixed(4))).size!==1)continue;
+  const x=arr[0];
+  const comparisonBooks=book==='Bet365'?['DraftKings','FanDuel']:['Bet365','FanDuel'];
+  const comparisons=oddsMarketsForBooksV81(oddsPayload,fixtureId,comparisonBooks).flatMap(g=>
+   String(g.market||'').toUpperCase()===wantedMarket?arr2(g.outcomes).filter(o=>ticketSelectionKeyV78(o.selection)===wantedSelection&&Number(o.odds)>1).map(o=>Number(o.odds)):[]
+  );
+  if(comparisons.length){const vals=comparisons.sort((a,b)=>a-b),mid=Math.floor(vals.length/2),median=vals.length%2?vals[mid]:(vals[mid-1]+vals[mid])/2;
+   if(Math.abs(x.odds/median-1)*100>20)continue;
+  }
+  verified.push({...x,oddsVerification:{ok:true,status:comparisons.length?'CROSS_BOOK_VERIFIED':'SINGLE_BOOK_VERIFIED',comparisonsCount:comparisons.length}});
+ }
+ // Same priority, prefer the best independently verified price, never overwrite its bookmaker.
+ verified.sort((a,b)=>b.odds-a.odds||a.bookmaker.localeCompare(b.bookmaker));
+ return verified[0]||null;
+}
+__name(exactPreferredBookQuoteV118,"exactPreferredBookQuoteV118");
+function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){
+ return exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection);
 }
 __name(exactBet365QuoteV78, "exactBet365QuoteV78");
 function trustScoreV83(x) {
-  const premium = clamp4(num4(x?.premiumScore, ticketPremiumScoreV80(x)), 0, 100), dq = clamp4(ticketNormV70(x?.dataQuality, 0.7) * 100, 0, 100), prob = clamp4(ticketNormV70(x?.probability, 0) * 100, 0, 100), verify = x?.oddsVerification?.status === "CROSS_BOOK_VERIFIED" ? 9 : x?.oddsVerification?.status === "BET365_ONLY" ? 5 : 0, rel = clamp4(num4(x?.teamMarketReliability?.bonus, 0), -4, 6);
+  const premium = clamp4(num4(x?.premiumScore, ticketPremiumScoreV80(x)), 0, 100), dq = clamp4(ticketNormV70(x?.dataQuality, 0.7) * 100, 0, 100), prob = clamp4(ticketNormV70(x?.probability, 0) * 100, 0, 100), verify = x?.oddsVerification?.status === "CROSS_BOOK_VERIFIED" ? 9 : x?.oddsVerification?.status === "SINGLE_BOOK_VERIFIED" || x?.oddsVerification?.status === "BET365_ONLY" ? 5 : 0, rel = clamp4(num4(x?.teamMarketReliability?.bonus, 0), -4, 6);
   return Math.round(clamp4(premium * 0.52 + dq * 0.18 + prob * 0.18 + verify + rel, 0, 100));
 }
 __name(trustScoreV83, "trustScoreV83");
