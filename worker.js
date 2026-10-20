@@ -8270,10 +8270,10 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
  const row=rows.find(x=>String(x?.fixture?.id??x?.fixture_id??x?.id)===String(fixtureId));
  if(!row)return null;
  const matches=[];
- for(const group of oddsMarketsForBooksV81(oddsPayload,fixtureId,['Bet365','DraftKings'])){
+ for(const group of oddsMarketsForBooksV81(oddsPayload,fixtureId,['Bet365','DraftKings','Pinnacle','William Hill','Marathonbet'])){
   if(String(group.market||'').toUpperCase()!==wantedMarket)continue;
   const normalizedBook=String(group.bookmaker||'').replace(/[^a-z0-9]/gi,'').toLowerCase();
-  if(!['bet365','draftkings'].includes(normalizedBook))continue;
+  if(!['bet365','draftkings','pinnacle','williamhill','marathonbet'].includes(normalizedBook))continue;
   const bookRow=(row.bookmakers||[]).find(b=>String(b.name||'').replace(/[^a-z0-9]/gi,'').toLowerCase()===normalizedBook);
   const observedAt=bookRow?.observedAt||row.observedAt,providerUpdatedAt=bookRow?.providerUpdatedAt||bookRow?.last_update||row.providerUpdatedAt||row.update;
   const observed=Date.parse(observedAt),updated=Date.parse(providerUpdatedAt);
@@ -8282,7 +8282,7 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
    if(ticketSelectionKeyV78(outcome.selection)!==wantedSelection)continue;
    const odds=Number(outcome.odds);
    if(!Number.isFinite(odds)||odds<1.15||suspiciousBet365PriceV100(wantedMarket,wantedSelection,odds))continue;
-   matches.push({odds,bookmaker:normalizedBook==='bet365'?'Bet365':'DraftKings',observedAt,providerUpdatedAt,rawMarket:group.rawMarket||null,rawSelection:outcome.rawSelection||null,groupKey:group.groupKey||null,exactMarket:true,exactSelection:true,priceSuspicious:false});
+   matches.push({odds,bookmaker:({bet365:'Bet365',draftkings:'DraftKings',pinnacle:'Pinnacle',williamhill:'William Hill',marathonbet:'Marathonbet'})[normalizedBook],observedAt,providerUpdatedAt,rawMarket:group.rawMarket||null,rawSelection:outcome.rawSelection||null,groupKey:group.groupKey||null,exactMarket:true,exactSelection:true,priceSuspicious:false});
   }
  }
  const byBook=new Map();
@@ -8291,7 +8291,7 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
  for(const [book,arr] of byBook){
   if(new Set(arr.map(x=>x.odds.toFixed(4))).size!==1)continue;
   const x=arr[0];
-  const comparisonBooks=book==='Bet365'?['DraftKings','FanDuel']:['Bet365','FanDuel'];
+  const comparisonBooks=['Bet365','DraftKings','Pinnacle','William Hill','Marathonbet'].filter(x=>x!==book);
   const comparisons=oddsMarketsForBooksV81(oddsPayload,fixtureId,comparisonBooks).flatMap(g=>
    String(g.market||'').toUpperCase()===wantedMarket?arr2(g.outcomes).filter(o=>ticketSelectionKeyV78(o.selection)===wantedSelection&&Number(o.odds)>1).map(o=>Number(o.odds)):[]
   );

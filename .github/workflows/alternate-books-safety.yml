@@ -1,0 +1,19 @@
+name: Alternate Book Odds Safety
+on:
+  pull_request:
+    paths:
+      - worker.js
+      - tests/alternate-book-prices.test.cjs
+      - .github/workflows/alternate-books-safety.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check worker.js
+      - run: node --test tests/alternate-book-prices.test.cjs
