@@ -8819,9 +8819,20 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     engine2Handoff={mode:'SHADOW',candidateCount:compared.length,eligibleByExactPrice:compared.filter(x=>x.priceMatches).length,
       candidates:compared.slice(0,24),unvalidated:true,promotionAllowed:false,error:null};
   }catch(e){engine2Handoff={mode:'SHADOW',candidateCount:0,eligibleByExactPrice:0,candidates:[],unvalidated:true,promotionAllowed:false,error:safeRefreshError(e)};}
+  const engine2Live=[];
+  for(const c of arr2(engine2Handoff.candidates)){
+    const f=arr2(board?.games||board?.fixtures).find(g=>String(fixtureIdV19(g))===String(c.fixtureId));
+    if(!f||f?.fixture?.status?.short!=='NS'||Date.parse(f?.fixture?.date)<=Date.now()||dateOfV19(f?.fixture?.date)!==date)continue;
+    const tier=competitionTierV21(f?.league?.name,f?.league?.id),p=Number(c.simulationProbability),odds=Number(c.currentBet365Odds),ev=p*odds-1;
+    if(tier>2||!c.priceFresh||c.modelRiskFlag||!(p>=.70&&p<.95)||!(odds>=1.18&&odds<=3.5)||!(ev>=.03&&ev<=.30))continue;
+    const x={fixtureId:Number(c.fixtureId),providerMatchId:Number(c.fixtureId),home:f?.teams?.home?.name,away:f?.teams?.away?.name,league:f?.league?.name,kickoff:f?.fixture?.date,competitionTier:tier,market:c.market,selection:c.selection,probability:p,sportsbookOdds:odds,bookmaker:'Bet365',priceVerified:true,dataQuality:.75,valueEdge:p-1/odds,valueEdgePct:(p-1/odds)*100,_ticketOdds:odds,_ticketDay:'Today',decision:'PICK',engine2Experimental:true,reasons:['Experimental Engine2 simulation; uncalibrated probability and current verified Bet365 odds.']};
+    x.premiumScore=ticketPremiumScoreV80(x);x._ticketScore=x.premiumScore/100;
+    engine2Live.push(x);
+  }
+  engine2Handoff.liveCandidateCount=engine2Live.length;
   const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
-  const candidateCoverageReady = verifiedFixtureIds.size >= 2;
+  const candidateCoverageReady = new Set([...verifiedFixtureIds,...engine2Live.map(x=>String(x.fixtureId))]).size>=2;
   const pipelineBase = {
     analyzed: num4(board?.analyzedCount, 0),
     headlineStrong: arr2(board?.strongPicks).length,
@@ -8858,13 +8869,13 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
       oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
       ticket: null,
       candidateCount: 0,
-      pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: 0 },
+      pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: 0,engine2Qualified:engine2Live.length },
       rule: "Elite no longer waits for unrelated sportsbook pages. It proceeds only when at least two Tier 1/2 STRONG independent-model candidates have exact verified approved-bookmaker prices; otherwise it keeps building."
     };
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
     return payload2;
   }
-  const pool = eliteQualifiedPoolV2(verifiedPool).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), window = dailyPublicationWindowV2(date), publish = Boolean(t && window.allowed), b = publish ? await ticketBaselineV70(env, t.legs) : {}, payload = {
+  const pool = eliteQualifiedPoolV2([...verifiedPool,...engine2Live]).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), window = dailyPublicationWindowV2(date), publish = Boolean(t && window.allowed), b = publish ? await ticketBaselineV70(env, t.legs) : {}, payload = {
     ok: true,
     type: "daily",
     date,
@@ -8879,7 +8890,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     oddsSnapshotUpdatedAt: candidateOddsPayload.updatedAt || oddsRow?.refreshed_at || null,
     ticket: publish ? lockTicketV70(t, at, b) : t ? {...t,locked:false,draftAt:at,legs:arr2(t.legs).map(x=>({...x,locked:false}))} : null,
     candidateCount: pool.length,
-    pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: pool.length, rejectedQuality: pricedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: pricedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
+    pipeline: { ...pipelineBase, exactVerified: pricedPool.length, eliteQualified: pool.length,engine2Qualified:engine2Live.length,rejectedQuality: pricedPool.filter(x=>!eliteLegQualityV79(x)).length, qualifiedMarketOptions: pricedPool.filter(eliteLegQualityV79).length, targetLow: 2.8, targetHigh: 3.2, minimumLegs: 2, maximumLegs: 4, combinationFound: Boolean(t) },
     rule: "Frozen after publication. Every leg is exact verified approved-bookmaker priced. Elite can use fresh fixture-level approved-bookmaker verification without waiting for unrelated daily odds pages, evaluates every STRONG independent-model Tier 1/2 option available to the slate, prioritizes Tier 1, and never lowers the Elite quality threshold. Tier 3/4 and WATCH are forbidden. No fallback ticket is published unless the 2.80-3.20 target is genuinely met with 2-4 distinct fixtures and positive modeled edge."
   };
   await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload, 259200);
