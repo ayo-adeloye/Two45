@@ -8604,7 +8604,7 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
 __name(ticketPoolBoardVerifiedV78, "ticketPoolBoardVerifiedV78");
 function eliteQualifiedPoolV2(rows) {
   const best = new Map();
-  for (const row of rows.filter(eliteLegQualityV79)) {
+  for (const row of rows.filter(x=>x.engine2Experimental ? (x.priceVerified===true && x.bookmaker==='Bet365' && x.competitionTier<=2 && x.probability>=.70 && x.probability<.95 && x.sportsbookOdds>=1.18 && x.sportsbookOdds<=3.5 && x.valueEdge>0 && x.probability*x.sportsbookOdds-1<=.30) : eliteLegQualityV79(x))) {
     const id=String(row.fixtureId ?? row.providerMatchId),previous=best.get(id);
     if (!previous || row._ticketScore>previous._ticketScore) best.set(id,row);
   }
@@ -8829,7 +8829,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     x.premiumScore=ticketPremiumScoreV80(x);x._ticketScore=x.premiumScore/100;
     engine2Live.push(x);
   }
-  engine2Handoff.liveCandidateCount=engine2Live.length;
+  engine2Handoff.liveCandidateCount=engine2Live.length;engine2Handoff.liveCandidates=engine2Live.map(x=>({fixtureId:x.fixtureId,selection:x.selection,market:x.market,odds:x.sportsbookOdds}));
   const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
   const candidateCoverageReady = new Set([...verifiedFixtureIds,...engine2Live.map(x=>String(x.fixtureId))]).size>=2;
