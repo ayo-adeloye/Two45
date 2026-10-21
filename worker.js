@@ -8767,13 +8767,13 @@ function lockTicketV70(t, at, b) {
   return { ...t, locked: true, lockedAt: at, legs: arr2(t.legs).map((x) => ({ ...x, locked: true, lockedAt: at, originalOdds: ticketPriceV70(x), originalProbability: num4(x.probability, null), originalMarket: x.market || null, originalSelection: x.selection || null, lockIntel: b?.[String(x.fixtureId || x.providerMatchId)] || null })) };
 }
 __name(lockTicketV70, "lockTicketV70");
-async function hydrateEliteCandidateOddsV101(env, board, oddsPayload) {
+async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additionalFixtureIds = []) {
   let response = bet365RowsV68(arr2(oddsPayload?.response));
   const ids = [...new Set(
     [...arr2(board?.strongPicks), ...arr2(board?.premiumCandidates)]
       .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2 && ticketUpcomingV70(board, p))
       .map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? ""))
-      .filter(Boolean)
+      .filter(Boolean).concat(arr2(additionalFixtureIds).map(String).filter(Boolean))
   )].slice(0, 30);
   await Promise.all(ids.map(async (id) => {
     const cached = await getFeedSnapshot(env, "fixture-odds:" + id).catch(() => null);
@@ -8789,7 +8789,8 @@ __name(hydrateEliteCandidateOddsV101, "hydrateEliteCandidateOddsV101");
 async function buildDailyLockV70(env, date, rebuildReason = null) {
   const values = await Promise.all([ticketBoardV70(env, date), getFeedSnapshot(env, oddsKey(date)).catch(() => null), getFeedSnapshot(env, "two45-learning:v82").catch(() => null)]), board = values[0], oddsRow = values[1], learning = values[2]?.payload || {}, oddsPayload = oddsRow?.payload || {};
   const oddsComplete = Boolean(oddsRow) && oddsPayload?.paging?.complete !== false && !oddsPayload?.repairInProgress;
-  const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload);
+  const engine2PricingIds = arr2(await sb(env,'two45_feed_snapshots?snapshot_key=like.engine2-shadow:v1:*&select=fixtureId:payload->>fixtureId,kickoffAt:payload->>kickoffAt,qualityHold:payload->>qualityHold,discovery:payload->discovery&order=refreshed_at.desc&limit=80',{timeoutMs:2500}).catch(()=>[])).filter(x=>x.discovery?.status==='CANDIDATES'&&x.qualityHold!==true&&x.qualityHold!=='true'&&dateOfV19(x.kickoffAt)===date).map(x=>String(x.fixtureId));
+  const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload, engine2PricingIds);
   const researchFixtureIds = new Set([...arr2(board?.strongPicks),...arr2(board?.premiumCandidates)].filter(p=>p?.decision==='PICK' && ticketCompetitionTierV79(board,p)<=2 && ticketUpcomingV70(board,p)).map(p=>String(p.fixtureId ?? p.providerMatchId)));
   const pricedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
   // Engine 2 independent candidate comparison. The model is not validated for live promotion.
