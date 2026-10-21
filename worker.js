@@ -8780,10 +8780,21 @@ async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additional
   const ids = [...new Set([...priorityIds, ...boardIds])].slice(0, 30);
   const directResponses = await Promise.all(ids.map(async (id) => {
     const cached = await getFeedSnapshot(env, "fixture-odds:" + id).catch(() => null);
-    if (!cached?.refreshed_at) return [];
-    const age = Date.now() - Date.parse(cached.refreshed_at);
-    if (!Number.isFinite(age) || age > 30 * 60 * 1e3) return [];
-    return bet365RowsV68(cached?.payload?.response);
+    const age = Date.now() - Date.parse(cached?.refreshed_at);
+    const cachedRows = bet365RowsV68(cached?.payload?.response);
+    if (Number.isFinite(age) && age >= 0 && age < 10 * 60 * 1e3 &&
+        cachedRows.some(row => String(row?.fixture?.id) === id && fixtureQuoteFreshV2(row))) return cachedRows;
+    // A fresh cache write is not proof of a fresh provider quote.
+    try {
+      const direct = await providerFetchV18(env, "odds", {fixture:id,page:1});
+      const rows = bet365RowsV68(arr2(direct?.response).map(slimOddsRowV18));
+      if (!rows.some(row => String(row?.fixture?.id) === id && fixtureQuoteFreshV2(row))) return [];
+      await saveFeedSnapshot(env, "fixture-odds:" + id, {
+        ok:true,service:"two45-live-worker",type:"fixture-odds",fixtureId:id,
+        updatedAt:new Date().toISOString(),response:rows
+      },1800);
+      return rows;
+    } catch (e) { return []; }
   }));
   for (const rows of directResponses) if (rows.length) response = mergeOddsV18(response, rows);
   return { ...oddsPayload, response, total: response.length };
