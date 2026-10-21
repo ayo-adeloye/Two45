@@ -8481,7 +8481,7 @@ function suspiciousBet365PriceV100(market, selection, odds) {
 }
 __name(suspiciousBet365PriceV100, "suspiciousBet365PriceV100");
 // Equal-priority Bet365/DraftKings quote resolver. Never relabel one book's price as another.
-function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, now = Date.now()) {
+function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, now = Date.now(), requiredBookmaker = null) {
  const wantedMarket=String(market||'').trim().toUpperCase(), wantedSelection=ticketSelectionKeyV78(selection);
  if(!wantedMarket||!wantedSelection)return null;
  const rows=Array.isArray(oddsPayload?.response)?oddsPayload.response:[];
@@ -8520,11 +8520,11 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
  }
  // Same priority, prefer the best independently verified price, never overwrite its bookmaker.
  verified.sort((a,b)=>b.odds-a.odds||a.bookmaker.localeCompare(b.bookmaker));
- return verified[0]||null;
+ return (requiredBookmaker ? verified.find(x=>x.bookmaker===requiredBookmaker) : verified[0])||null;
 }
 __name(exactPreferredBookQuoteV118,"exactPreferredBookQuoteV118");
 function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){
- const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection);
+ const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection,Date.now(),'Bet365');
  if(quote?.bookmaker!=='Bet365')return null;
  const updated=Date.parse(quote.providerUpdatedAt),now=Date.now();
  if(!Number.isFinite(updated)||updated>now||now-updated>30*60000)return null;
