@@ -8524,8 +8524,8 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
 }
 __name(exactPreferredBookQuoteV118,"exactPreferredBookQuoteV118");
 function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){
- const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection,Date.now(),'Bet365');
- if(quote?.bookmaker!=='Bet365')return null;
+ const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection);
+ if(!quote?.bookmaker)return null;
  const updated=Date.parse(quote.providerUpdatedAt),now=Date.now();
  if(!Number.isFinite(updated)||updated>now||now-updated>30*60000)return null;
  return quote;
@@ -8646,6 +8646,8 @@ function ticketOptimizeV70(pool, target, low, high, minLegs, maxLegs, requireTie
       return;
     for (let i = start; i < pool.length; i++) {
       if (legs.some((leg) => String(leg.fixtureId ?? leg.providerMatchId) === String(pool[i].fixtureId ?? pool[i].providerMatchId))) continue;
+      // All legs must be executable at one identified bookmaker.
+      if (legs.length && pool[i].bookmaker !== legs[0].bookmaker) continue;
       const next = combined * pool[i]._ticketOdds;
       if (next > Math.max(high * 1.75, target * 1.75))
         continue;
