@@ -6849,7 +6849,15 @@ async function repairDailyOddsFromFixturesV68(env, date) {
   let response = bet365RowsV68(previous.response);
   const covered = new Set(response.map((row) => String(row?.fixture?.id)));
   const eliteTargets = await eliteOddsRepairTargetsV83(env, date, fixtures);
-  const repairTargets = eliteTargets;
+  // Include at most two independent Engine 2 candidates in the existing one-request-per-cycle
+  // odds repair queue. These remain shadow-only and never become publication candidates here.
+  let engine2PriceTargets=[];
+  try {
+    const shadow=arr2(await sb(env,'two45_feed_snapshots?snapshot_key=like.engine2-shadow:v1:*&select=fixtureId:payload->>fixtureId,kickoffAt:payload->>kickoffAt,qualityHold:payload->>qualityHold,discovery:payload->discovery&order=refreshed_at.desc&limit=80',{timeoutMs:2500}));
+    const eligible=new Set(fixtures.filter(f=>competitionTierV21(f?.league?.name,f?.league?.id)<=2).map(f=>String(fixtureIdV19(f))));
+    engine2PriceTargets=[...new Set(shadow.filter(x=>x.discovery?.status==='CANDIDATES'&&x.qualityHold!=='true'&&dateOfV19(x.kickoffAt)===date&&eligible.has(String(x.fixtureId))).map(x=>String(x.fixtureId)))].filter(id=>!eliteTargets.map(String).includes(id)).slice(0,2);
+  }catch(e){engine2PriceTargets=[];}
+  const repairTargets = [...new Set([...eliteTargets,...engine2PriceTargets])];
   const quoteRows = new Map(response.map(row=>[String(row.fixture?.id),row]));
   const repairedTargets = new Set(repairTargets.filter(id=>fixtureQuoteFreshV2(quoteRows.get(String(id)))));
   const repairAttempts = {...previous.repairAttempts};
