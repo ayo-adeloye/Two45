@@ -12,7 +12,7 @@ assert.equal(c.eliteConfidenceScoreV102(pick),c.eliteConfidenceScoreV102({...pic
 assert(c.eliteRejectionReasonsV2({...pick,probability:.3}).includes('PROBABILITY_FLOOR'));
 assert.equal(c.selectionV2.VERSION,'two45-independent-v2-shadow');
 c.ticketUpcomingV70=()=>true;c.ticketCompetitionTierV79=()=>1;
-c.exactBet365QuoteV78=()=>({bookmaker:'Bet365',odds:1.5,oddsVerification:{ok:true,status:'BET365_ONLY'}});
+c.exactPreferredBookQuoteV118=(payload,id,market,selection,now,book)=>book==='Pinnacle'?({bookmaker:'Pinnacle',odds:1.5,providerUpdatedAt:new Date().toISOString(),oddsVerification:{ok:true,status:'SINGLE_BOOK_VERIFIED'}}):null;
 const inherited={fixtureId:10,decision:'PICK',market:'TOTAL_GOALS',selection:'UNDER_4_5',probability:.6,dataQuality:.9,valueEdge:-.2,valueEdgePct:-20,alternatives:[{market:'TOTAL_GOALS',selection:'OVER_2_5',probability:.8,valueEdge:.1}]};
 const pool=c.ticketPoolBoardVerifiedV78({strongPicks:[inherited]},'Today',{},true);
 assert.equal(pool.length,1);assert.equal(pool[0].selection,'OVER_2_5');
