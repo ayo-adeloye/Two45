@@ -8784,6 +8784,30 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
   const candidateOddsPayload = await hydrateEliteCandidateOddsV101(env, board, oddsPayload);
   const researchFixtureIds = new Set([...arr2(board?.strongPicks),...arr2(board?.premiumCandidates)].filter(p=>p?.decision==='PICK' && ticketCompetitionTierV79(board,p)<=2 && ticketUpcomingV70(board,p)).map(p=>String(p.fixtureId ?? p.providerMatchId)));
   const pricedPool = ticketPoolBoardVerifiedV78(board, "Today", candidateOddsPayload, true, learning, false).filter((x) => num4(x?.competitionTier, 4) <= 2).filter((x) => String(x?.lane || "").toUpperCase() !== "WATCH" && String(x?.role || "").toUpperCase() !== "WATCH_OPTION");
+  // Engine 2 independent candidate comparison. The model is not validated for live promotion.
+  // Never promote its candidates into verifiedPool or use them for ticket optimization.
+  let engine2Handoff={mode:'SHADOW',candidates:[],eligibleByExactPrice:0,unvalidated:true,error:null};
+  try {
+    const shadowRows=arr2(await sb(env,'two45_feed_snapshots?snapshot_key=like.engine2-shadow:v1:*&select=snapshot_key,fixtureId:payload->>fixtureId,kickoffAt:payload->>kickoffAt,sourceGeneratedAt:payload->>sourceGeneratedAt,qualityHold:payload->>qualityHold,discovery:payload->discovery&order=refreshed_at.desc&limit=80',{timeoutMs:3500}));
+    const seen=new Set(),compared=[];
+    for(const item of shadowRows) {
+      if(item.discovery?.status!=='CANDIDATES'||item.qualityHold===true||item.qualityHold==='true'||dateOfV19(item.kickoffAt)!==date)continue;
+      for(const c of arr2(item.discovery.candidates)) {
+        const id=String(c.fixtureId||item.fixtureId),key=id+'|'+c.market+'|'+ticketSelectionKeyV78(c.selection);
+        if(seen.has(key))continue;seen.add(key);
+        const quote=exactBet365QuoteV78(candidateOddsPayload,id,c.market,c.selection);
+        const at=Date.parse(quote?.observedAt),now=Date.now(),kickoff=Date.parse(item.kickoffAt);
+        const priceFresh=Boolean(quote&&at<=now&&now-at<=30*60000&&now<kickoff);
+        const priceMatches=priceFresh&&Math.abs(Number(quote.odds)-Number(c.odds))<.005;
+        compared.push({fixtureId:id,market:c.market,selection:c.selection,simulationProbability:c.probability,
+          simulatedEV:c.estimatedEV,quotedOdds:c.odds,currentBet365Odds:quote?.odds||null,
+          priceFresh,priceMatches,publicationEligible:false,
+          reason:!priceFresh?'NO_FRESH_EXACT_BET365_PRICE':!priceMatches?'PRICE_CHANGED':'ENGINE2_PROSPECTIVE_VALIDATION_REQUIRED'});
+      }
+    }
+    engine2Handoff={mode:'SHADOW',candidateCount:compared.length,eligibleByExactPrice:compared.filter(x=>x.priceMatches).length,
+      candidates:compared.slice(0,24),unvalidated:true,promotionAllowed:false,error:null};
+  }catch(e){engine2Handoff={mode:'SHADOW',candidateCount:0,eligibleByExactPrice:0,candidates:[],unvalidated:true,promotionAllowed:false,error:safeRefreshError(e)};}
   const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
   const candidateCoverageReady = verifiedFixtureIds.size >= 2;
@@ -8791,6 +8815,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     analyzed: num4(board?.analyzedCount, 0),
     headlineStrong: arr2(board?.strongPicks).length,
     strongMarketOptions: arr2(board?.premiumCandidates).length,
+    engine2Handoff,
     oddsComplete,
     candidateCoverageReady,
     independentReview:review.summary,
