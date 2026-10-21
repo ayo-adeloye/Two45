@@ -8821,7 +8821,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
       }
     }
     engine2Handoff={mode:'SHADOW',candidateCount:compared.length,eligibleByExactPrice:compared.filter(x=>x.priceMatches).length,
-      candidates:compared.slice(0,24),unvalidated:true,promotionAllowed:false,error:null};
+      candidates:compared,unvalidated:true,promotionAllowed:false,error:null};
   }catch(e){engine2Handoff={mode:'SHADOW',candidateCount:0,eligibleByExactPrice:0,candidates:[],unvalidated:true,promotionAllowed:false,error:safeRefreshError(e)};}
   const engine2Live=[];
   for(const c of arr2(engine2Handoff.candidates)){
@@ -8833,7 +8833,9 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     x.premiumScore=ticketPremiumScoreV80(x);x._ticketScore=x.premiumScore/100;
     engine2Live.push(x);
   }
-  engine2Handoff.liveCandidateCount=engine2Live.length;engine2Handoff.liveCandidates=engine2Live.map(x=>({fixtureId:x.fixtureId,selection:x.selection,market:x.market,odds:x.sportsbookOdds}));
+  engine2Handoff.liveCandidateCount=engine2Live.length;
+  // Bound the published diagnostic payload without truncating the candidates evaluated above.
+  engine2Handoff.candidates=engine2Handoff.candidates.slice(0,24);engine2Handoff.liveCandidates=engine2Live.map(x=>({fixtureId:x.fixtureId,selection:x.selection,market:x.market,odds:x.sportsbookOdds}));
   const review=await reviewModelPoolV1(env,[...pricedPool.filter(eliteLegQualityV79),...engine2Live]),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
   const candidateCoverageReady = new Set([...verifiedFixtureIds,...engine2Live.map(x=>String(x.fixtureId))]).size>=2;
