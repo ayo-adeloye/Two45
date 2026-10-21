@@ -8807,10 +8807,13 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
         const at=Date.parse(quote?.observedAt),now=Date.now(),kickoff=Date.parse(item.kickoffAt);
         const priceFresh=Boolean(quote&&at<=now&&now-at<=30*60000&&now<kickoff);
         const priceMatches=priceFresh&&Math.abs(Number(quote.odds)-Number(c.odds))<.005;
+        const currentEstimatedEV=priceFresh&&Number.isFinite(Number(c.probability))?Number(c.probability)*Number(quote.odds)-1:null;
+        const anomalous=currentEstimatedEV!==null&&currentEstimatedEV>.30;
         compared.push({fixtureId:id,market:c.market,selection:c.selection,simulationProbability:c.probability,
           simulatedEV:c.estimatedEV,quotedOdds:c.odds,currentBet365Odds:quote?.odds||null,
-          priceFresh,priceMatches,publicationEligible:false,
-          reason:!priceFresh?'NO_FRESH_EXACT_BET365_PRICE':!priceMatches?'PRICE_CHANGED':'ENGINE2_PROSPECTIVE_VALIDATION_REQUIRED'});
+          currentEstimatedEV,priceFresh,priceMatches,publicationEligible:false,
+          modelRiskFlag:anomalous?'EXTREME_MODEL_EDGE_REQUIRES_CALIBRATION':null,
+          reason:!priceFresh?'NO_FRESH_EXACT_BET365_PRICE':anomalous?'EXTREME_MODEL_EDGE_REQUIRES_CALIBRATION':currentEstimatedEV<.03?'CURRENT_PRICE_NO_LONGER_VALUE':'ENGINE2_PROSPECTIVE_VALIDATION_REQUIRED'});
       }
     }
     engine2Handoff={mode:'SHADOW',candidateCount:compared.length,eligibleByExactPrice:compared.filter(x=>x.priceMatches).length,
