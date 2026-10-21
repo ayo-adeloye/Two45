@@ -8575,9 +8575,10 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
     if (tier > 3 || p?.decision !== "PICK" || !ticketUpcomingV70(board, p))
       continue;
     for (const c of alts ? [p, ...arr2(p.alternatives)] : [p]) {
-      const x = { ...p, ...c }, fixtureId = p.fixtureId ?? p.providerMatchId, quote = exactBet365QuoteV78(oddsPayload, fixtureId, x.market, x.selection);
-      if (!quote)
-        continue;
+      const x = { ...p, ...c }, fixtureId = p.fixtureId ?? p.providerMatchId;
+      for (const book of ['Bet365','DraftKings','Pinnacle','William Hill','Marathonbet']) {
+      const quote = exactPreferredBookQuoteV118(oddsPayload, fixtureId, x.market, x.selection, Date.now(), book);
+      if (!quote || Date.now()-Date.parse(quote.providerUpdatedAt)>30*60000) continue;
       const verified = { ...x, fixtureId: p.fixtureId, providerMatchId: p.providerMatchId, home: p.home, away: p.away, league: p.league, kickoff: p.kickoff, competitionTier: tier, bookmaker: quote.bookmaker, sportsbookOdds: quote.odds,priceObservedAt:quote.observedAt,providerUpdatedAt:quote.providerUpdatedAt, rawMarket: quote.rawMarket, rawSelection: quote.rawSelection, oddsVerification: quote.oddsVerification, priceVerified: true, priceVerificationRevision: TICKET_LOCK_REVISION_V78, _ticketOdds: quote.odds, _ticketDay: day };
       // A merged alternative must never inherit the headline market's edge.
       verified.valueEdge = ticketNormV70(verified.probability,0) - 1/quote.odds;
@@ -8593,13 +8594,14 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
       if (rel && num4(rel.settled, 0) >= 6)
         verified.reasons.push("Two45 history: " + rel.team + " has gone " + rel.wins + "/" + rel.settled + " on this team-market pattern. This is a supporting signal, not an automatic pick.");
       rows.push(verified);
+      }
     }
   }
   const seen = /* @__PURE__ */ new Map();
   for (const x of rows) {
     const fixture = String(x.fixtureId || x.providerMatchId || "");
     if (!fixture) continue;
-    const id = deduplicateFixtures ? fixture : [fixture,x.market,ticketSelectionKeyV78(x.selection)].join('|'), prev = seen.get(id);
+    const id = deduplicateFixtures ? [fixture,x.bookmaker].join('|') : [fixture,x.bookmaker,x.market,ticketSelectionKeyV78(x.selection)].join('|'), prev = seen.get(id);
     if (id && (!prev || x._ticketScore > prev._ticketScore))
       seen.set(id, x);
   }
@@ -8608,8 +8610,8 @@ function ticketPoolBoardVerifiedV78(board, day, oddsPayload, alts = false, learn
 __name(ticketPoolBoardVerifiedV78, "ticketPoolBoardVerifiedV78");
 function eliteQualifiedPoolV2(rows) {
   const best = new Map();
-  for (const row of rows.filter(x=>x.engine2Experimental ? (x.priceVerified===true && x.bookmaker==='Bet365' && x.competitionTier<=2 && x.probability>=.70 && x.probability<.95 && x.sportsbookOdds>=1.18 && x.sportsbookOdds<=3.5 && x.valueEdge>0 && x.probability*x.sportsbookOdds-1<=.30) : eliteLegQualityV79(x))) {
-    const id=String(row.fixtureId ?? row.providerMatchId),previous=best.get(id);
+  for (const row of rows.filter(x=>x.engine2Experimental ? (x.priceVerified===true && Boolean(x.bookmaker) && x.competitionTier<=2 && x.probability>=.70 && x.probability<.95 && x.sportsbookOdds>=1.18 && x.sportsbookOdds<=3.5 && x.valueEdge>0 && x.probability*x.sportsbookOdds-1<=.30) : eliteLegQualityV79(x))) {
+    const id=[String(row.fixtureId ?? row.providerMatchId),String(row.bookmaker)].join('|'),previous=best.get(id);
     if (!previous || row._ticketScore>previous._ticketScore) best.set(id,row);
   }
   return [...best.values()].sort((a,b)=>a.competitionTier-b.competitionTier || b._ticketScore-a._ticketScore);
