@@ -8806,12 +8806,12 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
         const quote=exactBet365QuoteV78(candidateOddsPayload,id,c.market,c.selection);
         const at=Date.parse(quote?.observedAt),now=Date.now(),kickoff=Date.parse(item.kickoffAt);
         const priceFresh=Boolean(quote&&at<=now&&now-at<=30*60000&&now<kickoff);
-        const priceMatches=priceFresh&&Math.abs(Number(quote.odds)-Number(c.odds))<.005;
+        const priceMatches=priceFresh; // Current exact-market Bet365 quote supersedes the stale discovery-time price.
         const currentEstimatedEV=priceFresh&&Number.isFinite(Number(c.probability))?Number(c.probability)*Number(quote.odds)-1:null;
         const anomalous=currentEstimatedEV!==null&&currentEstimatedEV>.30;
         compared.push({fixtureId:id,market:c.market,selection:c.selection,simulationProbability:c.probability,
           simulatedEV:c.estimatedEV,quotedOdds:c.odds,currentBet365Odds:quote?.odds||null,
-          currentEstimatedEV,priceFresh,priceMatches,publicationEligible:false,
+          currentEstimatedEV,priceFresh,priceMatches,priceObservedAt:quote?.observedAt||null,providerUpdatedAt:quote?.providerUpdatedAt||quote?.updatedAt||null,publicationEligible:false,
           modelRiskFlag:anomalous?'EXTREME_MODEL_EDGE_REQUIRES_CALIBRATION':null,
           reason:!priceFresh?'NO_FRESH_EXACT_BET365_PRICE':anomalous?'EXTREME_MODEL_EDGE_REQUIRES_CALIBRATION':currentEstimatedEV<.03?'CURRENT_PRICE_NO_LONGER_VALUE':'ENGINE2_PROSPECTIVE_VALIDATION_REQUIRED'});
       }
@@ -8825,7 +8825,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     if(!f||f?.fixture?.status?.short!=='NS'||Date.parse(f?.fixture?.date)<=Date.now()||dateOfV19(f?.fixture?.date)!==date)continue;
     const tier=competitionTierV21(f?.league?.name,f?.league?.id),p=Number(c.simulationProbability),odds=Number(c.currentBet365Odds),ev=p*odds-1;
     if(tier>2||!c.priceFresh||c.modelRiskFlag||!(p>=.70&&p<.95)||!(odds>=1.18&&odds<=3.5)||!(ev>=.03&&ev<=.30))continue;
-    const x={fixtureId:Number(c.fixtureId),providerMatchId:Number(c.fixtureId),home:f?.teams?.home?.name,away:f?.teams?.away?.name,league:f?.league?.name,kickoff:f?.fixture?.date,competitionTier:tier,market:c.market,selection:c.selection,probability:p,sportsbookOdds:odds,bookmaker:'Bet365',priceVerified:true,dataQuality:.75,valueEdge:p-1/odds,valueEdgePct:(p-1/odds)*100,_ticketOdds:odds,_ticketDay:'Today',decision:'PICK',engine2Experimental:true,reasons:['Experimental Engine2 simulation; uncalibrated probability and current verified Bet365 odds.']};
+    const x={fixtureId:Number(c.fixtureId),providerMatchId:Number(c.fixtureId),home:f?.teams?.home?.name,away:f?.teams?.away?.name,league:f?.league?.name,kickoff:f?.fixture?.date,competitionTier:tier,market:c.market,selection:c.selection,probability:p,sportsbookOdds:odds,bookmaker:'Bet365',priceVerified:true,priceObservedAt:c.priceObservedAt,providerUpdatedAt:c.providerUpdatedAt,dataQuality:.75,valueEdge:p-1/odds,valueEdgePct:(p-1/odds)*100,_ticketOdds:odds,_ticketDay:'Today',decision:'PICK',engine2Experimental:true,reasons:['Experimental Engine2 simulation; uncalibrated probability and current verified Bet365 odds.']};
     x.premiumScore=ticketPremiumScoreV80(x);x._ticketScore=x.premiumScore/100;
     engine2Live.push(x);
   }
