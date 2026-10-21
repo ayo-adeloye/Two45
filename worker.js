@@ -8785,7 +8785,10 @@ async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additional
     .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2 && ticketUpcomingV70(board, p))
     .map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? "")).filter(Boolean);
   const ids = [...new Set([...priorityIds, ...boardIds])].slice(0, 30);
-  const directResponses = await Promise.all(ids.map(async (id) => {
+  // Bounded requests: the provider enforces shared pacing and a daily budget.
+  const directResponses = [];
+  for (const id of ids.slice(0, 4)) {
+    const rowsForFixture = await (async () => {
     const cached = await getFeedSnapshot(env, "fixture-odds:" + id).catch(() => null);
     const age = Date.now() - Date.parse(cached?.refreshed_at);
     const cachedRows = bet365RowsV68(cached?.payload?.response);
@@ -8802,7 +8805,9 @@ async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additional
       },1800);
       return rows;
     } catch (e) { return []; }
-  }));
+    })();
+    directResponses.push(rowsForFixture);
+  }
   for (const rows of directResponses) if (rows.length) response = mergeOddsV18(response, rows);
   return { ...oddsPayload, response, total: response.length };
 }
