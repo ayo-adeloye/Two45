@@ -8830,7 +8830,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     engine2Live.push(x);
   }
   engine2Handoff.liveCandidateCount=engine2Live.length;engine2Handoff.liveCandidates=engine2Live.map(x=>({fixtureId:x.fixtureId,selection:x.selection,market:x.market,odds:x.sportsbookOdds}));
-  const review=await reviewModelPoolV1(env,pricedPool.filter(eliteLegQualityV79)),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
+  const review=await reviewModelPoolV1(env,[...pricedPool.filter(eliteLegQualityV79),...engine2Live]),verifiedPool=review.pool.filter(x=>x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false);
   const verifiedFixtureIds = new Set(pricedPool.map(x=>String(x.fixtureId ?? x.providerMatchId)));
   const candidateCoverageReady = new Set([...verifiedFixtureIds,...engine2Live.map(x=>String(x.fixtureId))]).size>=2;
   const pipelineBase = {
@@ -8875,7 +8875,7 @@ async function buildDailyLockV70(env, date, rebuildReason = null) {
     await saveFeedSnapshot(env, "ticket-lock:daily:" + date, payload2, 259200);
     return payload2;
   }
-  const pool = eliteQualifiedPoolV2(verifiedPool).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), window = dailyPublicationWindowV2(date), publish = Boolean(t && window.allowed), b = publish ? await ticketBaselineV70(env, t.legs) : {}, payload = {
+  const pool = eliteQualifiedPoolV2(verifiedPool.filter(x=>!x.engine2Experimental || (x.modelReview?.coreValidated===true && x.modelReview?.status==='SUPPORTS' && x.modelReview?.hold===false))).slice(0, 30), tier1Pool = pool.filter((x) => num4(x?.competitionTier, 4) === 1), tier1Try = ticketOptimizeV70(tier1Pool, 3, 2.8, 3.2, 2, 4, true), tier12Try = tier1Try?.targetMet ? tier1Try : ticketOptimizeV70(pool, 3, 2.8, 3.2, 2, 4, true), t = tier12Try?.targetMet ? tier12Try : null, at = (/* @__PURE__ */ new Date()).toISOString(), window = dailyPublicationWindowV2(date), publish = Boolean(t && window.allowed), b = publish ? await ticketBaselineV70(env, t.legs) : {}, payload = {
     ok: true,
     type: "daily",
     date,
