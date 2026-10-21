@@ -8769,20 +8769,19 @@ function lockTicketV70(t, at, b) {
 __name(lockTicketV70, "lockTicketV70");
 async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additionalFixtureIds = []) {
   let response = bet365RowsV68(arr2(oddsPayload?.response));
-  const ids = [...new Set(
-    [...arr2(board?.strongPicks), ...arr2(board?.premiumCandidates)]
-      .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2 && ticketUpcomingV70(board, p))
-      .map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? ""))
-      .filter(Boolean).concat(arr2(additionalFixtureIds).map(String).filter(Boolean))
-  )].slice(0, 30);
-  await Promise.all(ids.map(async (id) => {
+  const priorityIds = arr2(additionalFixtureIds).map(String).filter(Boolean);
+  const boardIds = [...arr2(board?.strongPicks), ...arr2(board?.premiumCandidates)]
+    .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2 && ticketUpcomingV70(board, p))
+    .map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? "")).filter(Boolean);
+  const ids = [...new Set([...priorityIds, ...boardIds])].slice(0, 30);
+  const directResponses = await Promise.all(ids.map(async (id) => {
     const cached = await getFeedSnapshot(env, "fixture-odds:" + id).catch(() => null);
-    if (!cached?.refreshed_at) return;
+    if (!cached?.refreshed_at) return [];
     const age = Date.now() - Date.parse(cached.refreshed_at);
-    if (!Number.isFinite(age) || age > 30 * 60 * 1e3) return;
-    const directRows = bet365RowsV68(cached?.payload?.response);
-    if (directRows.length) response = mergeOddsV18(response, directRows);
+    if (!Number.isFinite(age) || age > 30 * 60 * 1e3) return [];
+    return bet365RowsV68(cached?.payload?.response);
   }));
+  for (const rows of directResponses) if (rows.length) response = mergeOddsV18(response, rows);
   return { ...oddsPayload, response, total: response.length };
 }
 __name(hydrateEliteCandidateOddsV101, "hydrateEliteCandidateOddsV101");
