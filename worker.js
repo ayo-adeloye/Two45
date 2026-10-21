@@ -6756,6 +6756,9 @@ function slimOddsRowV18(row) {
     ).map(
       (book) => ({
         name: book?.name,
+        // Preserve source-specific quote timestamps for multi-bookmaker validation.
+        observedAt: book?.observedAt || row?.observedAt || null,
+        providerUpdatedAt: book?.providerUpdatedAt || book?.last_update || row?.providerUpdatedAt || row?.update || null,
         bets: arr2(
           book?.bets
         ).filter(
