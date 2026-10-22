@@ -1,0 +1,12 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { estimateCost, shortlist, verifyShadowDecision, validateAnalystOutput, runShadow } from "./ai-analyst-shadow-v1.mjs";
+const kickoff = new Date(Date.now()+86400000).toISOString();
+const fresh = new Date().toISOString();
+const fixture = { fixtureId: 123, kickoff, markets: [{market:"TOTAL_GOALS",selection:"OVER_2_5",odds:1.9,modelProbability:.58,bookmaker:"Bet365",observedAt:fresh,providerUpdatedAt:fresh}] };
+test("Gemini is cheaper for equal output tokens",()=>assert.ok(estimateCost("gemini",5000,1000)<estimateCost("openai",5000,1000)));
+test("screening selects opportunities",()=>assert.equal(shortlist([fixture]).length,1));
+test("no stale or alternate bookmaker quote can pass",()=>{const answer={candidates:[{lane:"RISKY_VALUE",market:"TOTAL_GOALS",selection:"OVER_2_5",probability:.6,reason:"test"}]};assert.equal(verifyShadowDecision({...fixture,markets:[{...fixture.markets[0],bookmaker:"Other"}]},answer)[0].priceVerified,false);});
+test("output rejects invented lanes",()=>assert.throws(()=>validateAnalystOutput({candidates:[{lane:"INVALID",market:"X",selection:"Y",probability:.5,reason:"x"}]})));
+test("free tier rejects unconfirmed provider",async()=>{let calls=0;const x=await runShadow({fixtures:[fixture],provider:"gemini",ledger:{month:new Date().toISOString().slice(0,7),spentUsd:0,reservedUsd:0,freeTier:true,paidBillingEnabled:false},invoke:async()=>{calls++;}});assert.equal(calls,1);assert.equal(x.results.length,1);assert.ok(x.results[0].error);});
+test("shadow results cannot publish",async()=>{const x=await runShadow({fixtures:[fixture],provider:"gemini",ledger:{month:new Date().toISOString().slice(0,7),spentUsd:0,reservedUsd:0,freeTier:true,paidBillingEnabled:false},invoke:async()=>({inputTokens:100,outputTokens:100,freeTier:true,data:{candidates:[{lane:"HIGH_CONVICTION",market:"TOTAL_GOALS",selection:"OVER_2_5",probability:.6,reason:"test"}]}})});assert.equal(x.results[0].candidates[0].publicationEligible,false);});

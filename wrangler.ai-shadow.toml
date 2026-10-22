@@ -1,0 +1,6 @@
+name = "two45-ai-shadow-v1"
+main = "ai-analyst-shadow-worker-v1.mjs"
+compatibility_date = "2026-10-01"
+# Manual deployment only; do not add cron triggers.
+# Set GEMINI_API_KEY and AI_SHADOW_ADMIN_TOKEN as Worker secrets.
+# Set GEMINI_FREE_TIER_CONFIRMED=true only after confirming Google project is free tier.
