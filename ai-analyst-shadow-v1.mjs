@@ -74,20 +74,19 @@ export async function runShadow({ fixtures, provider, invoke, ledger, now = new 
   for (const fixture of shortlist(fixtures, maxMatches)) {
     // The adapter must explicitly confirm free-tier routing; estimated list prices do not apply.
     if (ledger.paidBillingEnabled !== false || ledger.freeTier !== true) throw new Error("Free-tier ledger required");
-    const reserved = 0;
-    ledger.reservedUsd += reserved;
+
     try {
       const reply = await invoke({ model: MODELS[provider].id, prompt: promptForFixture(fixture),
         maxOutputTokens: 2000 });
-      if (reply.freeTier !== true) throw new Error("Provider did not confirm free-tier request");
-      const billed = 0;
+      // Gemini responses do not attest free-tier billing. Do not assert $0 charged.
+      const estimatedPaidRateUsd = estimateCost(provider, reply.inputTokens || 0, reply.outputTokens || 0);
       const answer = validateAnalystOutput(reply.data);
       results.push({ fixtureId: fixture.fixtureId, provider, model: MODELS[provider].id,
-        candidates: verifyShadowDecision(fixture, answer), costUsd: billed, shadow: true });
+        candidates: verifyShadowDecision(fixture, answer), estimatedPaidRateUsd, actualBilledUsd: null, shadow: true });
     } catch (error) {
       results.push({ fixtureId: fixture.fixtureId, shadow: true, candidates: [],
         error: String(error?.message || error) });
-    } finally { ledger.reservedUsd -= reserved; }
+    }
   }
-  return { month, provider, results, spentUsd: ledger.spentUsd, shadow: true };
+  return { month, provider, results, actualBilledUsd: null, shadow: true };
 }
