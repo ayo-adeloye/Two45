@@ -41,6 +41,7 @@ jobs:
           node-version: '22'
       - name: Validate selection and publication invariants
         run: |
+          node --test tests/fixture-board-visibility.test.cjs tests/provider-burst-deferral.test.cjs
           node selection-v2.test.mjs
           node tests/quote-provenance.cjs
           node tests/elite-automation.cjs

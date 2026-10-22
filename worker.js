@@ -5759,7 +5759,7 @@ async function processOne(env, job) {
     };
   } catch (e) {
     const msg = e?.message || String(e);
-    const rateLimited = /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window|pacing lock busy|another request is active/i.test(
+    const rateLimited = /rate.?limit|too many requests|HTTP 429|daily cap|budget reservation|quiet window|pacing lock busy|another request is active|bounded provider burst complete/i.test(
       msg
     );
     await patchJob(
