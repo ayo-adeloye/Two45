@@ -21,12 +21,18 @@ export function shortlist(fixtures, limit = 20) {
   }).map(f => ({
     ...f,
     // Preliminary math is for prioritization only; never interpret it as a verified edge.
-    opportunities: f.markets.filter(m => Number.isFinite(m.modelProbability) &&
-      m.modelProbability > 0 && m.modelProbability < 1 && Number.isFinite(m.odds) && m.odds > 1)
-      .map(m => ({ ...m, indicativeEdge: m.modelProbability * m.odds - 1 }))
-      .sort((a,b) => b.indicativeEdge - a.indicativeEdge)
+    opportunities: f.markets.filter(m =>
+      typeof m.market === "string" && typeof m.selection === "string" &&
+      Number.isFinite(m.odds) && m.odds > 1
+    ).map(m => ({
+      ...m,
+      // No prerequisite prediction from the old engine.
+      indicativeEdge: Number.isFinite(m.modelProbability) &&
+        m.modelProbability > 0 && m.modelProbability < 1
+        ? m.modelProbability * m.odds - 1 : null
+    })).sort((a,b) => (b.indicativeEdge ?? -Infinity) - (a.indicativeEdge ?? -Infinity))
   })).filter(f => f.opportunities.length)
-    .sort((a,b) => b.opportunities[0].indicativeEdge - a.opportunities[0].indicativeEdge)
+    .sort((a,b) => (b.opportunities[0].indicativeEdge ?? -Infinity) - (a.opportunities[0].indicativeEdge ?? -Infinity))
     .slice(0, limit);
 }
 export function verifyShadowDecision(fixture, answer, now = Date.now()) {
