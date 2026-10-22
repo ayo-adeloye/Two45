@@ -14,4 +14,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test ai-analyst-shadow-v1.test.mjs ai-analyst-gemini-adapter-v1.test.mjs
+      - run: node --test ai-analyst-shadow-v1.test.mjs ai-analyst-gemini-adapter-v1.test.mjs ai-analyst-shadow-worker-v1.test.mjs
