@@ -9043,8 +9043,8 @@ async function scheduledAnalysisV2(event, env) {
   result.goalHistoryBackfill = await backfillGoalHistoryV120(env).catch(e=>({ok:false,error:safeRefreshError(e)}));
   result.forecastCoreTraining = await refreshGoalCoreV3(env);
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
-  result.engine2Shadow = await runEngine2ShadowSweepV1(env);
-  result.engine2Settlement = await runEngine2SettlementV1(env);
+  result.engine2Shadow = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
+  result.engine2Settlement = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
   // Running it every minute re-downloaded up to 1,000 full forecast rows, including
   // large JSON analysis fields, without improving model freshness.
