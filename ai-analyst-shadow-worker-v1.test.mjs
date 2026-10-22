@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import worker from "./ai-analyst-shadow-worker-v1.mjs";
+const req=(body,auth="Bearer test-token")=>new Request("https://shadow.invalid/",{method:"POST",headers:{"authorization":auth,"content-type":"application/json"},body:JSON.stringify(body)});
+const env={GEMINI_API_KEY:"mock",AI_SHADOW_ADMIN_TOKEN:"test-token",GEMINI_FREE_TIER_CONFIRMED:"true"};
+test("shadow endpoint refuses unauthenticated requests",async()=>assert.equal((await worker.fetch(req({fixtures:[]},"Bearer wrong"),env)).status,401));
+test("shadow endpoint refuses absent Gemini secret",async()=>assert.equal((await worker.fetch(req({fixtures:[]}),{...env,GEMINI_API_KEY:undefined})).status,503));
+test("shadow endpoint refuses unconfirmed free tier",async()=>assert.equal((await worker.fetch(req({fixtures:[]}),{...env,GEMINI_FREE_TIER_CONFIRMED:"false"})).status,503));
+test("shadow endpoint rejects oversized batches",async()=>assert.equal((await worker.fetch(req({fixtures:Array(6).fill({})}),env)).status,400));
+test("empty batch is safe and produces no predictions",async()=>{const r=await worker.fetch(req({fixtures:[]}),env);assert.equal(r.status,200);const j=await r.json();assert.equal(j.shadow,true);assert.deepEqual(j.results,[]);});
