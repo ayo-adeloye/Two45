@@ -8098,10 +8098,15 @@ async function runCycleV19(event, env, force = false) {
       }
     }
     if (clearingFresh) {
-      try {
-        result.boards.push(await evaluateBoardV19(env, easternDate(), true));
-      } catch (e) {
-        result.errors.push({ stage: "board-light", date: easternDate(), error: safeRefreshError(e) });
+      // Keep both date boards materialized while fresh baseline jobs are draining.
+      // Tomorrow's High Conviction and Risky Value must not wait for the backlog
+      // to clear before a model-board snapshot can exist.
+      for (const date of activeDatesV19()) {
+        try {
+          result.boards.push(await evaluateBoardV19(env, date, true));
+        } catch (e) {
+          result.errors.push({ stage: "board-light", date, error: safeRefreshError(e) });
+        }
       }
     } else {
       for (const date of activeDatesV19().slice().sort((a, b) => Number(b === tomorrowEasternDate()) - Number(a === tomorrowEasternDate()))) {
