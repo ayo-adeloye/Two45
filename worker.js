@@ -8781,10 +8781,10 @@ __name(lockTicketV70, "lockTicketV70");
 async function hydrateEliteCandidateOddsV101(env, board, oddsPayload, additionalFixtureIds = []) {
   let response = bet365RowsV68(arr2(oddsPayload?.response));
   const priorityIds = arr2(additionalFixtureIds).map(String).filter(Boolean);
-  const boardIds = [...arr2(board?.strongPicks), ...arr2(board?.premiumCandidates)]
-    .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 2 && ticketUpcomingV70(board, p))
+  const boardIds = [...arr2(board?.strongPicks), ...arr2(board?.riskyPlays), ...arr2(board?.premiumCandidates)]
+    .filter((p) => p?.decision === "PICK" && num4(p?.competitionTier, 4) <= 3 && ticketUpcomingV70(board, p))
     .map((p) => String(p?.fixtureId ?? p?.providerMatchId ?? "")).filter(Boolean);
-  const ids = [...new Set([...priorityIds, ...boardIds])].slice(0, 30);
+  const ids = [...new Set([...boardIds, ...priorityIds])].filter(id => !response.some(row => String(row?.fixture?.id) === id && fixtureQuoteFreshV2(row))).slice(0, 30);
   // Bounded requests: the provider enforces shared pacing and a daily budget.
   const directResponses = [];
   for (const id of ids.slice(0, 4)) {
