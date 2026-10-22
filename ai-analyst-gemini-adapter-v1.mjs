@@ -24,6 +24,6 @@ export async function invokeGeminiFree({ apiKey, model, prompt, maxOutputTokens 
   return { data: validateAnalystOutput(parsed),
     inputTokens: data?.usageMetadata?.promptTokenCount || 0,
     outputTokens: data?.usageMetadata?.candidatesTokenCount || 0,
-    freeTier: true // Free-only configuration is asserted by caller; API does not attest billing tier.
+    // Google API responses do not certify the account billing tier.
   };
 }
