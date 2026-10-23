@@ -9052,21 +9052,28 @@ async function scheduledAnalysisV2(event, env) {
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
   result.engine2Shadow = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
   result.engine2Settlement = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
+  // Queue-driven OpenAI analysis: retry pending fixtures after odds refresh.
   if (shouldPreloadTomorrow()) {
     const date=tomorrowEasternDate();
-    const key="chatgpt-analyst:batch:v1:"+date;
-    if (!await getFeedSnapshot(env,key).catch(()=>null)) {
-      await saveFeedSnapshot(env,key,{status:"STARTED"},86400);
-      const fr=await getFeedSnapshot(env,"fixtures:"+date);
-      const or=await getFeedSnapshot(env,"odds:"+date);
-      const ids=new Set((or?.payload?.response||[]).map(x=>Number(x.fixture?.id)));
-      const candidates=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+3600000&&ids.has(Number(f.fixture.id))).slice(0,3);
+    const fr=await getFeedSnapshot(env,"fixtures:"+date).catch(()=>null);
+    const or=await getFeedSnapshot(env,"odds:"+date).catch(()=>null);
+    const oddsIds=new Set((or?.payload?.response||[]).filter(o=>(o.bookmakers||[]).some(b=>(b.bets||[]).some(x=>(x.values||[]).length))).map(o=>Number(o.fixture?.id)));
+    const eligible=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+3600000&&oddsIds.has(Number(f.fixture.id)));
+    const hourKey="chatgpt-analyst:queue-hour:"+date+":"+new Date().toISOString().slice(0,13);
+    if (!await getFeedSnapshot(env,hourKey).catch(()=>null)) {
+      await saveFeedSnapshot(env,hourKey,{status:"RUNNING",eligible:eligible.length},7200);
       const outcomes=[];
-      for (const f of candidates) {
-        try { const x=await runChatGPTAnalystPilotV1(env,f.fixture.id,date);outcomes.push({id:f.fixture.id,status:x.status||x.error}); }
-        catch(e){outcomes.push({id:f.fixture.id,error:safeRefreshError(e)});}
+      for (const f of eligible) {
+        if (outcomes.length>=4) break;
+        const id=Number(f.fixture.id);
+        const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
+        if (existing?.payload?.ok===true) continue;
+        try {
+          const x=await timedV2(runChatGPTAnalystPilotV1(env,id,date),27000,"OpenAI queued fixture");
+          outcomes.push({id,status:x.status||x.error||"UNKNOWN"});
+        } catch(e) {outcomes.push({id,error:safeRefreshError(e)});}
       }
-      await saveFeedSnapshot(env,key,{status:"COMPLETE",outcomes},86400);
+      await saveFeedSnapshot(env,hourKey,{status:"COMPLETE",eligible:eligible.length,outcomes,finishedAt:new Date().toISOString()},7200);
     }
   }
 
