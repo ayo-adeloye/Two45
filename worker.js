@@ -9164,7 +9164,10 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
   const pendingBacklogNow = num4(result.watchdog?.pending) > 0 || num4(result.model?.freshBaselineBacklog) > 0;
-  if (!pendingBacklogNow) {
+  // Always refresh the public board when the model queue is healthy; even with
+  // an outstanding backlog, perform a bounded five-minute light refresh so
+  // newly analyzed risky opportunities are not hidden behind queue completion.
+  if (!pendingBacklogNow || minute % 5 === 0) {
     try {
       const boardDates = shouldPreloadTomorrow() ? [tomorrowEasternDate(), easternDate()] : [easternDate()];
       for (const boardDate of boardDates) {
