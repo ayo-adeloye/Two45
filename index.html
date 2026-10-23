@@ -174,7 +174,7 @@ function two45FixtureSignal(x){
  var best=entries.sort(function(a,b){return Number(b.probability)-Number(a.probability)})[0];
  if(!best)return '<div class="two45SignalReason">Evidence in Match Center</div>';
  var p=Number(best.probability),p01=p>1?p/100:p;
- if(!Number.isFinite(p01)||p01<0||p01>1)return '<div class="two45SignalReason">Prediction available in Match Center</div>';
+ if(!Number.isFinite(p01)||p01<=0||p01>1)return '<div class="two45SignalReason">Prediction available in Match Center</div>';
  var qualified=x.decision==="PICK"&&Number(x.sportsbookOdds)>1,clr=qualified?"#55d4aa":"#67aefe";
  return '<div class="two45SignalViz"><div class="two45SignalTitle"><span>'+esc(nice(best.selection||best.market||"Research"))+'</span><b>'+(p01*100).toFixed(0)+'%</b></div><div class="two45SignalTrack"><i style="--signal-width:'+(p01*100).toFixed(1)+'%;--signal-color:'+clr+'"></i></div><div class="two45SignalReason">'+(qualified?"Price-qualified prediction":"Model probability · research only")+'</div></div>';
 }
@@ -183,7 +183,7 @@ function two45FixtureTeams(f){
  function side(t,awaySide){var name=String(t.name||"Team"),logo=String(t.logo||"");var image=/^https:\/\//.test(logo)?'<img src="'+esc(logo)+'" loading="lazy" decoding="async" alt="" referrerpolicy="no-referrer">':'<span class="two45CrestPlaceholder" aria-hidden="true">'+esc(name.slice(0,2).toUpperCase())+'</span>';return '<span class="two45TeamSide '+(awaySide?'away':'')+'">'+(awaySide?'<span>'+esc(name)+'</span>'+image:image+'<span>'+esc(name)+'</span>')+'</span>'}
  return '<div class="two45TeamFace">'+side(home,false)+'<span class="two45Versus">VS</span>'+side(away,true)+'</div><small class="two45FixtureRound">'+esc(f.league&&f.league.round||"")+'</small>';
 }
-function gameRow(f,m){var id=String(f.fixture&&f.fixture.id||""),x=m.get(id),s=status(f),live=isLive(f),fin=FIN.has(s),stateText=live?'<span class="live">'+(f.goals&&f.goals.home!=null?f.goals.home:0)+'–'+(f.goals&&f.goals.away!=null?f.goals.away:0)+' · '+esc(s)+'</span>':fin?'<span class="muted">'+esc(s)+'</span>':'<span class="muted">'+(awaitingUpdate(f)?'Awaiting status update':isUpcoming(f)?'Upcoming':esc(f.fixture.status.long||s))+'</span>',qualified=x&&x.decision==="PICK"&&x.selection&&String(x.selection).toUpperCase()!=="NO_BET",hasOpts=x&&Array.isArray(x.alternatives)&&x.alternatives.length>0,sig=!x?'<strong style="color:#8d887d">Not analyzed yet</strong>':qualified?'<strong>'+esc(nice(x.selection))+'</strong>'+((pct(x.probability)!=null)?pct(x.probability)+'%':''):hasOpts?'<strong>Options available</strong><span class="muted">'+x.alternatives.length+' markets analyzed</span>':'<strong style="color:#8d887d">No Bet</strong>';var label=x?"View Analysis":fin?"Finished":"Analyze",founderBtn=founderSession()&&!fin?'<button class="founderDaily" data-id="'+id+'" style="margin-top:6px;width:100%">Founder Pick</button><button class="founderElite" data-id="'+id+'" style="margin-top:6px;width:100%">★ Elite review</button>':"";return'<div class="row"><div>'+esc(time(f))+'<br>'+stateText+'</div><div class="game">'+two45FixtureTeams(f)+'</div><div class="signal">'+sig+(x?two45FixtureSignal(x):'')+'</div><div><button class="analyze" data-id="'+id+'" data-finished="'+(fin?"1":"0")+'" '+(fin&&!x?'disabled style="opacity:.45"':"")+'>'+label+'</button>'+founderBtn+'</div></div>'}
+function gameRow(f,m){var id=String(f.fixture&&f.fixture.id||""),x=m.get(id),s=status(f),live=isLive(f),fin=FIN.has(s),stateText=live?'<span class="live">'+(f.goals&&f.goals.home!=null?f.goals.home:0)+'–'+(f.goals&&f.goals.away!=null?f.goals.away:0)+' · '+esc(s)+'</span>':fin?'<span class="muted">'+esc(s)+'</span>':'<span class="muted">'+(awaitingUpdate(f)?'Awaiting status update':isUpcoming(f)?'Upcoming':esc(f.fixture.status.long||s))+'</span>',qualified=x&&x.decision==="PICK"&&x.selection&&String(x.selection).toUpperCase()!=="NO_BET",hasOpts=x&&Array.isArray(x.alternatives)&&x.alternatives.length>0,sig=!x?'<strong style="color:#8d887d">Not analyzed yet</strong>':qualified?'<strong>'+esc(nice(x.selection))+'</strong>'+((pct(x.probability)!=null)?pct(x.probability)+'%':''):hasOpts?'<strong>Options available</strong><span class="muted">'+x.alternatives.length+' markets analyzed</span>':'<strong style="color:#8d887d">Analysis Pending</strong>';var label=x?"View Analysis":fin?"Finished":"Analyze",founderBtn=founderSession()&&!fin?'<button class="founderDaily" data-id="'+id+'" style="margin-top:6px;width:100%">Founder Pick</button><button class="founderElite" data-id="'+id+'" style="margin-top:6px;width:100%">★ Elite review</button>':"";return'<div class="row"><div>'+esc(time(f))+'<br>'+stateText+'</div><div class="game">'+two45FixtureTeams(f)+'</div><div class="signal">'+sig+(x?two45FixtureSignal(x):'')+'</div><div><button class="analyze" data-id="'+id+'" data-finished="'+(fin?"1":"0")+'" '+(fin&&!x?'disabled style="opacity:.45"':"")+'>'+label+'</button>'+founderBtn+'</div></div>'}
 var displayCompetitionTier=(function(){
 const TIER1_IDS = new Set([1,2,4,5,9,15,39,61,78,135,140]);
 const TIER2_IDS = new Set([3,13,40,45,48,66,71,72,73,81,88,94,136,137,141,143,144,253]);
@@ -206,11 +206,7 @@ function competitionTierV87(value, leagueId) {
   if (/\bfriendl/.test(n)) return 3;
   if (/\bliga premier serie a\b/.test(n)) return 4;
   if (/\b2 frauen bundesliga\b/.test(n)) return 3;
-  if (/\b(u17|u18|u19)\b/.test(n)) return 3;
-
-  // Approved development competitions: useful for testing, but never Tier 1.
-  if (/\b(u20|u21|u23)\b/.test(n) &&
-      /\b(uefa|caf|afc|concacaf|world|championship|cup of nations|qualif)/.test(n)) return 2;
+  if (/\b(u17|u18|u19|u20|u21|u23|youth|academy|reserve|development)\b/.test(n)) return 4;
 
   // Known second divisions / strong secondary competitions.
   if (/\bserie b\b/.test(n) ||
