@@ -9071,7 +9071,8 @@ async function scheduledAnalysisV2(event, env) {
   }, 1800).catch(() => null);
   // Reserve a bounded fresh-odds feed opportunity before model enrichment consumes
   // the provider burst budget. Without this, every Bet365 quote eventually expires.
-  if (new Date(startedAt).getUTCMinutes() % 5 === 0) {
+  const lastFeedProbe=arr2(await sb(env,"two45_feed_snapshots?snapshot_key=eq.feed-refresh-diagnostics&select=refreshed_at&limit=1",{timeoutMs:1800}).catch(()=>[]))[0];
+  if (!lastFeedProbe || Date.now()-Date.parse(lastFeedProbe.refreshed_at)>=5*60000) {
     let outcome;
     try {
       outcome=await timedV2(refreshOneFeed(env,false),22000,"priority early feed");
