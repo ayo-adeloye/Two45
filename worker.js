@@ -2185,18 +2185,6 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
       if(!prev||promoted.rankScore>prev.rankScore)riskyByFixture.set(id,promoted);
     }
   }
-  /* Original automatic-pick-only risk gate removed; risk now inspects verified forecast alternatives. */
-  /* for (const parent of automaticPicks) {
-    for (const candidate of [parent, ...arr2(parent.alternatives)]) {
-      const promoted = riskyCandidateV62(parent, candidate);
-      if (!promoted)
-        continue;
-      const id = String(parent.fixtureId), prev = riskyByFixture.get(id);
-      if (!prev || promoted.rankScore > prev.rankScore)
-        riskyByFixture.set(id, promoted);
-    }
-  }
-  */
   const strongPicks = automaticPicks.filter((f) => f.pickType !== "RISKY_VALUE").filter((f) => String(f?.lane || "").toUpperCase() !== "WATCH" && String(f?.role || "").toUpperCase() !== "WATCH_OPTION").map((f) => ({ ...f, premiumScore: premiumPublishScoreV80(f) })).filter((f) => f.premiumScore >= premiumFloorV80(f)).sort(
     (a, b) => num4(a.competitionTier, 4) - num4(b.competitionTier, 4) || b.premiumScore - a.premiumScore || b.rankScore - a.rankScore
   ).slice(0, 10);
