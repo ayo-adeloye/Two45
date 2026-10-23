@@ -9048,7 +9048,7 @@ async function scheduledAnalysisV2(event, env) {
   // Single-fixture guarded live smoke test: one billable attempt, never publish.
   if (shouldPreloadTomorrow()) {
     const pilotDate=tomorrowEasternDate();
-    const pilotKey="chatgpt-analyst:pilot-attempt:v2:"+pilotDate;
+    const pilotKey="chatgpt-analyst:pilot-attempt:v3:"+pilotDate;
     const attempted=await getFeedSnapshot(env,pilotKey).catch(()=>null);
     if (!attempted) {
       await saveFeedSnapshot(env,pilotKey,{startedAt:new Date().toISOString(),fixtureId:1565507,status:"ATTEMPTED"},86400).catch(()=>null);
