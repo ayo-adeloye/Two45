@@ -9528,6 +9528,28 @@ var worker_default = {
         const fixtures=new Set(active.map(r=>String(r.fixture_id))),sources=[...new Set(active.map(r=>String(r.source_name||'Unknown')))].sort();
         return json({ok:true,status:active.length?'FRESH_EVIDENCE_PRESENT':'NO_FRESH_EVIDENCE',modelInfluence:false,scanned:rows.length,truncated:rows.length===500,freshRecords:active.length,staleOrUnusableRecords:rows.length-active.length,fixturesWithFreshEvidence:fixtures.size,activeSources:sources,latestCapturedAt:rows[0]?.captured_at||null,automatedExternalCollection:false,commercialPermissionsVerified:false,approvedExternalForecastFeeds:0});
       }
+      if (url.pathname === "/api/last-five-results" && request.method === "GET") {
+        const fixtureId=Number(url.searchParams.get("fixtureId"));
+        if(!Number.isSafeInteger(fixtureId)||fixtureId<=0)return json({ok:false,error:"Invalid fixture ID"},400);
+        const jobs=arr2(await sb(env,"two45_feature_jobs?fixture_id=eq."+fixtureId+"&select=home_team_id,away_team_id,home_team,away_team,kickoff_at&limit=1",{timeoutMs:3500}));
+        const job=jobs[0];
+        if(!job||!job.home_team_id||!job.away_team_id)return json({ok:true,home:null,away:null,status:"HISTORY_UNAVAILABLE"});
+        const cutoff=Date.parse(job.kickoff_at);
+        if(!Number.isFinite(cutoff))return json({ok:false,error:"Invalid fixture kickoff"},422);
+        const results=await Promise.all(["home","away"].map(async side=>{
+          const id=String(side==="home"?job.home_team_id:job.away_team_id),team=String(side==="home"?job.home_team:job.away_team||"");
+          const condition="and(home_id.eq."+encodeURIComponent(id)+",away_id.eq."+encodeURIComponent(id)+")";
+          const filter="two45_goal_results_v3?or="+encodeURIComponent(condition)+"&final_status=eq.FT&kickoff_at=lt."+encodeURIComponent(new Date(Math.min(Date.now(),cutoff)).toISOString())+"&result_available_at=lte."+encodeURIComponent(new Date().toISOString())+"&select=fixture_id,kickoff_at,home_id,away_id,home_name,away_name,home_goals,away_goals,competition&order=kickoff_at.desc&limit=30";
+          const rows=arr2(await sb(env,filter,{timeoutMs:4000}));
+          const seen=new Set();
+          const matches=rows.filter(r=>{const id2=String(r.fixture_id);if(seen.has(id2)||!Number.isInteger(r.home_goals)||!Number.isInteger(r.away_goals))return false;seen.add(id2);return true;}).slice(0,5).map(r=>{
+            const home=String(r.home_id)===id,gf=home?r.home_goals:r.away_goals,ga=home?r.away_goals:r.home_goals;
+            return {date:r.kickoff_at,opponent:home?r.away_name:r.home_name,venue:home?"H":"A",goalsFor:gf,goalsAgainst:ga,result:gf>ga?"W":gf<ga?"L":"D",competition:r.competition};
+          });
+          return {team,matches,available:matches.length,complete:matches.length===5};
+        }));
+        return json({ok:true,home:results[0],away:results[1],status:"RETAINED_COMPLETED_MATCHES",scope:"Results available before fixture kickoff",priced:false});
+      }
       if (url.pathname === "/api/match-evidence" && request.method === "GET") {
         const id=Number(url.searchParams.get("fixtureId"));
         if(!Number.isSafeInteger(id)||id<=0)return json({ok:false,error:"A valid fixture is required"},400);
