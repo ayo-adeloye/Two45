@@ -9045,20 +9045,22 @@ async function scheduledAnalysisV2(event, env) {
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
   result.engine2Shadow = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
   result.engine2Settlement = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
-  // Single-fixture guarded live smoke test: one billable attempt, never publish.
   if (shouldPreloadTomorrow()) {
-    const pilotDate=tomorrowEasternDate();
-    const pilotKey="chatgpt-analyst:pilot-attempt:v3:"+pilotDate;
-    const attempted=await getFeedSnapshot(env,pilotKey).catch(()=>null);
-    if (!attempted) {
-      await saveFeedSnapshot(env,pilotKey,{startedAt:new Date().toISOString(),fixtureId:1565507,status:"ATTEMPTED"},86400).catch(()=>null);
-      try {
-        result.chatgptPilot=await timedV2(runChatGPTAnalystPilotV1(env,1565507,pilotDate),27000,"ChatGPT Analyst pilot");
-      } catch (e) {
-        result.chatgptPilot={ok:false,error:safeRefreshError(e)};
+    const date=tomorrowEasternDate();
+    const key="chatgpt-analyst:batch:v1:"+date;
+    if (!await getFeedSnapshot(env,key).catch(()=>null)) {
+      await saveFeedSnapshot(env,key,{status:"STARTED"},86400);
+      const fr=await getFeedSnapshot(env,"fixtures:"+date);
+      const or=await getFeedSnapshot(env,"odds:"+date);
+      const ids=new Set((or?.payload?.response||[]).map(x=>Number(x.fixture?.id)));
+      const candidates=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+3600000&&ids.has(Number(f.fixture.id))).slice(0,3);
+      const outcomes=[];
+      for (const f of candidates) {
+        try { const x=await runChatGPTAnalystPilotV1(env,f.fixture.id,date);outcomes.push({id:f.fixture.id,status:x.status||x.error}); }
+        catch(e){outcomes.push({id:f.fixture.id,error:safeRefreshError(e)});}
       }
-      await saveFeedSnapshot(env,pilotKey,{completedAt:new Date().toISOString(),result:result.chatgptPilot},86400).catch(()=>null);
-    } else result.chatgptPilot={ok:true,skipped:true,reason:"Already attempted once today"};
+      await saveFeedSnapshot(env,key,{status:"COMPLETE",outcomes},86400);
+    }
   }
 
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
