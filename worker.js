@@ -9365,6 +9365,50 @@ async function runModelValidationV1(env) {
 }
 
 // END GENERATED VALIDATION ROUTINE V1
+
+async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
+  if (!env.OPENAI_API_KEY) return {ok:false,error:"OPENAI_API_KEY missing"};
+  const fixtureRow = await getFeedSnapshot(env,"fixtures:"+date);
+  const oddsRow = await getFeedSnapshot(env,"odds:"+date);
+  const fixtures = Array.isArray(fixtureRow?.payload?.fixtures) ? fixtureRow.payload.fixtures : [];
+  const odds = Array.isArray(oddsRow?.payload?.response) ? oddsRow.payload.response : [];
+  const fixture = fixtures.find(f=>Number(f.fixture?.id)===Number(fixtureId));
+  const oddsFixture = odds.find(o=>Number(o.fixture?.id)===Number(fixtureId));
+  if (!fixture || !oddsFixture) return {ok:false,error:"Fixture or odds snapshot unavailable",fixtureId,date};
+  if (fixture.fixture?.status?.short !== "NS" || Date.parse(fixture.fixture?.date) <= Date.now()) return {ok:false,error:"Fixture already started",fixtureId,date};
+  const quotes = [];
+  for (const b of (oddsFixture.bookmakers||[])) {
+    if (String(b.name).toLowerCase() !== "bet365") continue;
+    for (const bet of (b.bets||[])) {
+      if (!["Match Winner","Goals Over/Under","Both Teams Score","Double Chance"].includes(bet.name)) continue;
+      for (const v of (bet.values||[])) {
+        const price=Number(v.odd);
+        if (Number.isFinite(price) && price>=1.10 && price<=12) quotes.push({market:bet.name,selection:v.value,odds:price,bookmaker:"Bet365"});
+      }
+    }
+  }
+  if (!quotes.length) return {ok:false,error:"No exact Bet365 markets",fixtureId,date};
+  const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,quotes:quotes.slice(0,100)});
+  const response=await fetch("https://api.openai.com/v1/responses",{
+    method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
+    body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:1100,input:[
+      {role:"system",content:"Analyze this football fixture using only supplied evidence and Bet365 snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds or null), confidence (0-100), reasoning (string). No markdown."},
+      {role:"user",content:prompt}
+    ]}),signal:AbortSignal.timeout(25000)
+  });
+  if (!response.ok) return {ok:false,error:"OpenAI HTTP "+response.status,fixtureId,date};
+  const raw=await response.json();
+  const output=(raw.output||[]).flatMap(x=>x.content||[]).filter(x=>x.type==="output_text").map(x=>x.text).join("");
+  let draft;
+  try { draft=JSON.parse(output); } catch {return {ok:false,error:"Model response was not JSON",fixtureId,date,usage:raw.usage||null};}
+  const pick=draft.recommendation;
+  const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds));
+  const verified=pick===null || Boolean(match);
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:verified?"DRAFT_ONLY":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:false,analyzedAt:new Date().toISOString()};
+  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
+  return result;
+}
+
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(
@@ -9750,6 +9794,14 @@ __name(eliteResearchRepricingAuditV116,"eliteResearchRepricingAuditV116");
           result.body,
           result.httpStatus
         );
+      }
+      if (url.pathname === "/api/chatgpt-analyst/analyze" && request.method === "POST") {
+        if (!internalRequestAuthorized(request,env)) return json({ok:false,error:"Unauthorized"},403);
+        const body=await request.json().catch(()=>({}));
+        const date=String(body.date||"");
+        const fixtureId=Number(body.fixtureId);
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)||!Number.isSafeInteger(fixtureId)||fixtureId<=0) return json({ok:false,error:"Invalid date or fixture ID"},400);
+        return json(await runChatGPTAnalystPilotV1(env,fixtureId,date));
       }
       if (url.pathname === "/api/model/process" && request.method === "POST") {
         if (!internalRequestAuthorized(request, env)) {
