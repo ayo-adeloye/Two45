@@ -7275,6 +7275,11 @@ async function selectFeedJobV18(env, date, force = false) {
       run: () => oddsSnapshot ? repairDailyOddsFromFixturesV68(env, date) : refreshOddsPageV18(env, date)
     };
   }
+  // Prioritize today's expired Bet365 market feed ahead of distant fixtures.
+  // Only run when the existing 15-minute freshness check says quotes are due.
+  if (oddsSnapshot && await oddsNeedsRefreshV18(env,date)) {
+    return {key:oddsKey(date),ttl:900,savesItself:true,run:()=>refreshOddsPageV18(env,date)};
+  }
   for (const futureDate of fourDayFixtureDatesV20().slice(1)) {
     const missing = !await getFeedSnapshot(env, fixtureKey(futureDate));
     if (missing) {
@@ -9242,7 +9247,7 @@ async function scheduledAnalysisV2(event, env) {
   ).catch(() => null);
   const currentOddsEmpty = !currentOddsSnapshot || !arr2(currentOddsSnapshot?.payload?.response).length || num4(currentOddsSnapshot?.payload?.total, 0) <= 0;
   const repairStillActive = await oddsRepairActiveV68(env).catch(() => currentOddsEmpty);
-  if (!oddsRepairFirst && !scoreStateRefreshed && (repairStillActive || minute % 5 === 0)) {
+  if (!oddsRepairFirst && (repairStillActive || minute % 5 === 2)) {
     try {
       result.maintenance.push(await timedV2(
         refreshOneFeed(env, false),
