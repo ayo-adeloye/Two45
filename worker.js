@@ -8010,7 +8010,7 @@ async function evaluateBoardV19(env, date, light = false) {
   const fixtureData = await fixtureSnapshotV19(env, date);
   const fixtures = fixtureData.fixtures;
   const ids = fixtures.map(fixtureIdV19);
-  const canonicalRows = await canonicalAnalysisRowsV2(env, ids);
+  const canonicalRows = await repriceCanonicalRowsV84(env, date, await canonicalAnalysisRowsV2(env, ids));
   const presented = presentCanonicalBoardV59({
     ...base,
     ok: true,
