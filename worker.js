@@ -9409,36 +9409,62 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const oddsFixture = odds.find(o=>Number(o.fixture?.id)===Number(fixtureId));
   if (!fixture || !oddsFixture) return {ok:false,error:"Fixture or odds snapshot unavailable",fixtureId,date};
   if (fixture.fixture?.status?.short !== "NS" || Date.parse(fixture.fixture?.date) <= Date.now()) return {ok:false,error:"Fixture already started",fixtureId,date};
-  const quotes = [];
-  for (const b of (oddsFixture.bookmakers||[])) {
-    if (!b.name) continue;
-    for (const bet of (b.bets||[])) {
-      if (!["Match Winner","Goals Over/Under","Both Teams Score","Double Chance"].includes(bet.name)) continue;
-      for (const v of (bet.values||[])) {
-        const price=Number(v.odd);
-        if (Number.isFinite(price) && price>=1.10 && price<=12) quotes.push({market:bet.name,selection:v.value,odds:price,bookmaker:b.name});
+  // Consider every quoted market, not just the former four-market allowlist.
+  // De-duplicate identical quotes and split the full inventory into bounded AI batches.
+  const quotes=[], seen=new Set();
+  for (const bookmaker of (oddsFixture.bookmakers||[])) {
+    if (!bookmaker.name) continue;
+    for (const bet of (bookmaker.bets||[])) {
+      if (!bet.name) continue;
+      for (const value of (bet.values||[])) {
+        const price=Number(value.odd);
+        if (!Number.isFinite(price)||price<1.10||price>100||!value.value) continue;
+        const quote={market:bet.name,selection:String(value.value),odds:price,bookmaker:bookmaker.name};
+        const key=JSON.stringify(quote);
+        if (!seen.has(key)) {seen.add(key);quotes.push(quote);}
       }
     }
   }
   if (!quotes.length) return {ok:false,error:"No available quoted markets",fixtureId,date};
-  const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,quotes:quotes.slice(0,100)});
-  const response=await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
-    body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:3000,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
-      {role:"system",content:"Analyze this football fixture using only supplied evidence and available bookmaker snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds, bookmaker or null), confidence (0-100), reasoning (string). No markdown."},
-      {role:"user",content:prompt}
-    ]}),signal:AbortSignal.timeout(25000)
-  });
-  if (!response.ok) return {ok:false,error:"OpenAI HTTP "+response.status,fixtureId,date};
-  const raw=await response.json();
-  const output=(raw.output||[]).flatMap(x=>x.content||[]).filter(x=>x.type==="output_text").map(x=>x.text).join("");
-  let draft;
-  try { draft=JSON.parse(output); } catch {return {ok:false,error:"Model response was not JSON",fixtureId,date,usage:raw.usage||null};}
+  // Keep all markets represented, while bounding model requests and tokens.
+  // One representative bookmaker quote per market/selection for the initial pass.
+  const bySelection=new Map();
+  for (const q of quotes) {
+    const key=q.market+"|"+q.selection;
+    const current=bySelection.get(key);
+    if (!current||q.bookmaker==="Bet365"&&current.bookmaker!=="Bet365") bySelection.set(key,q);
+  }
+  const candidates=Array.from(bySelection.values());
+  const groups=[];
+  for (let offset=0;offset<candidates.length;offset+=120) groups.push(candidates.slice(offset,offset+120));
+  const drafts=[], usage=[];
+  // Process all market groups; no silent truncation to the first 100 quotes.
+  for (const group of groups) {
+    const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,marketCoverage:{groups:groups.length,totalQuotes:quotes.length,uniqueMarketSelections:candidates.length},quotes:group});
+    const response=await fetch("https://api.openai.com/v1/responses",{
+      method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
+      body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:1600,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
+        {role:"system",content:"Evaluate every supplied market as a candidate, not just match winners. Quotes show available prices, NOT proof of predictive edge. Do not invent form, statistics, injuries, probabilities, or facts. If the supplied evidence is insufficient to justify a confident prediction, return recommendation null and confidence 0. Return JSON with fixtureId, recommendation (market, selection, odds, bookmaker or null), confidence (0-100), reasoning (string)."},
+        {role:"user",content:prompt}
+      ]}),signal:AbortSignal.timeout(25000)
+    });
+    if (!response.ok) return {ok:false,error:"OpenAI HTTP "+response.status,fixtureId,date};
+    const raw=await response.json();
+    usage.push(raw.usage||null);
+    const output=(raw.output||[]).flatMap(x=>x.content||[]).filter(x=>x.type==="output_text").map(x=>x.text).join("");
+    try {
+      const item=JSON.parse(output);
+      const p=item.recommendation;
+      if (p&&group.some(q=>q.market===p.market&&q.selection===p.selection&&q.bookmaker===p.bookmaker&&q.odds===Number(p.odds))) drafts.push(item);
+    } catch {}
+  }
+  drafts.sort((a,b)=>Number(b.confidence)-Number(a.confidence));
+  const draft=drafts[0]||{fixtureId:Number(fixtureId),recommendation:null,confidence:0,reasoning:"Insufficient evidence across available markets"};
   const pick=draft.recommendation;
   const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds)&&q.bookmaker===pick.bookmaker);
   const verified=pick===null || Boolean(match);
   const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
-  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage,marketCoverage:{totalQuotes:quotes.length,uniqueMarketSelections:candidates.length,groups:groups.length},quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
   await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
   if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,quote:match},86400);
   return result;
