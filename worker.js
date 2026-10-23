@@ -2263,7 +2263,10 @@ async function repriceCanonicalRowsV84(env, date, rows) {
       return row;
     const fixtureId = row.fixture_id || stored.fixtureId || stored.providerMatchId;
     const main = repricePublicCandidateV84(oddsPayload, fixtureId, stored);
-    const alternatives = arr2(stored.alternatives).map((x) => repricePublicCandidateV84(oddsPayload, fixtureId, x));
+    const independentResearch=arr2(result.researchMarketOptions).filter(x=>x&&["STRONG","RISKY_VALUE"].includes(String(x.lane||"").toUpperCase())&&String(x.analysisSource||"")==="independent-model"&&Number(x.probability)>0);
+    const candidateMap=new Map();
+    for(const x of [...arr2(stored.alternatives),...independentResearch])if(x&&x.market&&x.selection)candidateMap.set(String(x.market)+"|"+String(x.selection),x);
+    const alternatives=[...candidateMap.values()].map(x=>repricePublicCandidateV84(oddsPayload,fixtureId,x));
     const verifiedMain = Boolean(main?.priceVerified);
     const forecast = {
       ...main,
