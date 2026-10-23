@@ -9015,7 +9015,14 @@ async function alertsForLockV70(env, lock) {
 __name(alertsForLockV70, "alertsForLockV70");
 async function ticketLocksResponseV70(env) {
   const locks = await ensureTicketLocksV70(env), alerts = [...await alertsForLockV70(env, locks.daily), ...await alertsForLockV70(env, locks.weekend)];
-  return { ok: true, lockHour: "06:00 America/New_York", immutableAfterLock: true, pricingVerificationRevision: TICKET_LOCK_REVISION_V78, daily: locks.daily || { status: "BUILDING", date: activeDailyTicketDateV93(), locksAt: "Slate verification in progress" }, weekend: locks.weekend || { status: "BUILDING", saturday: weekendAnchorV70(), locksAt: "Saturday 06:00 America/New_York" }, alerts };
+  const date=activeDailyTicketDateV93();
+  const rows=await sb(env,"two45_feed_snapshots?snapshot_key=like.chatgpt-published:"+date+":*&select=payload&limit=30",{timeoutMs:4000}).catch(()=>[]);
+  const published=arr2(rows).map(r=>r.payload).filter(p=>p?.published===true&&p?.quoteVerified===true);
+  const verifiedPicks=published.map(p=>({fixtureId:p.fixtureId,market:p.draft?.recommendation?.market,selection:p.draft?.recommendation?.selection,odds:p.draft?.recommendation?.odds,bookmaker:p.quote?.bookmaker,confidence:p.draft?.confidence,reasoning:p.draft?.reasoning,source:"OPENAI_VERIFIED"}));
+  const elite3=verifiedPicks.length>=3?{status:"READY",legs:verifiedPicks.slice(0,3),combinedOdds:verifiedPicks.slice(0,3).reduce((n,p)=>n*Number(p.odds),1)}:{status:"BUILDING",legs:[],requiredLegs:3};
+  if(elite3.status==="READY"&&(elite3.combinedOdds<2.8||elite3.combinedOdds>3.2)) {elite3.status="BUILDING";elite3.legs=[];}
+
+  return { ok: true, lockHour: "06:00 America/New_York", immutableAfterLock: true, pricingVerificationRevision: TICKET_LOCK_REVISION_V78, chatgpt:{date,highConviction:verifiedPicks,elite3}, daily: locks.daily || { status: "BUILDING", date: activeDailyTicketDateV93(), locksAt: "Slate verification in progress" }, weekend: locks.weekend || { status: "BUILDING", saturday: weekendAnchorV70(), locksAt: "Saturday 06:00 America/New_York" }, alerts };
 }
 __name(ticketLocksResponseV70, "ticketLocksResponseV70");
 async function scheduledAnalysisV2(event, env) {
@@ -9043,8 +9050,33 @@ async function scheduledAnalysisV2(event, env) {
   result.goalHistoryBackfill = await backfillGoalHistoryV120(env).catch(e=>({ok:false,error:safeRefreshError(e)}));
   result.forecastCoreTraining = await refreshGoalCoreV3(env);
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
-  result.engine2Shadow = await runEngine2ShadowSweepV1(env);
-  result.engine2Settlement = await runEngine2SettlementV1(env);
+  result.engine2Shadow = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
+  result.engine2Settlement = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
+  // Queue-driven OpenAI analysis: retry pending fixtures after odds refresh.
+  if (shouldPreloadTomorrow()) {
+    const date=tomorrowEasternDate();
+    const fr=await getFeedSnapshot(env,"fixtures:"+date).catch(()=>null);
+    const or=await getFeedSnapshot(env,"odds:"+date).catch(()=>null);
+    const oddsIds=new Set((or?.payload?.response||[]).filter(o=>(o.bookmakers||[]).some(b=>(b.bets||[]).some(x=>(x.values||[]).length))).map(o=>Number(o.fixture?.id)));
+    const eligible=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+3600000&&oddsIds.has(Number(f.fixture.id)));
+    const hourKey="chatgpt-analyst:queue-hour:"+date+":"+new Date().toISOString().slice(0,13);
+    if (!await getFeedSnapshot(env,hourKey).catch(()=>null)) {
+      await saveFeedSnapshot(env,hourKey,{status:"RUNNING",eligible:eligible.length},7200);
+      const outcomes=[];
+      for (const f of eligible) {
+        if (outcomes.length>=4) break;
+        const id=Number(f.fixture.id);
+        const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
+        if (existing?.payload?.ok===true) continue;
+        try {
+          const x=await timedV2(runChatGPTAnalystPilotV1(env,id,date),27000,"OpenAI queued fixture");
+          outcomes.push({id,status:x.status||x.error||"UNKNOWN"});
+        } catch(e) {outcomes.push({id,error:safeRefreshError(e)});}
+      }
+      await saveFeedSnapshot(env,hourKey,{status:"COMPLETE",eligible:eligible.length,outcomes,finishedAt:new Date().toISOString()},7200);
+    }
+  }
+
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
   // Running it every minute re-downloaded up to 1,000 full forecast rows, including
   // large JSON analysis fields, without improving model freshness.
@@ -9365,6 +9397,52 @@ async function runModelValidationV1(env) {
 }
 
 // END GENERATED VALIDATION ROUTINE V1
+
+async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
+  if (!env.OPENAI_API_KEY) return {ok:false,error:"OPENAI_API_KEY missing"};
+  const fixtureRow = await getFeedSnapshot(env,"fixtures:"+date);
+  const oddsRow = await getFeedSnapshot(env,"odds:"+date);
+  const fixtures = Array.isArray(fixtureRow?.payload?.fixtures) ? fixtureRow.payload.fixtures : [];
+  const odds = Array.isArray(oddsRow?.payload?.response) ? oddsRow.payload.response : [];
+  const fixture = fixtures.find(f=>Number(f.fixture?.id)===Number(fixtureId));
+  const oddsFixture = odds.find(o=>Number(o.fixture?.id)===Number(fixtureId));
+  if (!fixture || !oddsFixture) return {ok:false,error:"Fixture or odds snapshot unavailable",fixtureId,date};
+  if (fixture.fixture?.status?.short !== "NS" || Date.parse(fixture.fixture?.date) <= Date.now()) return {ok:false,error:"Fixture already started",fixtureId,date};
+  const quotes = [];
+  for (const b of (oddsFixture.bookmakers||[])) {
+    if (!b.name) continue;
+    for (const bet of (b.bets||[])) {
+      if (!["Match Winner","Goals Over/Under","Both Teams Score","Double Chance"].includes(bet.name)) continue;
+      for (const v of (bet.values||[])) {
+        const price=Number(v.odd);
+        if (Number.isFinite(price) && price>=1.10 && price<=12) quotes.push({market:bet.name,selection:v.value,odds:price,bookmaker:b.name});
+      }
+    }
+  }
+  if (!quotes.length) return {ok:false,error:"No available quoted markets",fixtureId,date};
+  const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,quotes:quotes.slice(0,100)});
+  const response=await fetch("https://api.openai.com/v1/responses",{
+    method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
+    body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:3000,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
+      {role:"system",content:"Analyze this football fixture using only supplied evidence and available bookmaker snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds, bookmaker or null), confidence (0-100), reasoning (string). No markdown."},
+      {role:"user",content:prompt}
+    ]}),signal:AbortSignal.timeout(25000)
+  });
+  if (!response.ok) return {ok:false,error:"OpenAI HTTP "+response.status,fixtureId,date};
+  const raw=await response.json();
+  const output=(raw.output||[]).flatMap(x=>x.content||[]).filter(x=>x.type==="output_text").map(x=>x.text).join("");
+  let draft;
+  try { draft=JSON.parse(output); } catch {return {ok:false,error:"Model response was not JSON",fixtureId,date,usage:raw.usage||null};}
+  const pick=draft.recommendation;
+  const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds)&&q.bookmaker===pick.bookmaker);
+  const verified=pick===null || Boolean(match);
+  const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
+  if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,quote:match},86400);
+  return result;
+}
+
 var worker_default = {
   async fetch(request, env, ctx) {
     const url = new URL(
@@ -9750,6 +9828,20 @@ __name(eliteResearchRepricingAuditV116,"eliteResearchRepricingAuditV116");
           result.body,
           result.httpStatus
         );
+      }
+      if (url.pathname === "/api/chatgpt-analyst/published" && request.method === "GET") {
+        const date=String(url.searchParams.get("date")||easternDate());
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) return json({ok:false,error:"Invalid date"},400);
+        const rows=await sb(env,"two45_feed_snapshots?snapshot_key=like.chatgpt-published:"+date+":*&select=payload&limit=50",{timeoutMs:4500}).catch(()=>[]);
+        return json({ok:true,date,source:"ChatGPT Analyst V1",tickets:arr2(rows).map(r=>r.payload).filter(r=>r?.published===true)});
+      }
+      if (url.pathname === "/api/chatgpt-analyst/analyze" && request.method === "POST") {
+        if (!internalRequestAuthorized(request,env)) return json({ok:false,error:"Unauthorized"},403);
+        const body=await request.json().catch(()=>({}));
+        const date=String(body.date||"");
+        const fixtureId=Number(body.fixtureId);
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)||!Number.isSafeInteger(fixtureId)||fixtureId<=0) return json({ok:false,error:"Invalid date or fixture ID"},400);
+        return json(await runChatGPTAnalystPilotV1(env,fixtureId,date));
       }
       if (url.pathname === "/api/model/process" && request.method === "POST") {
         if (!internalRequestAuthorized(request, env)) {
