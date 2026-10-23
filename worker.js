@@ -9538,7 +9538,7 @@ var worker_default = {
         if(!Number.isFinite(cutoff))return json({ok:false,error:"Invalid fixture kickoff"},422);
         const results=await Promise.all(["home","away"].map(async side=>{
           const id=String(side==="home"?job.home_team_id:job.away_team_id),team=String(side==="home"?job.home_team:job.away_team||"");
-          const condition="and(home_id.eq."+encodeURIComponent(id)+",away_id.eq."+encodeURIComponent(id)+")";
+          const condition="(home_id.eq."+id+",away_id.eq."+id+")";
           const filter="two45_goal_results_v3?or="+encodeURIComponent(condition)+"&final_status=eq.FT&kickoff_at=lt."+encodeURIComponent(new Date(Math.min(Date.now(),cutoff)).toISOString())+"&result_available_at=lte."+encodeURIComponent(new Date().toISOString())+"&select=fixture_id,kickoff_at,home_id,away_id,home_name,away_name,home_goals,away_goals,competition&order=kickoff_at.desc&limit=30";
           const rows=arr2(await sb(env,filter,{timeoutMs:4000}));
           const seen=new Set();
