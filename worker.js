@@ -8555,7 +8555,7 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
 }
 __name(exactPreferredBookQuoteV118,"exactPreferredBookQuoteV118");
 function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){
- const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection);
+ const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection,Date.now(),'Bet365');
  if(!quote?.bookmaker)return null;
  const updated=Date.parse(quote.providerUpdatedAt),now=Date.now();
  if(!Number.isFinite(updated)||updated>now||now-updated>30*60000)return null;
@@ -9069,6 +9069,18 @@ async function scheduledAnalysisV2(event, env) {
     heartbeatAt: startedAt,
     result
   }, 1800).catch(() => null);
+  // Reserve a bounded fresh-odds feed opportunity before model enrichment consumes
+  // the provider burst budget. Without this, every Bet365 quote eventually expires.
+  if (new Date(startedAt).getUTCMinutes() % 5 === 0) {
+    let outcome;
+    try {
+      outcome=await timedV2(refreshOneFeed(env,false),22000,"priority early feed");
+    } catch(e) {
+      outcome={ok:false,stage:"priority-feed",error:safeRefreshError(e)};
+    }
+    result.maintenance.push({stage:"priority-feed",...outcome});
+    await saveFeedSnapshot(env,"feed-refresh-diagnostics",{at:new Date().toISOString(),...outcome},1800).catch(()=>null);
+  }
   result.watchdog = await runAnalysisWatchdogV2(env);
   // Drain the existing fixture queue before slower maintenance and OpenAI work.
   try {
