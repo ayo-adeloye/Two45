@@ -8555,7 +8555,7 @@ function exactPreferredBookQuoteV118(oddsPayload, fixtureId, market, selection, 
 }
 __name(exactPreferredBookQuoteV118,"exactPreferredBookQuoteV118");
 function exactBet365QuoteV78(oddsPayload,fixtureId,market,selection){
- const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection);
+ const quote=exactPreferredBookQuoteV118(oddsPayload,fixtureId,market,selection,Date.now(),'Bet365');
  if(!quote?.bookmaker)return null;
  const updated=Date.parse(quote.providerUpdatedAt),now=Date.now();
  if(!Number.isFinite(updated)||updated>now||now-updated>30*60000)return null;
