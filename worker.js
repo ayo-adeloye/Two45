@@ -9081,7 +9081,7 @@ async function scheduledAnalysisV2(event, env) {
       await saveFeedSnapshot(env,hourKey,{status:"RUNNING",eligible:eligible.length},7200);
       const outcomes=[];
       for (const f of eligible) {
-        if (outcomes.length>=2) break;
+        if (outcomes.length>=4) break;
         const id=Number(f.fixture.id);
         const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
         if (existing?.payload?.ok===true || existing?.payload?.published===true) continue;
@@ -9439,15 +9439,21 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const groups=[];
   for (let offset=0;offset<candidates.length;offset+=120) groups.push(candidates.slice(offset,offset+120));
   const drafts=[], usage=[];
+  const progressKey="chatgpt-progress:"+date+":"+fixtureId;
+  const previous=(await getFeedSnapshot(env,progressKey).catch(()=>null))?.payload||{};
+  let nextGroup=Number.isInteger(previous.nextGroup)&&previous.nextGroup>=0&&previous.nextGroup<groups.length?previous.nextGroup:0;
+  if (Array.isArray(previous.drafts)) drafts.push(...previous.drafts);
+  if (Array.isArray(previous.usage)) usage.push(...previous.usage);
   // Process all market groups; no silent truncation to the first 100 quotes.
-  for (const group of groups) {
+  for (let gi=nextGroup;gi<Math.min(groups.length,nextGroup+1);gi++) {
+    const group=groups[gi];
     const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,marketCoverage:{groups:groups.length,totalQuotes:quotes.length,uniqueMarketSelections:candidates.length},quotes:group});
     const response=await fetch("https://api.openai.com/v1/responses",{
       method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
       body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:1600,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
         {role:"system",content:"Evaluate every supplied market as a candidate, not just match winners. Quotes show available prices, NOT proof of predictive edge. Do not invent form, statistics, injuries, probabilities, or facts. If the supplied evidence is insufficient to justify a confident prediction, return recommendation null and confidence 0. Return JSON with fixtureId, recommendation (market, selection, odds, bookmaker or null), confidence (0-100), reasoning (string)."},
         {role:"user",content:prompt}
-      ]}),signal:AbortSignal.timeout(25000)
+      ]}),signal:AbortSignal.timeout(18000)
     });
     if (!response.ok) return {ok:false,error:"OpenAI HTTP "+response.status,fixtureId,date};
     const raw=await response.json();
@@ -9458,7 +9464,9 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
       const p=item.recommendation;
       if (p&&group.some(q=>q.market===p.market&&q.selection===p.selection&&q.bookmaker===p.bookmaker&&q.odds===Number(p.odds))) drafts.push(item);
     } catch {}
+    await saveFeedSnapshot(env,progressKey,{nextGroup:gi+1,drafts,usage,totalGroups:groups.length,updatedAt:new Date().toISOString()},86400);
   }
+  if (nextGroup+1<groups.length) return {ok:false,status:"PARTIAL",fixtureId,date,completedGroups:nextGroup+1,totalGroups:groups.length};
   drafts.sort((a,b)=>Number(b.confidence)-Number(a.confidence));
   const draft=drafts[0]||{fixtureId:Number(fixtureId),recommendation:null,confidence:0,reasoning:"Insufficient evidence across available markets"};
   const pick=draft.recommendation;
