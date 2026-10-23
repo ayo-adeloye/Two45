@@ -9315,22 +9315,42 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
     ["Over/Under Goals","Under 2.5"],["Over/Under Goals","Over 3.5"],
     ["Over/Under Goals","Under 3.5"]
   ].map(([market,selection])=>({market,selection}));
+  // Use verified historical scorelines for independent analysis; never infer absent data.
+  const history=await Promise.all(["home","away"].map(async side=>{
+    const teamId=fixture.teams?.[side]?.id;
+    if(!Number.isSafeInteger(Number(teamId))||Number(teamId)<=0)return {side,matches:[],coverage:"MISSING_TEAM_ID"};
+    const cutoff=new Date(Math.min(Date.now(),Date.parse(fixture.fixture.date))).toISOString();
+    const query="two45_goal_results_v3?or="+encodeURIComponent("(home_id.eq."+teamId+",away_id.eq."+teamId+")")+
+      "&final_status=eq.FT&kickoff_at=lt."+encodeURIComponent(cutoff)+"&result_available_at=lte."+encodeURIComponent(new Date().toISOString())+
+      "&select=fixture_id,kickoff_at,home_id,away_id,home_name,away_name,home_goals,away_goals&order=kickoff_at.desc&limit=15";
+    const rows=await sb(env,query,{timeoutMs:3500}).catch(()=>[]);
+    const ids=new Set(),matches=[];
+    for(const r of arr2(rows)){
+      if(ids.has(String(r.fixture_id))||!Number.isInteger(r.home_goals)||!Number.isInteger(r.away_goals))continue;
+      ids.add(String(r.fixture_id));
+      const isHome=String(r.home_id)===String(teamId),gf=isHome?r.home_goals:r.away_goals,ga=isHome?r.away_goals:r.home_goals;
+      matches.push({date:r.kickoff_at,opponent:isHome?r.away_name:r.home_name,venue:isHome?"HOME":"AWAY",goalsFor:gf,goalsAgainst:ga,result:gf>ga?"W":gf<ga?"L":"D"});
+      if(matches.length===5)break;
+    }
+    return {side,matches,coverage:matches.length+"/5"};
+  }));
   const groups=[];
   for (let offset=0;offset<candidates.length;offset+=120) groups.push(candidates.slice(offset,offset+120));
-  const drafts=[], usage=[];
+  const drafts=[], usage=[], researchOptions=[];
   const progressKey="chatgpt-progress:"+date+":"+fixtureId;
   const previous=(await getFeedSnapshot(env,progressKey).catch(()=>null))?.payload||{};
   let nextGroup=Number.isInteger(previous.nextGroup)&&previous.nextGroup>=0&&previous.nextGroup<groups.length?previous.nextGroup:0;
   if (Array.isArray(previous.drafts)) drafts.push(...previous.drafts);
+  if (Array.isArray(previous.researchOptions)) researchOptions.push(...previous.researchOptions);
   if (Array.isArray(previous.usage)) usage.push(...previous.usage);
   // Process all market groups; no silent truncation to the first 100 quotes.
   for (let gi=nextGroup;gi<Math.min(groups.length,nextGroup+1);gi++) {
     const group=groups[gi];
-    const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,marketCoverage:{groups:groups.length,availableQuotes:quotes.length,independentMarkets:candidates.length},markets:group});
+    const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,marketCoverage:{groups:groups.length,independentMarkets:candidates.length},verifiedRecentResults:history,markets:group});
     const response=await fetch("https://api.openai.com/v1/responses",{
       method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
       body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:1600,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
-        {role:"system",content:"Evaluate the supplied football markets independently of sportsbook prices. Never invent form, statistics, injuries, probabilities or facts. The fixture metadata alone may be insufficient: when evidence does not support a defensible prediction, return recommendation null and confidence 0. Return JSON with fixtureId, recommendation (market, selection) or null, confidence (0-100), reasoning (string). Do not invent bookmaker odds."},
+        {role:"system",content:"Evaluate the supplied football markets independently of sportsbook prices. Never invent form, statistics, injuries, probabilities or facts. Use the verified recent scorelines as historical evidence, noting sample size and limitations. Evaluate ALL supplied markets, then return the top three research options even if no official bet qualifies. For each research option provide market, selection, evidenceSummary, counterCase and tier (STRONG_LEAN, WATCH, or INSUFFICIENT). Do not invent probabilities or unsupported certainty. Return JSON with fixtureId, researchOptions (array), recommendation (market, selection) or null, confidence (0-100), reasoning (string). An official recommendation requires adequate evidence; otherwise return null, but still list the researched market options. Do not invent bookmaker odds."},
         {role:"user",content:prompt}
       ]}),signal:AbortSignal.timeout(18000)
     });
@@ -9341,9 +9361,10 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
     try {
       const item=JSON.parse(output);
       const p=item.recommendation;
+      if(Array.isArray(item.researchOptions))for(const o of item.researchOptions){if(group.some(q=>q.market===o.market&&q.selection===o.selection)&&researchOptions.length<10)researchOptions.push({market:o.market,selection:o.selection,evidenceSummary:String(o.evidenceSummary||"").slice(0,280),counterCase:String(o.counterCase||"").slice(0,280),tier:["STRONG_LEAN","WATCH","INSUFFICIENT"].includes(o.tier)?o.tier:"INSUFFICIENT"});}
       if (p&&group.some(q=>q.market===p.market&&q.selection===p.selection)) drafts.push(item);
     } catch {}
-    await saveFeedSnapshot(env,progressKey,{nextGroup:gi+1,drafts,usage,totalGroups:groups.length,updatedAt:new Date().toISOString()},86400);
+    await saveFeedSnapshot(env,progressKey,{nextGroup:gi+1,drafts,researchOptions,usage,totalGroups:groups.length,updatedAt:new Date().toISOString()},86400);
   }
   if (nextGroup+1<groups.length) return {ok:false,status:"PARTIAL",fixtureId,date,completedGroups:nextGroup+1,totalGroups:groups.length};
   drafts.sort((a,b)=>Number(b.confidence)-Number(a.confidence));
@@ -9352,7 +9373,7 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const match=pick&&quotes.find(q=>q.bookmaker==="Bet365"&&q.market===pick.market&&q.selection===pick.selection);
   const verified=pick===null || candidates.some(q=>q.market===pick.market&&q.selection===pick.selection);
   const publishable=Boolean(match) && verified && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
-  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage,marketCoverage:{availableQuotes:quotes.length,independentMarkets:candidates.length,groups:groups.length},quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,researchOptions,historyCoverage:history.map(h=>({side:h.side,count:h.matches.length})),usage,marketCoverage:{availableQuotes:quotes.length,independentMarkets:candidates.length,groups:groups.length},quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
   await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
   if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,draft:{...draft,recommendation:{...pick,odds:match.odds,bookmaker:match.bookmaker}},quote:match},86400);
   return result;
@@ -9527,6 +9548,18 @@ var worker_default = {
         const now=Date.now(),active=rows.filter(r=>r.status==='ACTIVE'&&Number.isFinite(Date.parse(r.captured_at))&&Date.parse(r.captured_at)<=now&&Number.isFinite(Date.parse(r.expires_at))&&Date.parse(r.expires_at)>now);
         const fixtures=new Set(active.map(r=>String(r.fixture_id))),sources=[...new Set(active.map(r=>String(r.source_name||'Unknown')))].sort();
         return json({ok:true,status:active.length?'FRESH_EVIDENCE_PRESENT':'NO_FRESH_EVIDENCE',modelInfluence:false,scanned:rows.length,truncated:rows.length===500,freshRecords:active.length,staleOrUnusableRecords:rows.length-active.length,fixturesWithFreshEvidence:fixtures.size,activeSources:sources,latestCapturedAt:rows[0]?.captured_at||null,automatedExternalCollection:false,commercialPermissionsVerified:false,approvedExternalForecastFeeds:0});
+      }
+      if (url.pathname === "/api/analyst-research-options" && request.method === "GET") {
+        const fixtureId=Number(url.searchParams.get("fixtureId"));
+        if(!Number.isSafeInteger(fixtureId)||fixtureId<=0)return json({ok:false,error:"Invalid fixture ID"},400);
+        for(const date of [tomorrowEasternDate(),easternDate()]){
+          const data=(await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId).catch(()=>null))?.payload;
+          if(data?.ok===true){
+            const options=arr2(data.researchOptions).filter(x=>x&&x.market&&x.selection).slice(0,3);
+            return json({ok:true,fixtureId,date,status:data.status,options,historyCoverage:data.historyCoverage||null,officialPublished:data.published===true,interpretation:"RESEARCH_ONLY_UNPRICED"});
+          }
+        }
+        return json({ok:true,fixtureId,options:[],status:"NOT_ANALYZED"});
       }
       if (url.pathname === "/api/last-five-results" && request.method === "GET") {
         const fixtureId=Number(url.searchParams.get("fixtureId"));
