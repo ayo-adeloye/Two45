@@ -9225,7 +9225,10 @@ async function scheduledAnalysisV2(event, env) {
   // Always refresh the public board when the model queue is healthy; even with
   // an outstanding backlog, perform a bounded five-minute light refresh so
   // newly analyzed risky opportunities are not hidden behind queue completion.
-  if (!pendingBacklogNow || minute % 5 === 0) {
+  const targetBoardKey=modelBoardKey(shouldPreloadTomorrow()?tomorrowEasternDate():easternDate());
+  const boardMeta=arr2(await sb(env,"two45_feed_snapshots?snapshot_key=eq."+encodeURIComponent(targetBoardKey)+"&select=refreshed_at&limit=1",{timeoutMs:1700}).catch(()=>[]))[0];
+  const boardDue=!boardMeta||Date.now()-Date.parse(boardMeta.refreshed_at)>=4*60000;
+  if (!pendingBacklogNow || boardDue) {
     try {
       const boardDates = shouldPreloadTomorrow() ? [tomorrowEasternDate(), easternDate()] : [easternDate()];
       for (const boardDate of boardDates) {
