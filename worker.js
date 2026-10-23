@@ -9077,10 +9077,13 @@ async function scheduledAnalysisV2(event, env) {
     const eligible=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+1800000&&oddsIds.has(Number(f.fixture.id))&&!/\\b(u17|u18|u19|u20|u21|u23|youth|academy|reserve|development)\\b/i.test(String(f.league?.name||""))&&competitionTierV21(f.league?.name,f.league?.id)<=2).sort((a,b)=>competitionTierV21(a.league?.name,a.league?.id)-competitionTierV21(b.league?.name,b.league?.id)||Date.parse(a.fixture.date)-Date.parse(b.fixture.date));
     const bucket=new Date();bucket.setUTCMinutes(Math.floor(bucket.getUTCMinutes()/10)*10,0,0);
     const hourKey="chatgpt-analyst:tier12-batch:"+date+":"+bucket.toISOString().slice(0,16);
+    // Rotate the starting fixture every batch so long multi-market fixtures cannot starve the slate.
+    const batchNumber=Math.floor(bucket.getTime()/600000);
+    const rotatedEligible=eligible.length?eligible.slice((batchNumber*4)%eligible.length).concat(eligible.slice(0,(batchNumber*4)%eligible.length)):eligible;
     if (!await getFeedSnapshot(env,hourKey).catch(()=>null)) {
       await saveFeedSnapshot(env,hourKey,{status:"RUNNING",eligible:eligible.length},7200);
       const outcomes=[];
-      for (const f of eligible) {
+      for (const f of rotatedEligible) {
         if (outcomes.length>=4) break;
         const id=Number(f.fixture.id);
         const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
