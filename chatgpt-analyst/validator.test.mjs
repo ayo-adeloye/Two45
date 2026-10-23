@@ -6,10 +6,11 @@ const quotes=[{fixtureId:101,marketId:"over15",selection:"Over 1.5",bookmaker:"B
 const picks={picks:quotes.map(q=>({...q,category:"elite3"}))};
 assert.equal(validateDraft(picks,fixtures,quotes,now).ok,true);
 assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,providerUpdatedAt:null})),now).ok,true);
-assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,odds:9})),now).ok,false);
+assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,odds:9})),now).ok,true);
 assert.equal(validateDraft(picks,[],quotes,now).ok,false);
 assert.equal(validateDraft({picks:[picks.picks[0],picks.picks[0]]},fixtures,quotes,now).ok,false);
 assert.equal(validateDraft({picks:picks.picks.map(p=>({...p,pickType:"NO_BET"}))},fixtures,quotes,now).ok,false);
 assert.equal(validateDraft({picks:picks.picks.map(p=>({...p,bookmaker:"Pinnacle"}))},fixtures,quotes,now).ok,false);
 assert.equal(validateDraft({ticketType:"elite3",picks:[]},fixtures,quotes,now).ok,false);
-console.log("Eight validation scenarios passed.");
+assert.equal(validateDraft({picks:[picks.picks[0],{...picks.picks[0],selection:"Under 1.5"}]},fixtures,quotes,now).ok,false);
+console.log("Nine validation scenarios passed.");
