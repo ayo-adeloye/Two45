@@ -9549,6 +9549,18 @@ var worker_default = {
         const fixtures=new Set(active.map(r=>String(r.fixture_id))),sources=[...new Set(active.map(r=>String(r.source_name||'Unknown')))].sort();
         return json({ok:true,status:active.length?'FRESH_EVIDENCE_PRESENT':'NO_FRESH_EVIDENCE',modelInfluence:false,scanned:rows.length,truncated:rows.length===500,freshRecords:active.length,staleOrUnusableRecords:rows.length-active.length,fixturesWithFreshEvidence:fixtures.size,activeSources:sources,latestCapturedAt:rows[0]?.captured_at||null,automatedExternalCollection:false,commercialPermissionsVerified:false,approvedExternalForecastFeeds:0});
       }
+      if (url.pathname === "/api/analyst-research-options" && request.method === "GET") {
+        const fixtureId=Number(url.searchParams.get("fixtureId"));
+        if(!Number.isSafeInteger(fixtureId)||fixtureId<=0)return json({ok:false,error:"Invalid fixture ID"},400);
+        for(const date of [tomorrowEasternDate(),easternDate()]){
+          const data=(await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId).catch(()=>null))?.payload;
+          if(data?.ok===true){
+            const options=arr2(data.researchOptions).filter(x=>x&&x.market&&x.selection).slice(0,3);
+            return json({ok:true,fixtureId,date,status:data.status,options,historyCoverage:data.historyCoverage||null,officialPublished:data.published===true,interpretation:"RESEARCH_ONLY_UNPRICED"});
+          }
+        }
+        return json({ok:true,fixtureId,options:[],status:"NOT_ANALYZED"});
+      }
       if (url.pathname === "/api/last-five-results" && request.method === "GET") {
         const fixtureId=Number(url.searchParams.get("fixtureId"));
         if(!Number.isSafeInteger(fixtureId)||fixtureId<=0)return json({ok:false,error:"Invalid fixture ID"},400);
