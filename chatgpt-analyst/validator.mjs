@@ -23,8 +23,8 @@ export function validateDraft(input, fixtures, quotes, now = Date.now()) {
     const q = quoteByKey.get(quoteKey(p));
     if (!q) {errors.push(label+": exact market quote unavailable");continue;}
     if (!Number.isFinite(Number(p.odds)) || Number(p.odds)<=1 || Math.abs(Number(p.odds)-Number(q.odds))>0.00001) errors.push(label+": price mismatch");
-    const updated = Date.parse(q.providerUpdatedAt);
-    if (!Number.isFinite(updated) || updated>now || now-updated>15*60*1000) errors.push(label+": missing or stale provider quote timestamp");
+    // User-approved policy: an available exact quote is sufficient; provider timestamps are advisory.
+    // Still reject invalid prices, missing exact markets, started fixtures and non-Bet365 Elite 3.
     if (p.category==="elite3") {
       eliteCount++;
       if (eliteIds.has(String(p.fixtureId))) errors.push(label+": repeated Elite 3 fixture");
