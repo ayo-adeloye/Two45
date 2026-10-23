@@ -9045,6 +9045,22 @@ async function scheduledAnalysisV2(event, env) {
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
   result.engine2Shadow = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
   result.engine2Settlement = { ok: true, status: "DISABLED", reason: "CHATGPT_ANALYST_V1_PILOT" };
+  // Single-fixture guarded live smoke test: one billable attempt, never publish.
+  if (shouldPreloadTomorrow()) {
+    const pilotDate=tomorrowEasternDate();
+    const pilotKey="chatgpt-analyst:pilot-attempt:"+pilotDate;
+    const attempted=await getFeedSnapshot(env,pilotKey).catch(()=>null);
+    if (!attempted) {
+      await saveFeedSnapshot(env,pilotKey,{startedAt:new Date().toISOString(),fixtureId:1565507,status:"ATTEMPTED"},86400).catch(()=>null);
+      try {
+        result.chatgptPilot=await timedV2(runChatGPTAnalystPilotV1(env,1565507,pilotDate),27000,"ChatGPT Analyst pilot");
+      } catch (e) {
+        result.chatgptPilot={ok:false,error:safeRefreshError(e)};
+      }
+      await saveFeedSnapshot(env,pilotKey,{completedAt:new Date().toISOString(),result:result.chatgptPilot},86400).catch(()=>null);
+    } else result.chatgptPilot={ok:true,skipped:true,reason:"Already attempted once today"};
+  }
+
   // V115 egress guard: learning is settlement-driven below (every 15 minutes).
   // Running it every minute re-downloaded up to 1,000 full forecast rows, including
   // large JSON analysis fields, without improving model freshness.
