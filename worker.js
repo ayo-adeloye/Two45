@@ -9015,7 +9015,14 @@ async function alertsForLockV70(env, lock) {
 __name(alertsForLockV70, "alertsForLockV70");
 async function ticketLocksResponseV70(env) {
   const locks = await ensureTicketLocksV70(env), alerts = [...await alertsForLockV70(env, locks.daily), ...await alertsForLockV70(env, locks.weekend)];
-  return { ok: true, lockHour: "06:00 America/New_York", immutableAfterLock: true, pricingVerificationRevision: TICKET_LOCK_REVISION_V78, daily: locks.daily || { status: "BUILDING", date: activeDailyTicketDateV93(), locksAt: "Slate verification in progress" }, weekend: locks.weekend || { status: "BUILDING", saturday: weekendAnchorV70(), locksAt: "Saturday 06:00 America/New_York" }, alerts };
+  const date=activeDailyTicketDateV93();
+  const rows=await sb(env,"two45_feed_snapshots?snapshot_key=like.chatgpt-published:"+date+":*&select=payload&limit=30",{timeoutMs:4000}).catch(()=>[]);
+  const published=arr2(rows).map(r=>r.payload).filter(p=>p?.published===true&&p?.quoteVerified===true);
+  const verifiedPicks=published.map(p=>({fixtureId:p.fixtureId,market:p.draft?.recommendation?.market,selection:p.draft?.recommendation?.selection,odds:p.draft?.recommendation?.odds,bookmaker:p.quote?.bookmaker,confidence:p.draft?.confidence,reasoning:p.draft?.reasoning,source:"OPENAI_VERIFIED"}));
+  const elite3=verifiedPicks.length>=3?{status:"READY",legs:verifiedPicks.slice(0,3),combinedOdds:verifiedPicks.slice(0,3).reduce((n,p)=>n*Number(p.odds),1)}:{status:"BUILDING",legs:[],requiredLegs:3};
+  if(elite3.status==="READY"&&(elite3.combinedOdds<2.8||elite3.combinedOdds>3.2)) {elite3.status="BUILDING";elite3.legs=[];}
+
+  return { ok: true, lockHour: "06:00 America/New_York", immutableAfterLock: true, pricingVerificationRevision: TICKET_LOCK_REVISION_V78, chatgpt:{date,highConviction:verifiedPicks,elite3}, daily: locks.daily || { status: "BUILDING", date: activeDailyTicketDateV93(), locksAt: "Slate verification in progress" }, weekend: locks.weekend || { status: "BUILDING", saturday: weekendAnchorV70(), locksAt: "Saturday 06:00 America/New_York" }, alerts };
 }
 __name(ticketLocksResponseV70, "ticketLocksResponseV70");
 async function scheduledAnalysisV2(event, env) {
@@ -9396,21 +9403,21 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   if (fixture.fixture?.status?.short !== "NS" || Date.parse(fixture.fixture?.date) <= Date.now()) return {ok:false,error:"Fixture already started",fixtureId,date};
   const quotes = [];
   for (const b of (oddsFixture.bookmakers||[])) {
-    if (String(b.name).toLowerCase() !== "bet365") continue;
+    if (!b.name) continue;
     for (const bet of (b.bets||[])) {
       if (!["Match Winner","Goals Over/Under","Both Teams Score","Double Chance"].includes(bet.name)) continue;
       for (const v of (bet.values||[])) {
         const price=Number(v.odd);
-        if (Number.isFinite(price) && price>=1.10 && price<=12) quotes.push({market:bet.name,selection:v.value,odds:price,bookmaker:"Bet365"});
+        if (Number.isFinite(price) && price>=1.10 && price<=12) quotes.push({market:bet.name,selection:v.value,odds:price,bookmaker:b.name});
       }
     }
   }
-  if (!quotes.length) return {ok:false,error:"No exact Bet365 markets",fixtureId,date};
+  if (!quotes.length) return {ok:false,error:"No available quoted markets",fixtureId,date};
   const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,quotes:quotes.slice(0,100)});
   const response=await fetch("https://api.openai.com/v1/responses",{
     method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
     body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:3000,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
-      {role:"system",content:"Analyze this football fixture using only supplied evidence and Bet365 snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds or null), confidence (0-100), reasoning (string). No markdown."},
+      {role:"system",content:"Analyze this football fixture using only supplied evidence and available bookmaker snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds, bookmaker or null), confidence (0-100), reasoning (string). No markdown."},
       {role:"user",content:prompt}
     ]}),signal:AbortSignal.timeout(25000)
   });
@@ -9420,7 +9427,7 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   let draft;
   try { draft=JSON.parse(output); } catch {return {ok:false,error:"Model response was not JSON",fixtureId,date,usage:raw.usage||null};}
   const pick=draft.recommendation;
-  const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds));
+  const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds)&&q.bookmaker===pick.bookmaker);
   const verified=pick===null || Boolean(match);
   const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
   const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
