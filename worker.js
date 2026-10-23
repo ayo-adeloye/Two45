@@ -9069,6 +9069,18 @@ async function scheduledAnalysisV2(event, env) {
     heartbeatAt: startedAt,
     result
   }, 1800).catch(() => null);
+  // Reserve a bounded fresh-odds feed opportunity before model enrichment consumes
+  // the provider burst budget. Without this, every Bet365 quote eventually expires.
+  if (new Date(startedAt).getUTCMinutes() % 5 === 0) {
+    let outcome;
+    try {
+      outcome=await timedV2(refreshOneFeed(env,false),22000,"priority early feed");
+    } catch(e) {
+      outcome={ok:false,stage:"priority-feed",error:safeRefreshError(e)};
+    }
+    result.maintenance.push({stage:"priority-feed",...outcome});
+    await saveFeedSnapshot(env,"feed-refresh-diagnostics",{at:new Date().toISOString(),...outcome},1800).catch(()=>null);
+  }
   result.watchdog = await runAnalysisWatchdogV2(env);
   // Drain the existing fixture queue before slower maintenance and OpenAI work.
   try {
