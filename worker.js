@@ -2160,7 +2160,33 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
   const premiumFloorV80 = /* @__PURE__ */ __name((f) => num4(f?.competitionTier, 4) === 1 ? 72 : num4(f?.competitionTier, 4) === 2 ? 76 : 80, "premiumFloorV80");
   const automaticPicks = picks.filter((f) => num4(f.competitionTier, 4) <= 3);
   const riskyByFixture = /* @__PURE__ */ new Map();
-  for (const parent of automaticPicks) {
+  // Risky Value is a separate model lane: consider qualified alternatives even when
+  // the parent forecast did not clear the official high-conviction threshold.
+  for (const parent of independentForecasts) {
+    const fixture=byId.get(Number(parent.fixtureId));
+    const tier=competitionTierV21(fixture?.league?.name||parent.league,fixture?.league?.id);
+    if(tier>3)continue;
+    const base={...parent,competitionTier:tier};
+    for (const candidate of [parent, ...arr2(parent.alternatives)]) {
+      // Publication still requires an actual verified Bet365 price.
+      if(!candidate||candidate.priceVerified!==true||String(candidate.bookmaker||"").toLowerCase().replace(/[^a-z0-9]/g,"")!=="bet365")continue;
+      if(candidate.market==="HANDICAP"&&candidate.analysisSource==="cross-book-market-consensus")continue;
+      const probability=Number(candidate.probability)>1?Number(candidate.probability)/100:Number(candidate.probability);
+      if(!Number.isFinite(probability)||probability<=0||!priceCoherentV60(probability,Number(candidate.sportsbookOdds)))continue;
+      if(Number(candidate.sportsbookOdds)<1.35)continue;
+      const dq=Number(parent.dataQuality)>1?Number(parent.dataQuality)/100:Number(parent.dataQuality);
+      if(!Number.isFinite(dq)||dq<(tier===1?.44:tier===2?.48:.52))continue;
+      const edge=Number(candidate.valueEdgePct??candidate.valueEdge);
+      const edgePct=Number.isFinite(edge)?(Math.abs(edge)<=1?edge*100:edge):NaN;
+      if(!Number.isFinite(edgePct)||edgePct<1||probability<.16)continue;
+      const promoted=riskyCandidateV62(base,candidate);
+      if(!promoted)continue;
+      const id=String(parent.fixtureId),prev=riskyByFixture.get(id);
+      if(!prev||promoted.rankScore>prev.rankScore)riskyByFixture.set(id,promoted);
+    }
+  }
+  /* Original automatic-pick-only risk gate removed; risk now inspects verified forecast alternatives. */
+  /* for (const parent of automaticPicks) {
     for (const candidate of [parent, ...arr2(parent.alternatives)]) {
       const promoted = riskyCandidateV62(parent, candidate);
       if (!promoted)
@@ -2170,6 +2196,7 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
         riskyByFixture.set(id, promoted);
     }
   }
+  */
   const strongPicks = automaticPicks.filter((f) => f.pickType !== "RISKY_VALUE").filter((f) => String(f?.lane || "").toUpperCase() !== "WATCH" && String(f?.role || "").toUpperCase() !== "WATCH_OPTION").map((f) => ({ ...f, premiumScore: premiumPublishScoreV80(f) })).filter((f) => f.premiumScore >= premiumFloorV80(f)).sort(
     (a, b) => num4(a.competitionTier, 4) - num4(b.competitionTier, 4) || b.premiumScore - a.premiumScore || b.rankScore - a.rankScore
   ).slice(0, 10);
