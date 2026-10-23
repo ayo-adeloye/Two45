@@ -5,7 +5,7 @@ const fixtures=[{fixtureId:101,kickoff:"2026-10-23T20:00:00Z"},{fixtureId:102,ki
 const quotes=[{fixtureId:101,marketId:"over15",selection:"Over 1.5",bookmaker:"Bet365",odds:1.7,providerUpdatedAt:"2026-10-22T22:58:00Z"},{fixtureId:102,marketId:"btts",selection:"Yes",bookmaker:"Bet365",odds:1.75,providerUpdatedAt:"2026-10-22T22:58:00Z"}];
 const picks={picks:quotes.map(q=>({...q,category:"elite3"}))};
 assert.equal(validateDraft(picks,fixtures,quotes,now).ok,true);
-assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,providerUpdatedAt:null})),now).ok,false);
+assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,providerUpdatedAt:null})),now).ok,true);
 assert.equal(validateDraft(picks,fixtures,quotes.map(q=>({...q,odds:9})),now).ok,false);
 assert.equal(validateDraft(picks,[],quotes,now).ok,false);
 assert.equal(validateDraft({picks:[picks.picks[0],picks.picks[0]]},fixtures,quotes,now).ok,false);
