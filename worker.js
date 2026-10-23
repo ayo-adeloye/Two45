@@ -9087,7 +9087,7 @@ async function scheduledAnalysisV2(event, env) {
         if (outcomes.length>=4) break;
         const id=Number(f.fixture.id);
         const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
-        if (existing?.payload?.ok===true || existing?.payload?.published===true) continue;
+        if (existing?.payload?.published===true || (existing?.payload?.ok===true && existing?.payload?.analysisRevision===2)) continue;
         try {
           const x=await timedV2(runChatGPTAnalystPilotV1(env,id,date),27000,"OpenAI queued fixture");
           outcomes.push({id,status:x.status||x.error||"UNKNOWN"});
@@ -9338,7 +9338,8 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   for (let offset=0;offset<candidates.length;offset+=120) groups.push(candidates.slice(offset,offset+120));
   const drafts=[], usage=[], researchOptions=[];
   const progressKey="chatgpt-progress:"+date+":"+fixtureId;
-  const previous=(await getFeedSnapshot(env,progressKey).catch(()=>null))?.payload||{};
+  const savedProgress=(await getFeedSnapshot(env,progressKey).catch(()=>null))?.payload||{};
+  const previous=savedProgress.analysisRevision===2?savedProgress:{};
   let nextGroup=Number.isInteger(previous.nextGroup)&&previous.nextGroup>=0&&previous.nextGroup<groups.length?previous.nextGroup:0;
   if (Array.isArray(previous.drafts)) drafts.push(...previous.drafts);
   if (Array.isArray(previous.researchOptions)) researchOptions.push(...previous.researchOptions);
@@ -9364,7 +9365,7 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
       if(Array.isArray(item.researchOptions))for(const o of item.researchOptions){if(group.some(q=>q.market===o.market&&q.selection===o.selection)&&researchOptions.length<10)researchOptions.push({market:o.market,selection:o.selection,evidenceSummary:String(o.evidenceSummary||"").slice(0,280),counterCase:String(o.counterCase||"").slice(0,280),tier:["STRONG_LEAN","WATCH","INSUFFICIENT"].includes(o.tier)?o.tier:"INSUFFICIENT"});}
       if (p&&group.some(q=>q.market===p.market&&q.selection===p.selection)) drafts.push(item);
     } catch {}
-    await saveFeedSnapshot(env,progressKey,{nextGroup:gi+1,drafts,researchOptions,usage,totalGroups:groups.length,updatedAt:new Date().toISOString()},86400);
+    await saveFeedSnapshot(env,progressKey,{analysisRevision:2,nextGroup:gi+1,drafts,researchOptions,usage,totalGroups:groups.length,updatedAt:new Date().toISOString()},86400);
   }
   if (nextGroup+1<groups.length) return {ok:false,status:"PARTIAL",fixtureId,date,completedGroups:nextGroup+1,totalGroups:groups.length};
   drafts.sort((a,b)=>Number(b.confidence)-Number(a.confidence));
@@ -9373,7 +9374,7 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const match=pick&&quotes.find(q=>q.bookmaker==="Bet365"&&q.market===pick.market&&q.selection===pick.selection);
   const verified=pick===null || candidates.some(q=>q.market===pick.market&&q.selection===pick.selection);
   const publishable=Boolean(match) && verified && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
-  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,researchOptions,historyCoverage:history.map(h=>({side:h.side,count:h.matches.length})),usage,marketCoverage:{availableQuotes:quotes.length,independentMarkets:candidates.length,groups:groups.length},quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":researchOptions.length?"RESEARCH_READY":verified?"NO_SELECTION":"REJECTED",analysisRevision:2,draft:verified?draft:null,researchOptions,historyCoverage:history.map(h=>({side:h.side,count:h.matches.length})),usage,marketCoverage:{availableQuotes:quotes.length,independentMarkets:candidates.length,groups:groups.length},quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
   await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
   if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,draft:{...draft,recommendation:{...pick,odds:match.odds,bookmaker:match.bookmaker}},quote:match},86400);
   return result;
