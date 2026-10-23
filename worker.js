@@ -9420,8 +9420,10 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const pick=draft.recommendation;
   const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds));
   const verified=pick===null || Boolean(match);
-  const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);\n  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
-  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);\n  if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,quote:match},86400);
+  const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);
+  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
+  if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,quote:match},86400);
   return result;
 }
 
