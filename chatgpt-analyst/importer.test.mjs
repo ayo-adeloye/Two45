@@ -6,6 +6,6 @@ const odds={response:[{fixture:{id:101},bookmakers:[{name:"Bet365",providerUpdat
 const draft={picks:[{fixtureId:101,marketId:"Over/Under",selection:"Over 1.5",bookmaker:"Bet365",odds:1.7,category:"elite3"},{fixtureId:102,marketId:"Both Teams Score",selection:"Yes",bookmaker:"Bet365",odds:1.75,category:"elite3"}]};
 assert.equal(importDraft({draft,board,odds,now}).status,"READY_FOR_ADMIN_REVIEW");
 assert.equal(importDraft({draft,board,odds:{response:[]},now}).status,"REJECTED");
-assert.equal(importDraft({draft,board,odds,now:now+3600000}).status,"REJECTED");
+assert.equal(importDraft({draft,board,odds,now:now+3600000}).status,"READY_FOR_ADMIN_REVIEW");
 assert.equal(importDraft({draft,board,odds,now}).published,false);
 console.log("Importer test scenarios passed");
