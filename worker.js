@@ -9047,6 +9047,22 @@ async function scheduledAnalysisV2(event, env) {
     result
   }, 1800).catch(() => null);
   result.watchdog = await runAnalysisWatchdogV2(env);
+  // Drain the existing fixture queue before slower maintenance and OpenAI work.
+  try {
+    result.model = await timedV2(
+      processJobs(env, DEFAULT_MODEL_BATCH, null, true),
+      19e3,
+      "analysis pass"
+    );
+  } catch (e) {
+    result.ok = false;
+    result.model = {
+      ok: false,
+      claimed: 0,
+      processed: 0,
+      error: safeRefreshError(e)
+    };
+  }
   result.goalHistoryBackfill = await backfillGoalHistoryV120(env).catch(e=>({ok:false,error:safeRefreshError(e)}));
   result.forecastCoreTraining = await refreshGoalCoreV3(env);
   result.forecastCoreSweep = await runGoalCoreSweepV3(env);
@@ -9118,21 +9134,6 @@ async function scheduledAnalysisV2(event, env) {
     } catch (e) {
       result.maintenance.push({ ok: false, stage: "priority-odds-repair", error: safeRefreshError(e) });
     }
-  }
-  try {
-    result.model = await timedV2(
-      processJobs(env, DEFAULT_MODEL_BATCH, null, true),
-      19e3,
-      "analysis pass"
-    );
-  } catch (e) {
-    result.ok = false;
-    result.model = {
-      ok: false,
-      claimed: 0,
-      processed: 0,
-      error: safeRefreshError(e)
-    };
   }
   const modelStageAt = (/* @__PURE__ */ new Date()).toISOString();
   await saveFeedSnapshot(env, "cron-status", {
