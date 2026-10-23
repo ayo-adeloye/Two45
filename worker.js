@@ -9074,13 +9074,14 @@ async function scheduledAnalysisV2(event, env) {
     const fr=await getFeedSnapshot(env,"fixtures:"+date).catch(()=>null);
     const or=await getFeedSnapshot(env,"odds:"+date).catch(()=>null);
     const oddsIds=new Set((or?.payload?.response||[]).filter(o=>(o.bookmakers||[]).some(b=>(b.bets||[]).some(x=>(x.values||[]).length))).map(o=>Number(o.fixture?.id)));
-    const eligible=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+3600000&&oddsIds.has(Number(f.fixture.id))&&!/\\b(u17|u18|u19|u20|u21|u23|youth|academy|reserve|development)\\b/i.test(String(f.league?.name||""))&&competitionTierV21(f.league?.name,f.league?.id)<=3).sort((a,b)=>competitionTierV21(a.league?.name,a.league?.id)-competitionTierV21(b.league?.name,b.league?.id)||Date.parse(a.fixture.date)-Date.parse(b.fixture.date));
-    const hourKey="chatgpt-analyst:queue-hour:"+date+":"+new Date().toISOString().slice(0,13);
+    const eligible=(fr?.payload?.fixtures||[]).filter(f=>f.fixture?.status?.short==="NS"&&Date.parse(f.fixture.date)>Date.now()+1800000&&oddsIds.has(Number(f.fixture.id))&&!/\\b(u17|u18|u19|u20|u21|u23|youth|academy|reserve|development)\\b/i.test(String(f.league?.name||""))&&competitionTierV21(f.league?.name,f.league?.id)<=2).sort((a,b)=>competitionTierV21(a.league?.name,a.league?.id)-competitionTierV21(b.league?.name,b.league?.id)||Date.parse(a.fixture.date)-Date.parse(b.fixture.date));
+    const bucket=new Date();bucket.setUTCMinutes(Math.floor(bucket.getUTCMinutes()/10)*10,0,0);
+    const hourKey="chatgpt-analyst:tier12-batch:"+date+":"+bucket.toISOString().slice(0,16);
     if (!await getFeedSnapshot(env,hourKey).catch(()=>null)) {
       await saveFeedSnapshot(env,hourKey,{status:"RUNNING",eligible:eligible.length},7200);
       const outcomes=[];
       for (const f of eligible) {
-        if (outcomes.length>=6) break;
+        if (outcomes.length>=2) break;
         const id=Number(f.fixture.id);
         const existing=await getFeedSnapshot(env,"chatgpt-analyst:"+date+":"+id).catch(()=>null);
         if (existing?.payload?.ok===true || existing?.payload?.published===true) continue;
