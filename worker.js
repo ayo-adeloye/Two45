@@ -9407,7 +9407,7 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const prompt=JSON.stringify({fixtureId:Number(fixtureId),date,home:fixture.teams?.home?.name,away:fixture.teams?.away?.name,league:fixture.league?.name,kickoff:fixture.fixture?.date,quotes:quotes.slice(0,100)});
   const response=await fetch("https://api.openai.com/v1/responses",{
     method:"POST",headers:{"Authorization":"Bearer "+env.OPENAI_API_KEY,"Content-Type":"application/json"},
-    body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:1100,input:[
+    body:JSON.stringify({model:"gpt-5-nano",store:false,max_output_tokens:3000,reasoning:{effort:"minimal"},text:{format:{type:"json_object"}},input:[
       {role:"system",content:"Analyze this football fixture using only supplied evidence and Bet365 snapshot odds. Never invent facts, injury news, statistics or markets. If no sufficient evidence, recommend null. Return only a JSON object with keys fixtureId, recommendation (object with market, selection, odds or null), confidence (0-100), reasoning (string). No markdown."},
       {role:"user",content:prompt}
     ]}),signal:AbortSignal.timeout(25000)
@@ -9420,8 +9420,8 @@ async function runChatGPTAnalystPilotV1(env, fixtureId, date) {
   const pick=draft.recommendation;
   const match=pick&&quotes.find(q=>q.market===pick.market&&q.selection===pick.selection&&Number(q.odds)===Number(pick.odds));
   const verified=pick===null || Boolean(match);
-  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:verified?"DRAFT_ONLY":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:false,analyzedAt:new Date().toISOString()};
-  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);
+  const publishable=Boolean(match) && Number(draft.confidence)>=65 && Number(draft.confidence)<=100 && typeof draft.reasoning==="string" && draft.reasoning.trim().length>=25 && Number(draft.fixtureId)===Number(fixtureId);\n  const result={ok:verified,fixtureId:Number(fixtureId),date,model:"gpt-5-nano",status:publishable?"PUBLISHED":verified?"NO_SELECTION":"REJECTED",draft:verified?draft:null,usage:raw.usage||null,quoteVerified:Boolean(match),published:publishable,analyzedAt:new Date().toISOString()};
+  await saveFeedSnapshot(env,"chatgpt-analyst:"+date+":"+fixtureId,result,86400);\n  if (publishable) await saveFeedSnapshot(env,"chatgpt-published:"+date+":"+fixtureId,{...result,quote:match},86400);
   return result;
 }
 
@@ -9810,6 +9810,12 @@ __name(eliteResearchRepricingAuditV116,"eliteResearchRepricingAuditV116");
           result.body,
           result.httpStatus
         );
+      }
+      if (url.pathname === "/api/chatgpt-analyst/published" && request.method === "GET") {
+        const date=String(url.searchParams.get("date")||easternDate());
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) return json({ok:false,error:"Invalid date"},400);
+        const rows=await sb(env,"two45_feed_snapshots?snapshot_key=like.chatgpt-published:"+date+":*&select=payload&limit=50",{timeoutMs:4500}).catch(()=>[]);
+        return json({ok:true,date,source:"ChatGPT Analyst V1",tickets:arr2(rows).map(r=>r.payload).filter(r=>r?.published===true)});
       }
       if (url.pathname === "/api/chatgpt-analyst/analyze" && request.method === "POST") {
         if (!internalRequestAuthorized(request,env)) return json({ok:false,error:"Unauthorized"},403);
