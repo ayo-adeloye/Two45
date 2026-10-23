@@ -2211,6 +2211,42 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     if (!added)
       break;
   }
+  // Independent football-model selections remain visible when no trustworthy
+  // current Bet365 quote exists. They are NOT official value bets or publications.
+  const officialRiskIds=new Set(riskyPlays.map(x=>String(x.fixtureId)));
+  const riskModelCandidates=[];
+  for(const parent of independentForecasts){
+    const id=String(parent.fixtureId||parent.providerMatchId||"");
+    const fixture=byId.get(Number(id));
+    if(!id||!fixture||Date.parse(fixture.fixture?.date||0)<=Date.now()||!UPCOMING_STATUSES.has(fixture.fixture?.status?.short)||officialRiskIds.has(id))continue;
+    const tier=competitionTierV21(fixture.league?.name||parent.league,fixture.league?.id);
+    if(tier>3)continue;
+    const dq=Number(parent.dataQuality)>1?Number(parent.dataQuality)/100:Number(parent.dataQuality);
+    if(!Number.isFinite(dq)||dq<.60)continue;
+    const choices=arr2(parent.alternatives).filter(c=>{
+      if(c.lane!=="RISKY_VALUE"||c.analysisSource!=="independent-model")return false;
+      const p=Number(c.probability)>1?Number(c.probability)/100:Number(c.probability);
+      if(!Number.isFinite(p)||p<.26||p>.68)return false;
+      const m=String(c.market),v=String(c.selection);
+      return m==="MATCH_RESULT"&&["HOME","AWAY","DRAW"].includes(v)||
+        m==="TOTAL_GOALS"&&["OVER_2_5","OVER_3_5"].includes(v)||
+        m==="BTTS"&&v==="YES"||
+        ["HOME_TEAM_GOALS","AWAY_TEAM_GOALS"].includes(m)&&v==="OVER_1_5";
+    });
+    if(!choices.length)continue;
+    const rank=c=>{const p=Number(c.probability)>1?Number(c.probability)/100:Number(c.probability);
+      const audacity=c.market==="MATCH_RESULT"?5:c.market==="TOTAL_GOALS"&&c.selection==="OVER_3_5"?5:c.market==="TOTAL_GOALS"&&c.selection==="OVER_2_5"?4:3;
+      return dq*25+p*15+audacity*2+(tier===1?6:tier===2?3:0);};
+    choices.sort((a,b)=>rank(b)-rank(a));
+    const candidate=choices[0],p=Number(candidate.probability)>1?Number(candidate.probability)/100:Number(candidate.probability);
+    riskModelCandidates.push({...parent,...candidate,fixtureId:id,competitionTier:tier,probability:p*100,
+      decision:"MODEL_SELECTION",pickType:"RISK_MODEL",publicationStatus:"MODEL_ONLY",
+      bookmaker:null,sportsbookOdds:null,priceVerified:false,oddsVerification:null,valueEdge:null,valueEdgePct:null,
+      rankScore:rank(candidate),dataQuality:parent.dataQuality,
+      reasons:["Two45 independently favors "+String(candidate.selection).replaceAll("_"," ").toLowerCase()+" in "+String(candidate.market).replaceAll("_"," ").toLowerCase()+". This is a higher-variance model selection, not a priced Bet365 recommendation; recheck the current odds before considering a bet."]});
+  }
+  riskModelCandidates.sort((a,b)=>b.rankScore-a.rankScore||num4(a.competitionTier,4)-num4(b.competitionTier,4));
+  const riskModelPicks=riskModelCandidates.slice(0,8);
   const eligiblePicks = [...strongPicks, ...riskyPlays];
   return formatBoardSelectionsV20({
     ...base,
@@ -2218,7 +2254,8 @@ function presentCanonicalBoardV59(base, fixtures, canonicalRows) {
     analyzedCount: independentForecasts.length,
     picks: eligiblePicks,
     strongPicks,
-    riskyPlays
+    riskyPlays,
+    riskModelPicks
   });
 }
 __name(presentCanonicalBoardV59, "presentCanonicalBoardV59");
